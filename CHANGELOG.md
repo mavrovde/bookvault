@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.5.0] - Toolbar regrouping, a stoppable size-check, and clearer labeling
+
+### Added
+- The activity state machine gained an explicit `STOPPING` state that can
+  interrupt either a size-check sweep or a download, not just downloads --
+  Stop now works during both.
+- Stop is now always visible next to Refresh/Prepare zip (like they are),
+  just enabled/disabled by activity, instead of being hidden entirely --
+  hiding it meant it could disappear before anyone reacted once a warm
+  cache made checking sizes resolve in well under a second.
+
+### Changed
+- Regrouped the library toolbar: Refresh/Prepare zip/Stop together as
+  library-level actions; search, type filter, and sort together as one
+  row since they're all "narrow down the list" controls; selection
+  status/actions in their own row.
+- Renamed "Download" to "Prepare zip" throughout (button, badge, progress
+  text, error alert) -- that action fetches books and builds a zip
+  server-side; the actual file download only happens afterward via the
+  separate "Save zip file" link, and the old name conflated the two.
+- Stop now shares the same button style as Refresh/Prepare zip instead of
+  a separate danger-tinted look, per request that the button group look
+  consistent.
+
 ## [0.4.0] - Caching, a unified progress/activity state machine, and reliability fixes
 
 ### Added

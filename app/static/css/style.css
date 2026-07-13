@@ -82,8 +82,6 @@ button:active { transform: scale(0.97); }
 .btn-primary:disabled { background: var(--text-faint); cursor: not-allowed; }
 .btn-ghost { background: transparent; color: var(--text-muted); padding: 0.5rem 0.9rem; }
 .btn-ghost:hover { background: var(--surface-hover); color: var(--text); }
-.btn-danger-ghost { background: var(--danger-soft); color: var(--danger); padding: 0.55rem 1rem; }
-.btn-danger-ghost:hover { filter: brightness(0.96); }
 .text-link { background: none; border: none; padding: 0; color: var(--accent); font-weight: 500; cursor: pointer; font-size: 0.88rem; }
 .text-link:hover { text-decoration: underline; }
 

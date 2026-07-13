@@ -1,24 +1,44 @@
 const state = { books: [], selected: new Set(), filter: '', typeFilter: 'all', sortBy: 'title-asc' };
 
 // -- Activity state machine ------------------------------------------------
-// Checking sizes and downloading both need the one shared progress card
-// (#progress-section) and shouldn't run at the same time -- letting them
-// overlap would mean the bar/badge jumping between two unrelated meanings
-// mid-operation. Modeling "what currently owns the shared UI, and which
-// buttons that disables" as an explicit state machine -- rather than a pair
-// of ad-hoc booleans -- means a future activity (e.g. an export step) is
-// just one more STATE value and one more render*() function, not a new set
-// of enable/disable rules scattered across every button.
-const STATE = { IDLE: 'idle', CHECKING: 'checking', DOWNLOADING: 'downloading' };
+// Checking sizes, downloading, and stopping a download all need the one
+// shared progress card (#progress-section) and shouldn't run at the same
+// time -- letting them overlap would mean the bar/badge jumping between
+// unrelated meanings mid-operation. STOPPING is its own state (not a
+// separate "cancelRequested" flag bolted onto DOWNLOADING) because it has
+// its own button visibility/label rules, same as any other state here.
+// Modeling this as an explicit state machine -- rather than ad-hoc
+// booleans -- means a future activity (e.g. an export step) is just one
+// more STATE value and one more render*() function, not a new set of
+// enable/disable rules scattered across every button.
+const STATE = { IDLE: 'idle', CHECKING: 'checking', DOWNLOADING: 'downloading', STOPPING: 'stopping' };
 let activity = STATE.IDLE;
 
-// Download's disabled state depends on two independent things (busy or
-// nothing selected), so it's recomputed from both setActivity() and
-// updateSelectedCount() rather than each one guessing the other's state.
+// STOPPING is entered from either CHECKING or DOWNLOADING (see the
+// cancel-download handler below) -- this remembers which one, so the loop
+// that was actually running knows to unwind itself. Stopping a download
+// goes through the backend (/download/cancel, checked between books);
+// stopping a size-check sweep is purely a frontend loop, so it's this flag
+// the while loop in fetchSizesInBackground polls each iteration.
+let stopRequested = false;
+
+// Every button's visibility/disabled state is a pure function of `activity`
+// (plus, for Download, the selection count) -- recomputed as a whole
+// rather than each transition trying to patch just the buttons it thinks
+// it affects.
 function updateButtons() {
   const busy = activity !== STATE.IDLE;
   document.getElementById('refresh-library').disabled = busy;
   document.getElementById('start-download').disabled = busy || state.selected.size === 0;
+
+  // Always visible (like Refresh/Download), just enabled/disabled --
+  // hiding it entirely made it disappear before anyone could react when
+  // checking sizes resolves from a warm cache in well under a second.
+  const cancelBtn = document.getElementById('cancel-download');
+  const stopping = activity === STATE.STOPPING;
+  const stoppable = activity === STATE.DOWNLOADING || activity === STATE.CHECKING;
+  cancelBtn.disabled = !stoppable;
+  cancelBtn.textContent = stopping ? 'Stopping…' : 'Stop';
 }
 
 function setActivity(next) {
@@ -121,7 +141,7 @@ function prioritizeSize(id) {
 function renderChecking(done, total) {
   document.getElementById('progress-section').style.display = 'block';
   const badge = document.getElementById('progress-badge');
-  badge.textContent = 'Checking sizes…';
+  badge.textContent = activity === STATE.STOPPING ? 'Stopping…' : 'Checking sizes…';
   badge.className = 'badge badge-running';
   const bar = document.getElementById('progress-bar');
   bar.classList.remove('indeterminate');
@@ -131,7 +151,6 @@ function renderChecking(done, total) {
     done < total ? 'Cached books resolve instantly; new ones are paced to be gentle on litres.ru.' : '';
   document.getElementById('progress-error').textContent = '';
   document.getElementById('progress-log').innerHTML = '';
-  document.getElementById('cancel-download').style.display = 'none';
   document.getElementById('download-link').style.display = 'none';
 }
 
@@ -162,6 +181,7 @@ async function fetchSizesInBackground() {
   let done = 0;
   if (total > 0) renderChecking(done, total);
   while (pendingSizeIds.length > 0) {
+    if (stopRequested) break; // Stop was clicked -- see the cancel-download handler below
     const id = pendingSizeIds.shift();
     const b = state.books.find(x => x.id === id);
     if (!b || b.size_mb != null) { done++; continue; } // already resolved elsewhere -- no need to delay for it
@@ -184,6 +204,7 @@ async function fetchSizesInBackground() {
     if (wasLiveFetch) await sleep(200);
   }
   if (total > 0) document.getElementById('progress-section').style.display = 'none';
+  stopRequested = false;
   setActivity(STATE.IDLE);
   // Sizes load lazily and can change size-based sort order -- only
   // worth a full re-render for that sort mode, once all sizes are in.
@@ -286,7 +307,7 @@ document.getElementById('start-download').addEventListener('click', async () => 
     });
     const data = await resp.json();
     if (!data.ok) {
-      alert('Could not start download: ' + (data.error || 'unknown error'));
+      alert('Could not start preparing the zip: ' + (data.error || 'unknown error'));
       setActivity(STATE.IDLE);
       return;
     }
@@ -298,20 +319,23 @@ document.getElementById('start-download').addEventListener('click', async () => 
   }
 });
 
-// Cancellation only takes effect between books (see download_job.py's
-// module docstring -- an in-flight file transfer can't be interrupted),
-// so clicking Stop can otherwise look completely unresponsive for as long
-// as the current book takes. This flag drives an immediate "Stopping…"
-// state so the click is visibly acknowledged even before anything the
-// backend does actually changes.
-let cancelRequested = false;
-
 document.getElementById('cancel-download').addEventListener('click', async () => {
-  cancelRequested = true;
-  const btn = document.getElementById('cancel-download');
-  btn.disabled = true;
-  btn.textContent = 'Stopping…';
-  await fetch('/download/cancel', { method: 'POST' });
+  if (activity !== STATE.DOWNLOADING && activity !== STATE.CHECKING) return;
+  const wasDownloading = activity === STATE.DOWNLOADING;
+  stopRequested = true;
+  setActivity(STATE.STOPPING);
+  if (wasDownloading) {
+    // Cancellation only takes effect between books (see download_job.py's
+    // module docstring -- an in-flight file transfer can't be interrupted),
+    // so without an explicit STOPPING state, clicking Stop looks completely
+    // unresponsive for as long as the current book takes.
+    await fetch('/download/cancel', { method: 'POST' });
+  } else {
+    // Checking is a purely frontend loop (see fetchSizesInBackground) --
+    // it notices stopRequested on its next iteration (at most one paced
+    // step away) and unwinds itself back to STATE.IDLE from there.
+    document.getElementById('progress-badge').textContent = 'Stopping…';
+  }
 });
 
 async function pollStatus() {
@@ -327,9 +351,9 @@ async function pollStatus() {
 
 function renderProgress(s) {
   document.getElementById('progress-section').style.display = 'block';
-  const labels = { idle: 'Idle', running: 'Downloading…', done: 'Done', error: 'Error', cancelled: 'Stopped' };
+  const labels = { idle: 'Idle', running: 'Building zip…', done: 'Done', error: 'Error', cancelled: 'Stopped' };
   const badge = document.getElementById('progress-badge');
-  const stopping = s.status === 'running' && cancelRequested;
+  const stopping = activity === STATE.STOPPING;
   badge.textContent = stopping ? 'Stopping…' : (labels[s.status] || s.status);
   badge.className = 'badge badge-' + s.status;
 
@@ -348,7 +372,7 @@ function renderProgress(s) {
   }
 
   document.getElementById('progress-current').textContent = s.current_title
-    ? `Downloading: ${s.current_title}` + (stopping ? ' -- stopping once this one finishes' : '')
+    ? `Fetching: ${s.current_title}` + (stopping ? ' -- stopping once this one finishes' : '')
     : '';
 
   const logEl = document.getElementById('progress-log');
@@ -363,13 +387,6 @@ function renderProgress(s) {
   }).join('');
   logEl.scrollTop = logEl.scrollHeight;
 
-  const cancelBtn = document.getElementById('cancel-download');
-  cancelBtn.style.display = s.status === 'running' ? 'inline-block' : 'none';
-  if (s.status !== 'running') {
-    cancelRequested = false;
-    cancelBtn.disabled = false;
-    cancelBtn.textContent = 'Stop';
-  }
   document.getElementById('download-link').style.display = (s.status === 'done' || s.status === 'cancelled') && s.done > 0 ? 'inline-block' : 'none';
   document.getElementById('progress-error').textContent = s.error || '';
 }

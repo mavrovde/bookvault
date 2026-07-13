@@ -66,7 +66,6 @@
         <p id="progress-error" style="color:var(--danger)"></p>
         <ul id="progress-log"></ul>
         <div class="progress-actions">
-          <button type="button" id="cancel-download" class="btn-danger-ghost" style="display:none">Stop</button>
           <a id="download-link" href="/download/file" style="display:none">
             <button type="button" class="btn-primary">💾 Save zip file</button>
           </a>
@@ -77,15 +76,15 @@
         <div class="card-row" style="margin-bottom:1rem">
           <h2>📚 Your bookshelf</h2>
           <div class="toolbar-right">
-            <button type="button" class="btn-primary" id="refresh-library" title="Your library list is cached for a while so reopening this page doesn't re-query litres.ru every time -- use this after buying something new.">↻ Refresh</button>
-            <div class="search-wrap">
-              <input type="search" id="search-box" placeholder="Filter by title or author…">
-            </div>
-            <button type="button" class="btn-primary" id="start-download" disabled>⬇ Download</button>
+            <button type="button" class="btn-primary" id="refresh-library">↻ Refresh</button>
+            <button type="button" class="btn-primary" id="cancel-download" disabled>Stop</button>
+            <button type="button" class="btn-primary" id="start-download" disabled>📦 Prepare zip</button>
           </div>
         </div>
         <div class="card-row" style="margin-bottom:0.9rem">
-          <span class="muted" style="font-size:0.88rem"><span id="selected-count">Loading…</span> <span id="selected-size"></span></span>
+          <div class="search-wrap">
+            <input type="search" id="search-box" placeholder="Filter by title or author…">
+          </div>
           <div class="toolbar-right">
             <div class="filter-pills" id="type-filter">
               <button type="button" class="pill active" data-type="all">All</button>
@@ -99,10 +98,15 @@
               <option value="size-desc">Size (largest first)</option>
               <option value="size-asc">Size (smallest first)</option>
             </select>
+          </div>
+        </div>
+        <div class="card-row" style="margin-bottom:0.9rem">
+          <span class="muted" style="font-size:0.88rem"><span id="selected-count">Loading…</span> <span id="selected-size"></span></span>
+          <span>
             <button type="button" class="text-link" id="select-all">Select all</button>
             <span class="faint">·</span>
             <button type="button" class="text-link" id="select-none">Select none</button>
-          </div>
+          </span>
         </div>
         <div id="book-list"><div class="empty-state">Loading your library…</div></div>
       </div>
