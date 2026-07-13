@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.3.0] - Classic-library redesign, relocated settings, and a mascot
+
+### Added
+- Recolored the whole UI into a warm "classic library" theme -- parchment,
+  oxblood leather, brass/gold, dark wood -- with a serif heading font
+  (Playfair Display), replacing the previous cool modern-SaaS palette.
+  Deliberately generic, not tied to any specific copyrighted work.
+- A small inline-SVG mascot ("Lito") on the login screen, plus a matching
+  brand icon in the top bar and a real favicon -- no build step or binary
+  assets needed.
+- A generic person icon next to the account name, since the login value
+  may be a plain username rather than an email per litres.ru's own docs.
+- All CSS/JS extracted out of `index.html` into real files
+  (`app/static/css/style.css`, `app/static/js/app.js`), served via a
+  mounted `/static` directory, instead of one large inline template.
+
+### Changed
+- Preferred e-book/audiobook format pickers moved into the top bar next to
+  the account chip, freeing up the vertical space a dedicated "Preferred
+  formats" card used to take above the library -- the book grid now uses
+  that space instead (up to 78vh vs. 64vh before).
+
+### Fixed
+- The account name briefly displayed as the literal string "None" for a
+  session restored from saved cookies with no matching keyring entry --
+  the cookie-restore path now falls back to `LITRES_LOGIN` like the
+  fresh-login path already did.
+
 ## [0.2.0] - Bookshelf UI, sorting/filtering, and clearer diagnostics
 
 ### Added

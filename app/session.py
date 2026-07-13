@@ -74,8 +74,13 @@ def _restore_session_impl() -> None:
         client = LitresClient(storage_state_path=SESSION_STATE_PATH)
         if client.is_logged_in():
             saved = credentials.load_last()
+            # The keychain entry and the .env login are two independent
+            # "remember who this is" sources (see login()/credentials.py) --
+            # cookies alone don't carry a login name, so without this
+            # fallback a keychain miss would restore a working session that
+            # displays no login at all.
             _state["client"] = client
-            _state["login"] = saved[0] if saved else None
+            _state["login"] = saved[0] if saved else os.environ.get("LITRES_LOGIN")
             logger.info("Restored saved session for %s", _state["login"])
             return
         logger.info("Saved session cookies are no longer valid, discarding")

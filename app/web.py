@@ -15,6 +15,7 @@ import anyio
 from fastapi import FastAPI, Form
 from fastapi.requests import Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
@@ -37,6 +38,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 
 
 @app.get("/", response_class=HTMLResponse)

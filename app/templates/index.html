@@ -4,290 +4,48 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LitRes Assistant</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%236d2130'/%3E%3Cpath d='M32 22c-3.8-2.6-9-4-14-4-1.4 0-2.4 1-2.4 2.4v24c0 1.4 1 2.4 2.4 2.4 5 0 9.6 1.4 14 3.8V22Z' fill='%23e8dcc4'/%3E%3Cpath d='M32 22c3.8-2.6 9-4 14-4 1.4 0 2.4 1 2.4 2.4v24c0 1.4-1 2.4-2.4 2.4-5 0-9.6 1.4-14 3.8V22Z' fill='%23e8dcc4' opacity='.75'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --bg: #f4f4f8;
-      --surface: #ffffff;
-      --surface-hover: #f8f8fc;
-      --border: #e9e9f1;
-      --text: #17171f;
-      --text-muted: #71717f;
-      --text-faint: #a3a3b0;
-      --accent: #5b52f0;
-      --accent-hover: #4740d6;
-      --accent-soft: #edecfe;
-      --success: #1a9c6d;
-      --success-soft: #e4f7ef;
-      --warning: #b8790a;
-      --warning-soft: #fdf1dd;
-      --danger: #d1293d;
-      --danger-soft: #fce9eb;
-      --wood: #b3813f;
-      --wood-dark: #8a6230;
-      --wood-soft: #f6ecdc;
-      --radius-lg: 20px;
-      --radius-md: 14px;
-      --radius-sm: 10px;
-      --shadow-sm: 0 1px 2px rgba(20,20,40,0.05);
-      --shadow-md: 0 12px 28px -12px rgba(20,20,40,0.18);
-    }
-
-    * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; }
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: 'Inter', system-ui, -apple-system, sans-serif;
-      -webkit-font-smoothing: antialiased;
-      padding-bottom: 6rem;
-    }
-    h1, h2, h3 { letter-spacing: -0.02em; margin: 0; }
-    a { color: var(--accent); text-decoration: none; }
-    .muted { color: var(--text-muted); }
-    .faint { color: var(--text-faint); }
-
-    input, select, button {
-      font-family: inherit;
-      font-size: 0.95rem;
-    }
-    input[type=text], input[type=password], input[type=search] {
-      width: 100%;
-      padding: 0.65rem 0.9rem;
-      border: 1.5px solid var(--border);
-      border-radius: var(--radius-sm);
-      background: var(--surface);
-      color: var(--text);
-      outline: none;
-      transition: border-color 0.15s ease;
-    }
-    input[type=text]:focus, input[type=password]:focus, input[type=search]:focus {
-      border-color: var(--accent);
-    }
-    select {
-      padding: 0.45rem 0.7rem;
-      border: 1.5px solid var(--border);
-      border-radius: 999px;
-      background: var(--surface);
-      color: var(--text);
-      cursor: pointer;
-    }
-
-    button {
-      cursor: pointer;
-      border: none;
-      border-radius: var(--radius-sm);
-      padding: 0.7rem 1.3rem;
-      font-weight: 600;
-      transition: transform 0.08s ease, background 0.15s ease, box-shadow 0.15s ease;
-    }
-    button:active { transform: scale(0.97); }
-    .btn-primary { background: var(--accent); color: white; box-shadow: var(--shadow-sm); }
-    .btn-primary:hover { background: var(--accent-hover); }
-    .btn-primary:disabled { background: var(--text-faint); cursor: not-allowed; }
-    .btn-ghost { background: transparent; color: var(--text-muted); padding: 0.5rem 0.9rem; }
-    .btn-ghost:hover { background: var(--surface-hover); color: var(--text); }
-    .btn-danger-ghost { background: var(--danger-soft); color: var(--danger); padding: 0.55rem 1rem; }
-    .btn-danger-ghost:hover { filter: brightness(0.96); }
-    .text-link { background: none; border: none; padding: 0; color: var(--accent); font-weight: 500; cursor: pointer; font-size: 0.88rem; }
-    .text-link:hover { text-decoration: underline; }
-
-    /* -- Top bar -- */
-    .topbar {
-      position: sticky; top: 0; z-index: 20;
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 0.9rem 1.5rem;
-      background: rgba(244,244,248,0.85);
-      backdrop-filter: blur(10px);
-      border-bottom: 1px solid var(--border);
-    }
-    .brand { display: flex; align-items: center; gap: 0.55rem; font-weight: 800; font-size: 1.08rem; }
-    .brand .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
-    .session-chip { display: flex; align-items: center; gap: 0.7rem; font-size: 0.88rem; }
-
-    .page { max-width: 780px; margin: 0 auto; padding: 2rem 1.5rem 0; }
-    .page.wide { max-width: 1180px; }
-
-    /* -- Hero (logged out) -- */
-    .hero { text-align: center; padding: 3rem 1rem 1rem; }
-    .hero h1 { font-size: 2.1rem; margin-bottom: 0.5rem; }
-    .hero p { color: var(--text-muted); font-size: 1.05rem; max-width: 480px; margin: 0 auto; }
-
-    .card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-lg);
-      box-shadow: var(--shadow-sm);
-      padding: 1.5rem;
-      margin-bottom: 1.25rem;
-    }
-    .card h2 { font-size: 1.05rem; margin-bottom: 0.9rem; }
-    .card-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
-
-    .login-card { max-width: 380px; margin: 1.5rem auto 0; }
-    .field { margin-bottom: 0.9rem; }
-    .field label { display: block; font-size: 0.85rem; font-weight: 500; margin-bottom: 0.35rem; color: var(--text-muted); }
-    .error-banner { background: var(--danger-soft); color: var(--danger); border-radius: var(--radius-md); padding: 0.8rem 1rem; margin-bottom: 1rem; font-size: 0.9rem; }
-
-    /* -- Defaults strip -- */
-    .defaults-strip { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; font-size: 0.88rem; }
-    .defaults-strip .group { display: flex; align-items: center; gap: 0.5rem; }
-    .defaults-strip .group span { color: var(--text-muted); }
-
-    /* -- Library toolbar -- */
-    .search-wrap { position: relative; max-width: 260px; flex: 1; }
-    .search-wrap input { padding-left: 2.1rem; }
-    .search-wrap::before {
-      content: "⌕"; position: absolute; left: 0.75rem; top: 50%; transform: translateY(-50%);
-      color: var(--text-faint); font-size: 1.1rem;
-    }
-    .toolbar-right { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
-    .filter-pills { display: flex; gap: 0.4rem; }
-    .pill {
-      background: var(--surface); border: 1.5px solid var(--border); border-radius: 999px;
-      padding: 0.4rem 0.85rem; font-size: 0.82rem; font-weight: 600; color: var(--text-muted); cursor: pointer;
-    }
-    .pill:hover { background: var(--surface-hover); }
-    .pill.active { background: var(--accent-soft); border-color: #d9d6fb; color: var(--accent); }
-
-    /* -- Bookshelf grid -- */
-    #book-list {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-      grid-auto-rows: 236px;
-      gap: 34px 16px;
-      max-height: 64vh;
-      min-height: 260px;
-      overflow-y: auto;
-      margin: 0 -0.5rem;
-      padding: 6px 0.5rem 30px;
-      border-radius: var(--radius-md);
-      background-color: var(--wood-soft);
-      background-attachment: local;
-      background-image: repeating-linear-gradient(
-        to bottom,
-        transparent 0, transparent 236px,
-        rgba(20,20,40,0.08) 236px, rgba(20,20,40,0.08) 240px,
-        var(--wood) 240px, var(--wood) 256px,
-        var(--wood-dark) 256px, var(--wood-dark) 260px,
-        transparent 260px, transparent 270px
-      );
-    }
-    .book-card {
-      position: relative;
-      display: flex; flex-direction: column; align-items: center;
-      padding: 8px 6px 4px;
-      border-radius: var(--radius-sm);
-      cursor: pointer;
-      border: 1.5px solid transparent;
-      transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease;
-    }
-    .book-card:hover { transform: translateY(-3px); }
-    .book-card.selected { border-color: #d9d6fb; background: rgba(255,255,255,0.55); }
-    .book-cover-wrap {
-      position: relative; width: 96px; height: 148px; margin-bottom: 8px;
-      transition: transform 0.12s ease;
-    }
-    .book-card.selected .book-cover-wrap { transform: translateY(-6px); }
-    .book-cover {
-      width: 100%; height: 100%; object-fit: cover; border-radius: 3px 7px 7px 3px; display: block;
-      background: var(--border); box-shadow: -3px 4px 6px -2px rgba(20,20,40,0.35), var(--shadow-sm);
-    }
-    .book-cover.placeholder { display: flex; align-items: center; justify-content: center; font-size: 2rem; }
-    .book-checkbox {
-      position: absolute; top: -7px; left: -7px; width: 22px; height: 22px; border-radius: 50%;
-      background: white; box-shadow: var(--shadow-sm); display: flex; align-items: center; justify-content: center;
-    }
-    .book-checkbox input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); cursor: pointer; }
-    .book-type-dot {
-      position: absolute; bottom: -6px; right: -6px; font-size: 0.75rem; line-height: 1;
-      padding: 0.25rem; border-radius: 50%; background: white; box-shadow: var(--shadow-sm);
-    }
-    .book-title-g {
-      font-size: 0.82rem; font-weight: 600; text-align: center; line-height: 1.25;
-      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-      max-height: 2.6em; width: 100%;
-    }
-    .book-authors-g {
-      font-size: 0.72rem; color: var(--text-muted); text-align: center; white-space: nowrap;
-      overflow: hidden; text-overflow: ellipsis; max-width: 100%; margin-top: 2px;
-    }
-    .book-size-g { font-size: 0.68rem; color: var(--text-faint); margin-top: 2px; }
-    .empty-state { grid-column: 1 / -1; text-align: center; padding: 2.5rem 1rem; color: var(--text-muted); }
-
-    /* -- Sticky selection bar -- */
-    .selection-bar {
-      position: fixed; bottom: 0; left: 0; right: 0; z-index: 30;
-      display: flex; align-items: center; justify-content: center;
-      pointer-events: none;
-    }
-    .selection-bar-inner {
-      pointer-events: auto;
-      display: flex; align-items: center; gap: 1.2rem;
-      background: var(--text);
-      color: white;
-      border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-      padding: 0.9rem 1.6rem;
-      box-shadow: var(--shadow-md);
-      margin-bottom: 0;
-      max-width: 1180px;
-      width: calc(100% - 3rem);
-    }
-    .selection-bar-inner .count { font-weight: 700; }
-    .selection-bar-inner .size { color: rgba(255,255,255,0.65); font-size: 0.85rem; }
-    .selection-bar-inner .spacer { flex: 1; }
-    .selection-bar-inner .btn-primary { white-space: nowrap; }
-
-    /* -- Progress card -- */
-    .badge { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0.7rem; border-radius: 999px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.02em; }
-    .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-    .badge-idle { background: var(--border); color: var(--text-muted); }
-    .badge-running { background: var(--warning-soft); color: var(--warning); }
-    .badge-done { background: var(--success-soft); color: var(--success); }
-    .badge-error { background: var(--danger-soft); color: var(--danger); }
-    .badge-cancelled { background: var(--border); color: var(--text-muted); }
-
-    .progress-track { background: var(--border); border-radius: 999px; height: 8px; overflow: hidden; margin: 1rem 0 0.6rem; }
-    .progress-fill {
-      background: linear-gradient(90deg, var(--accent), #8b7cf6);
-      height: 100%; width: 0%; border-radius: 999px;
-      transition: width 0.4s ease;
-    }
-    .progress-fill.indeterminate {
-      width: 40% !important;
-      animation: indeterminate 1.2s ease-in-out infinite;
-    }
-    @keyframes indeterminate {
-      0% { margin-left: -40%; }
-      100% { margin-left: 100%; }
-    }
-
-    #progress-current { color: var(--text-muted); font-size: 0.88rem; min-height: 1.3em; margin: 0.2rem 0 0; }
-    #progress-log { max-height: 240px; overflow-y: auto; margin: 1rem 0 0; padding: 0; list-style: none; }
-    #progress-log li {
-      display: flex; align-items: flex-start; gap: 0.6rem;
-      padding: 0.45rem 0.1rem; font-size: 0.86rem; border-top: 1px solid var(--border);
-    }
-    #progress-log li:first-child { border-top: none; }
-    #progress-log li .icon { flex-shrink: 0; width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; color: white; margin-top: 0.1rem; }
-    #progress-log li.done .icon { background: var(--success); }
-    #progress-log li.skipped .icon { background: var(--warning); }
-    #progress-log li.error .icon { background: var(--danger); }
-    #progress-log li .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    #progress-log li .detail { color: var(--text-faint); font-size: 0.8rem; flex-shrink: 0; max-width: 48%; text-align: right; }
-    #progress-log li.error .detail, #progress-log li.skipped .detail { color: var(--text-muted); cursor: help; }
-
-    .progress-actions { display: flex; gap: 0.6rem; margin-top: 1rem; }
-  </style>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body>
   <div class="topbar">
-    <div class="brand"><span class="dot"></span> LitRes Assistant</div>
+    <div class="brand">
+      <svg class="brand-icon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M12 5.5C10.3 4.3 7.8 3.6 5.2 3.6c-.7 0-1.2.5-1.2 1.2v12c0 .7.5 1.2 1.2 1.2 2.2 0 4.4.6 6 1.7V5.5Z" fill="currentColor"/>
+        <path d="M12 5.5c1.7-1.2 4.2-1.9 6.8-1.9.7 0 1.2.5 1.2 1.2v12c0 .7-.5 1.2-1.2 1.2-2.2 0-4.4.6-6 1.7V5.5Z" fill="currentColor" opacity="0.55"/>
+      </svg>
+      LitRes Assistant
+    </div>
     {% if logged_in %}
       <div class="session-chip">
-        <span class="muted">{{ login }}</span>
+        <div class="format-controls">
+          <label class="format-control" title="Preferred e-book format -- if a book isn't available in it, the next-best format is downloaded automatically instead of skipping it.">
+            <span aria-hidden="true">📖</span>
+            <select id="ebook-format">
+              {% for fmt in ebook_formats %}
+                <option value="{{ fmt }}">{{ fmt }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="format-control" title="Preferred audiobook format -- if a book isn't available in it, the next-best format is downloaded automatically instead of skipping it.">
+            <span aria-hidden="true">🎧</span>
+            <select id="audiobook-format">
+              {% for fmt in audiobook_formats %}
+                <option value="{{ fmt }}">{{ fmt }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <span class="account-chip" title="{{ login or 'Signed in' }}">
+          <svg class="account-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.8"/>
+            <path d="M4 20c0-3.5 3.5-6 8-6s8 2.5 8 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+          <span class="muted account-name">{{ login or 'Signed in' }}</span>
+        </span>
         <form method="post" action="/logout" style="margin:0">
           <button type="submit" class="btn-ghost">Log out</button>
         </form>
@@ -297,29 +55,6 @@
 
   <div class="page{% if logged_in %} wide{% endif %}">
     {% if logged_in %}
-      <div class="card">
-        <div class="defaults-strip">
-          <strong style="margin-right:0.2rem">Preferred formats</strong>
-          <div class="group">
-            <span>E-books</span>
-            <select id="ebook-format">
-              {% for fmt in ebook_formats %}
-                <option value="{{ fmt }}">{{ fmt }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <div class="group">
-            <span>Audiobooks</span>
-            <select id="audiobook-format">
-              {% for fmt in audiobook_formats %}
-                <option value="{{ fmt }}">{{ fmt }}</option>
-              {% endfor %}
-            </select>
-          </div>
-          <span class="faint" style="font-size:0.8rem">If a book isn't available in your chosen format, we'll automatically download the next-best format instead of skipping it.</span>
-        </div>
-      </div>
-
       <div class="card">
         <div class="card-row" style="margin-bottom:1rem">
           <h2>📚 Your bookshelf</h2>
@@ -377,272 +112,34 @@
         </div>
       </div>
 
-      <script>
-        const state = { books: [], selected: new Set(), filter: '', typeFilter: 'all', sortBy: 'title-asc' };
-
-        function escapeHtml(s) {
-          const div = document.createElement('div');
-          div.textContent = s == null ? '' : String(s);
-          return div.innerHTML;
-        }
-
-        function formatSize(mb) {
-          if (mb >= 1024) return (mb / 1024).toFixed(2) + ' GB';
-          return mb.toFixed(1) + ' MB';
-        }
-
-        async function loadLibrary() {
-          const listEl = document.getElementById('book-list');
-          try {
-            const resp = await fetch('/library');
-            const data = await resp.json();
-            if (!data.ok) throw new Error(data.error || 'failed to load');
-            state.books = data.books;
-            state.selected = new Set(data.books.map(b => b.id));
-            renderList();
-          } catch (e) {
-            listEl.innerHTML = '<div class="empty-state" style="color:var(--danger)">Could not load your library.</div>';
-          }
-        }
-
-        function visibleBooks() {
-          let list = state.books;
-          if (state.typeFilter === 'book') list = list.filter(b => !b.is_audio);
-          else if (state.typeFilter === 'audio') list = list.filter(b => b.is_audio);
-          if (state.filter) {
-            const f = state.filter.toLowerCase();
-            list = list.filter(b =>
-              (b.title || '').toLowerCase().includes(f) || (b.authors || '').toLowerCase().includes(f)
-            );
-          }
-          const sorted = list.slice();
-          const collate = (a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' });
-          switch (state.sortBy) {
-            case 'title-desc': sorted.sort((a, b) => collate(b.title || '', a.title || '')); break;
-            case 'author-asc': sorted.sort((a, b) => collate(a.authors || '', b.authors || '')); break;
-            case 'size-desc': sorted.sort((a, b) => (b.size_mb ?? -1) - (a.size_mb ?? -1)); break;
-            case 'size-asc': sorted.sort((a, b) => (a.size_mb ?? Infinity) - (b.size_mb ?? Infinity)); break;
-            default: sorted.sort((a, b) => collate(a.title || '', b.title || '')); break; // title-asc
-          }
-          return sorted;
-        }
-
-        function bookCardHtml(b) {
-          const cover = b.cover_url
-            ? `<img class="book-cover" src="${escapeHtml(b.cover_url)}" alt="" loading="lazy">`
-            : `<span class="book-cover placeholder">${b.is_audio ? '🎧' : '📖'}</span>`;
-          const typeDot = `<span class="book-type-dot" title="${b.is_audio ? 'Audiobook' : 'E-book'}">${b.is_audio ? '🎧' : '📖'}</span>`;
-          const sizeText = b.size_mb != null ? `${b.size_mb} MB` : '';
-          const selected = state.selected.has(b.id);
-          return `
-            <label class="book-card ${selected ? 'selected' : ''}" data-row="${b.id}">
-              <div class="book-cover-wrap">
-                ${cover}
-                <span class="book-checkbox"><input type="checkbox" data-id="${b.id}" ${selected ? 'checked' : ''}></span>
-                ${typeDot}
-              </div>
-              <span class="book-title-g" title="${escapeHtml(b.title)}">${escapeHtml(b.title)}</span>
-              ${b.authors ? `<span class="book-authors-g" title="${escapeHtml(b.authors)}">${escapeHtml(b.authors)}</span>` : ''}
-              <span class="book-size-g" id="size-${b.id}">${sizeText}</span>
-            </label>
-          `;
-        }
-
-        async function fetchSizesInBackground() {
-          // Sequential on purpose -- the backend has a single dedicated
-          // worker thread (Playwright thread-affinity, see session.py), so
-          // "parallel" fetches here would just queue up behind each other
-          // anyway. Runs after the list is already visible/interactive.
-          for (const b of state.books) {
-            if (b.size_mb != null) continue;
-            try {
-              const resp = await fetch(`/library/${b.id}/size`);
-              const data = await resp.json();
-              if (data.ok) {
-                b.size_mb = data.size_mb;
-                const el = document.getElementById(`size-${b.id}`);
-                if (el && b.size_mb != null) el.textContent = `${b.size_mb} MB`;
-                if (state.selected.has(b.id)) updateSelectedCount();
-              }
-            } catch (e) {
-              // best-effort -- leave this row's size blank on failure
-            }
-          }
-          // Sizes load lazily and can change size-based sort order -- only
-          // worth a full re-render for that sort mode, once all sizes are in.
-          if (state.sortBy.startsWith('size')) renderList();
-        }
-
-        function renderList() {
-          const listEl = document.getElementById('book-list');
-          const books = visibleBooks();
-          if (state.books.length === 0) {
-            listEl.innerHTML = '<div class="empty-state">No books found.</div>';
-            updateSelectedCount();
-            return;
-          }
-          if (books.length === 0) {
-            listEl.innerHTML = '<div class="empty-state">No titles match your filter.</div>';
-            updateSelectedCount();
-            return;
-          }
-          listEl.innerHTML = books.map(bookCardHtml).join('');
-          listEl.querySelectorAll('input[type=checkbox]').forEach(cb => {
-            cb.addEventListener('change', () => {
-              const id = Number(cb.dataset.id);
-              if (cb.checked) state.selected.add(id); else state.selected.delete(id);
-              cb.closest('.book-card').classList.toggle('selected', cb.checked);
-              updateSelectedCount();
-            });
-          });
-          updateSelectedCount();
-        }
-
-        function updateSelectedCount() {
-          const n = state.selected.size;
-          document.getElementById('selected-count').textContent = `${n} of ${state.books.length} selected`;
-
-          let sumMb = 0, unknown = 0;
-          for (const b of state.books) {
-            if (!state.selected.has(b.id)) continue;
-            if (b.size_mb != null) sumMb += b.size_mb;
-            else unknown += 1;
-          }
-          // `unknown` books haven't had their size fetched yet (sizes load
-          // lazily in the background, see fetchSizesInBackground) -- say so
-          // explicitly, since a bare number here previously read as
-          // unexplained "estimating" noise.
-          const sizeSummary = n === 0 ? '' : `(~${formatSize(sumMb)} so far${unknown > 0 ? `, size of ${unknown} more still loading…` : ''})`;
-          document.getElementById('selected-size').textContent = sizeSummary;
-
-          const bar = document.getElementById('selection-bar');
-          bar.style.display = n > 0 ? 'flex' : 'none';
-          document.getElementById('bar-count').textContent = `${n} book${n === 1 ? '' : 's'} selected`;
-          document.getElementById('bar-size').textContent = sizeSummary;
-        }
-
-        document.getElementById('search-box').addEventListener('input', (e) => {
-          state.filter = e.target.value;
-          renderList();
-        });
-
-        document.getElementById('type-filter').addEventListener('click', (e) => {
-          const btn = e.target.closest('.pill');
-          if (!btn) return;
-          state.typeFilter = btn.dataset.type;
-          document.querySelectorAll('#type-filter .pill').forEach(p => p.classList.toggle('active', p === btn));
-          renderList();
-        });
-
-        document.getElementById('sort-by').addEventListener('change', (e) => {
-          state.sortBy = e.target.value;
-          renderList();
-        });
-
-        document.getElementById('select-all').addEventListener('click', () => {
-          visibleBooks().forEach(b => state.selected.add(b.id));
-          renderList();
-        });
-        document.getElementById('select-none').addEventListener('click', () => {
-          visibleBooks().forEach(b => state.selected.delete(b.id));
-          renderList();
-        });
-
-        document.getElementById('start-download').addEventListener('click', async () => {
-          if (state.selected.size === 0) return;
-          const btn = document.getElementById('start-download');
-          btn.disabled = true;
-          try {
-            const resp = await fetch('/download/start', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                art_ids: Array.from(state.selected),
-                ebook_format: document.getElementById('ebook-format').value,
-                audiobook_format: document.getElementById('audiobook-format').value,
-              }),
-            });
-            const data = await resp.json();
-            if (!data.ok) {
-              alert('Could not start download: ' + (data.error || 'unknown error'));
-              return;
-            }
-            document.getElementById('progress-section').style.display = 'block';
-            document.getElementById('progress-section').scrollIntoView({ behavior: 'smooth' });
-            pollStatus();
-          } finally {
-            btn.disabled = false;
-          }
-        });
-
-        document.getElementById('cancel-download').addEventListener('click', async () => {
-          await fetch('/download/cancel', { method: 'POST' });
-        });
-
-        async function pollStatus() {
-          const resp = await fetch('/download/status');
-          const s = await resp.json();
-          renderProgress(s);
-          if (s.status === 'running') {
-            setTimeout(pollStatus, 1000);
-          }
-        }
-
-        function renderProgress(s) {
-          document.getElementById('progress-section').style.display = 'block';
-          const labels = { idle: 'Idle', running: 'Downloading…', done: 'Done', error: 'Error', cancelled: 'Stopped' };
-          const badge = document.getElementById('progress-badge');
-          badge.textContent = labels[s.status] || s.status;
-          badge.className = 'badge badge-' + s.status;
-
-          const total = s.total != null ? s.total : (state.selected.size || null);
-          document.getElementById('progress-count').textContent = total ? `${s.done} / ${total} books` : `${s.done} books`;
-
-          const bar = document.getElementById('progress-bar');
-          if (total) {
-            bar.classList.remove('indeterminate');
-            bar.style.width = Math.min(100, (s.done / total) * 100) + '%';
-          } else if (s.status === 'running') {
-            bar.classList.add('indeterminate');
-          } else {
-            bar.classList.remove('indeterminate');
-            bar.style.width = s.status === 'done' ? '100%' : '0%';
-          }
-
-          document.getElementById('progress-current').textContent =
-            s.current_title ? `Downloading: ${s.current_title}` : '';
-
-          const logEl = document.getElementById('progress-log');
-          logEl.innerHTML = s.log.map(item => {
-            if (item.status === 'skipped') {
-              return `<li class="skipped"><span class="icon">!</span><span class="title">${escapeHtml(item.title)}</span><span class="detail">${escapeHtml(item.reason || 'Skipped -- no file available')}</span></li>`;
-            }
-            if (item.status === 'error') {
-              return `<li class="error"><span class="icon">✗</span><span class="title">${escapeHtml(item.title)}</span><span class="detail" title="${escapeHtml(item.detail || '')}">${escapeHtml(item.error || 'Download failed')}</span></li>`;
-            }
-            return `<li class="done"><span class="icon">✓</span><span class="title">${escapeHtml(item.title)}</span><span class="detail">${item.ext}, ${item.size_mb} MB</span></li>`;
-          }).join('');
-          logEl.scrollTop = logEl.scrollHeight;
-
-          document.getElementById('cancel-download').style.display = s.status === 'running' ? 'inline-block' : 'none';
-          document.getElementById('download-link').style.display = (s.status === 'done' || s.status === 'cancelled') && s.done > 0 ? 'inline-block' : 'none';
-          document.getElementById('progress-error').textContent = s.error || '';
-        }
-
-        (async function init() {
-          await loadLibrary();
-          fetchSizesInBackground();
-          const resp = await fetch('/download/status');
-          const s = await resp.json();
-          if (s.status === 'running' || s.status === 'done' || s.status === 'cancelled') {
-            renderProgress(s);
-            if (s.status === 'running') pollStatus();
-          }
-        })();
-      </script>
+      <script src="/static/js/app.js"></script>
     {% else %}
       <div class="hero">
-        <h1>📚 Your library, backed up.</h1>
+        <svg class="mascot" viewBox="0 0 120 132" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Lito, the LitRes Assistant mascot">
+          <defs>
+            <linearGradient id="mascotBody" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#6d2130"/>
+              <stop offset="1" stop-color="#8f3a44"/>
+            </linearGradient>
+          </defs>
+          <ellipse cx="42" cy="122" rx="9" ry="5" fill="#551a26"/>
+          <ellipse cx="78" cy="122" rx="9" ry="5" fill="#551a26"/>
+          <rect x="2" y="70" width="15" height="11" rx="5.5" fill="#6d2130" transform="rotate(-20 9.5 75.5)"/>
+          <rect x="103" y="70" width="15" height="11" rx="5.5" fill="#6d2130" transform="rotate(20 110.5 75.5)"/>
+          <path d="M50 2H70V32L60 22L50 32Z" fill="#c9932a"/>
+          <rect x="12" y="24" width="96" height="94" rx="18" fill="url(#mascotBody)"/>
+          <line x1="60" y1="24" x2="60" y2="118" stroke="rgba(255,255,255,0.22)" stroke-width="3"/>
+          <ellipse cx="30" cy="82" rx="7" ry="4.5" fill="#e0a08f" opacity="0.6"/>
+          <ellipse cx="90" cy="82" rx="7" ry="4.5" fill="#e0a08f" opacity="0.6"/>
+          <circle cx="40" cy="64" r="13" fill="#f8f1e2"/>
+          <circle cx="80" cy="64" r="13" fill="#f8f1e2"/>
+          <circle cx="43" cy="66" r="5.5" fill="#2b1d14"/>
+          <circle cx="83" cy="66" r="5.5" fill="#2b1d14"/>
+          <circle cx="41.5" cy="64.5" r="1.4" fill="#ffffff"/>
+          <circle cx="81.5" cy="64.5" r="1.4" fill="#ffffff"/>
+          <path d="M42 88 Q60 102 78 88" stroke="#f8f1e2" stroke-width="5" stroke-linecap="round" fill="none"/>
+        </svg>
+        <h1>Your library, backed up.</h1>
         <p>Log in with your litres.ru account to browse, select, and download your purchased books and audiobooks -- runs entirely on your machine.</p>
       </div>
       <div class="card login-card">

@@ -35,6 +35,23 @@ def test_restore_session_reuses_valid_saved_session_file(monkeypatch):
     assert fake.login_calls == []  # reused the saved session, no fresh login
 
 
+def test_restore_session_from_cookies_falls_back_to_env_login_without_keyring(monkeypatch):
+    """Regression test: a valid cookie session has no login name of its own
+    (cookies don't carry one -- see login()/credentials.py) -- if there's no
+    keyring entry either, the display login must still come from
+    LITRES_LOGIN rather than silently ending up as None."""
+    session.SESSION_STATE_PATH.write_text("{}")
+    monkeypatch.setenv("LITRES_LOGIN", "envuser@example.com")
+    fake = client_factory(monkeypatch, session, library=[])
+    fake._is_logged_in = True
+
+    session.restore_session()
+
+    assert session.current_client() is fake
+    assert session.current_login() == "envuser@example.com"
+    assert fake.login_calls == []  # reused the saved session, no fresh login
+
+
 def test_restore_session_falls_back_to_keyring_when_saved_session_stale(monkeypatch):
     session.SESSION_STATE_PATH.write_text("{}")
     credentials.save("user@example.com", "hunter2")
