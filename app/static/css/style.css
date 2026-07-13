@@ -223,7 +223,11 @@ button:active { transform: scale(0.97); }
 .empty-state { grid-column: 1 / -1; text-align: center; padding: 2.5rem 1rem; color: var(--text-muted); }
 
 /* -- Progress card -- */
-.badge { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0.7rem; border-radius: 999px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.02em; }
+/* The card itself is always mounted (see app.js) -- only its contents
+   change between idle/checking/downloading, so those transitions should
+   read as an update, not a pop-in/pop-out. */
+#progress-section { transition: background-color 0.2s ease; }
+.badge { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.25rem 0.7rem; border-radius: 999px; font-size: 0.78rem; font-weight: 700; letter-spacing: 0.02em; transition: background-color 0.2s ease, color 0.2s ease; }
 .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .badge-idle { background: var(--border); color: var(--text-muted); }
 .badge-running { background: var(--warning-soft); color: var(--warning); }

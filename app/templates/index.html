@@ -55,14 +55,14 @@
 
   <div class="page{% if logged_in %} wide{% endif %}">
     {% if logged_in %}
-      <div class="card" id="progress-section" style="display:none">
+      <div class="card" id="progress-section">
         <div class="card-row">
           <h2>Progress</h2>
           <span id="progress-badge" class="badge badge-idle">Idle</span>
         </div>
         <div class="progress-track"><div id="progress-bar" class="progress-fill"></div></div>
         <p id="progress-count" class="muted" style="font-size:0.85rem;margin:0"></p>
-        <p id="progress-current"></p>
+        <p id="progress-current" class="muted">Nothing running right now -- select some books and hit Prepare zip, or use Refresh to check for new purchases.</p>
         <p id="progress-error" style="color:var(--danger)"></p>
         <ul id="progress-log"></ul>
         <div class="progress-actions">

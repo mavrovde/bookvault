@@ -138,8 +138,34 @@ function prioritizeSize(id) {
   }
 }
 
+// The progress card is always on screen (see index.html) -- these
+// render*() functions only ever update its contents, never mount/unmount
+// it, so switching between idle/checking/downloading reads as the same
+// component updating rather than something popping in and out of the page.
+function renderIdle(message) {
+  const badge = document.getElementById('progress-badge');
+  badge.textContent = 'Idle';
+  badge.className = 'badge badge-idle';
+  const bar = document.getElementById('progress-bar');
+  bar.classList.remove('indeterminate');
+  bar.style.width = '0%';
+  document.getElementById('progress-count').textContent = '';
+  document.getElementById('progress-current').textContent = message;
+  document.getElementById('progress-error').textContent = '';
+}
+
+function renderRefreshingLibrary() {
+  const badge = document.getElementById('progress-badge');
+  badge.textContent = 'Refreshing…';
+  badge.className = 'badge badge-running';
+  const bar = document.getElementById('progress-bar');
+  bar.classList.add('indeterminate');
+  document.getElementById('progress-count').textContent = '';
+  document.getElementById('progress-current').textContent = 'Reloading your library list from litres.ru…';
+  document.getElementById('progress-error').textContent = '';
+}
+
 function renderChecking(done, total) {
-  document.getElementById('progress-section').style.display = 'block';
   const badge = document.getElementById('progress-badge');
   badge.textContent = activity === STATE.STOPPING ? 'Stopping…' : 'Checking sizes…';
   badge.className = 'badge badge-running';
@@ -154,9 +180,25 @@ function renderChecking(done, total) {
   document.getElementById('download-link').style.display = 'none';
 }
 
-async function fetchSizesInBackground() {
-  if (activity !== STATE.IDLE) return; // e.g. a download owns the shared progress card right now
-  setActivity(STATE.CHECKING);
+// The actual size-checking loop, assuming the caller has *already* put
+// `activity` into CHECKING (or STOPPING, if Stop was clicked before this
+// even started) -- e.g. right when the Refresh button was clicked, not
+// only once this function gets around to running. Always leaves `activity`
+// back at IDLE, regardless of which entry point (below) called it.
+async function checkSizes() {
+  if (stopRequested) {
+    renderIdle('Stopped.');
+    stopRequested = false;
+    setActivity(STATE.IDLE);
+    return;
+  }
+
+  pendingSizeIds = state.books.filter(b => b.size_mb == null).map(b => b.id);
+  const total = pendingSizeIds.length;
+  if (total === 0) {
+    setActivity(STATE.IDLE);
+    return; // nothing to check -- leave whatever's currently shown alone
+  }
 
   // Sequential on purpose -- the backend has a single dedicated
   // worker thread (Playwright thread-affinity, see session.py), so
@@ -176,10 +218,8 @@ async function fetchSizesInBackground() {
   // whenever it's already known, not just once its turn in the queue
   // comes up, which matters if someone's choosing what to download based
   // on size.
-  pendingSizeIds = state.books.filter(b => b.size_mb == null).map(b => b.id);
-  const total = pendingSizeIds.length;
   let done = 0;
-  if (total > 0) renderChecking(done, total);
+  renderChecking(done, total);
   while (pendingSizeIds.length > 0) {
     if (stopRequested) break; // Stop was clicked -- see the cancel-download handler below
     const id = pendingSizeIds.shift();
@@ -203,12 +243,24 @@ async function fetchSizesInBackground() {
     renderChecking(done, total);
     if (wasLiveFetch) await sleep(200);
   }
-  if (total > 0) document.getElementById('progress-section').style.display = 'none';
+  const wasStopped = stopRequested;
+  renderIdle(wasStopped
+    ? `Stopped -- checked ${done} of ${total} sizes.`
+    : `Checked sizes for ${done} of ${total} book${total === 1 ? '' : 's'}.`);
   stopRequested = false;
   setActivity(STATE.IDLE);
   // Sizes load lazily and can change size-based sort order -- only
   // worth a full re-render for that sort mode, once all sizes are in.
   if (state.sortBy.startsWith('size')) renderList();
+}
+
+// Self-contained entry point for the automatic sweep on page load -- claims
+// CHECKING itself, unlike the Refresh button (below) which claims it before
+// this even starts, to cover the library-reload network round-trip too.
+async function fetchSizesInBackground() {
+  if (activity !== STATE.IDLE) return; // e.g. a download owns the shared progress card right now
+  setActivity(STATE.CHECKING);
+  await checkSizes();
 }
 
 function renderList() {
@@ -263,8 +315,15 @@ document.getElementById('search-box').addEventListener('input', (e) => {
 
 document.getElementById('refresh-library').addEventListener('click', async () => {
   if (activity !== STATE.IDLE) return;
+  // Claimed here, *before* the network round-trip below -- not once
+  // checkSizes() gets around to running -- otherwise activity is still
+  // IDLE for as long as loadLibrary takes (several seconds against the
+  // real litres.ru API), and a second click in that window would start a
+  // second concurrent refresh.
+  setActivity(STATE.CHECKING);
+  renderRefreshingLibrary();
   await loadLibrary(true);
-  fetchSizesInBackground(); // claims STATE.CHECKING itself, and re-enables the button when done
+  await checkSizes();
 });
 
 document.getElementById('type-filter').addEventListener('click', (e) => {
@@ -311,7 +370,6 @@ document.getElementById('start-download').addEventListener('click', async () => 
       setActivity(STATE.IDLE);
       return;
     }
-    document.getElementById('progress-section').style.display = 'block';
     document.getElementById('progress-section').scrollIntoView({ behavior: 'smooth' });
     pollStatus();
   } catch (e) {
@@ -350,7 +408,6 @@ async function pollStatus() {
 }
 
 function renderProgress(s) {
-  document.getElementById('progress-section').style.display = 'block';
   const labels = { idle: 'Idle', running: 'Building zip…', done: 'Done', error: 'Error', cancelled: 'Stopped' };
   const badge = document.getElementById('progress-badge');
   const stopping = activity === STATE.STOPPING;
