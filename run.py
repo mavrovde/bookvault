@@ -18,4 +18,8 @@ if __name__ == "__main__":
     )
     load_dotenv()
     port = int(os.environ.get("LITRES_APP_PORT", "8420"))
-    uvicorn.run("app.web:app", host="127.0.0.1", port=port, reload=True)
+    # log_config=None: uvicorn's own dictConfig would otherwise reset/replace
+    # the logging setup above (root handler + format) once it starts, which
+    # is why app.* log lines (session restore, download progress, ...)
+    # wouldn't show up even at INFO level.
+    uvicorn.run("app.web:app", host="127.0.0.1", port=port, reload=True, log_config=None)

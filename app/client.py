@@ -115,10 +115,52 @@ class LitresClient:
         return self.context.request.get(url, headers=headers, **kwargs)
 
     def is_logged_in(self) -> bool:
-        if not self._extra_headers:
+        if not self._extra_headers and not self._recapture_headers():
             return False
         resp = self._get(f"{API_BASE}/users/me")
         return resp.ok
+
+    def _recapture_headers(self, timeout_ms: int = 20000) -> bool:
+        """A client restored from `storage_state_path` has valid session
+        cookies but no app-level headers -- those aren't persisted (see
+        class docstring) and are normally only captured during login()'s
+        request-sniffing. Replay that trick via a plain page visit instead
+        of the login form: with valid cookies already in place, visiting
+        the login page redirects straight to the logged-in homepage, whose
+        SPA fires several `.../users/me/...` calls carrying the same
+        globally-attached headers (confirmed against a real account: the
+        bare `/users/me` endpoint itself isn't among them on this path, but
+        siblings like `/users/me/monetization-details` are, and they carry
+        the same header set). Without this, every fresh process would
+        silently discard the saved session and re-login from scratch --
+        defeating the point of persisting it, and needlessly increasing
+        exposure to litres.ru's anti-bot checks."""
+        captured = {}
+        try:
+            page = self.context.new_page()
+        except Exception as exc:
+            logger.debug("Header recapture could not open a page: %s", exc)
+            return False
+
+        def on_request(req):
+            if not captured and req.method == "GET" and "/foundation/api/users/me" in req.url:
+                captured.update(req.headers)
+
+        page.on("request", on_request)
+        try:
+            page.goto(LOGIN_PAGE, wait_until="networkidle", timeout=timeout_ms)
+        except Exception as exc:
+            logger.debug("Header recapture navigation failed: %s", exc)
+        finally:
+            page.remove_listener("request", on_request)
+            page.close()
+
+        if not captured:
+            logger.debug("Header recapture found no users/me request -- session cookies are likely invalid")
+            return False
+        self._extra_headers = {k: v for k, v in captured.items() if k.lower() not in _DROP_HEADERS}
+        logger.info("Recaptured app-level headers from a restored session (no fresh login needed)")
+        return True
 
     def login(self, login: str, password: str) -> None:
         logger.info("Driving litres.ru login flow for %s", login)
