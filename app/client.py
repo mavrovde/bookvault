@@ -38,15 +38,18 @@ API_BASE = "https://api.litres.ru/foundation/api"
 DOWNLOAD_BASE = "https://www.litres.ru"
 LOGIN_PAGE = "https://www.litres.ru/auth/login"
 
-# Preferred download format per book, in order -- first one actually
-# available (and not a "sample"/additional file) wins.
+# Ebook formats a user can pick as their default, in the order offered to
+# pick_best_file as a fallback if their choice isn't available for a given
+# book. The full set (for the UI dropdown) is EBOOK_EXTENSIONS below.
 PREFERRED_EXTENSIONS = ("epub", "fb2.zip", "mobi.prc", "a4.pdf", "fb3", "txt.zip")
+EBOOK_EXTENSIONS = ("epub", "ios.epub", "fb2.zip", "fb3", "mobi.prc", "a4.pdf", "a6.pdf", "txt.zip", "txt", "rtf.zip")
 
 # Audiobooks are grouped by `file_type` instead of a per-file `extension`
 # (single chapters live under e.g. "standard_quality_mp3"/31 files -- these
 # whole-book bundle types are what we actually want, not one chapter).
 PREFERRED_FILE_TYPES = ("zip_with_mp3", "mobile_version_mp4")
 EXT_BY_FILE_TYPE = {"zip_with_mp3": "zip", "mobile_version_mp4": "m4b"}
+AUDIOBOOK_FILE_TYPES = ("zip_with_mp3", "mobile_version_mp4")
 
 # Headers Playwright/the transport layer already manages correctly on its
 # own -- copying them from a captured request would just fight the request
@@ -175,17 +178,27 @@ class LitresClient:
                 flat.append({**f, "file_type": file_type})
         return flat
 
-    def pick_best_file(self, files: list) -> Optional[dict]:
+    def pick_best_file(
+        self,
+        files: list,
+        preferred_ext: Optional[str] = None,
+        preferred_file_type: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Pick one file per book. `preferred_ext`/`preferred_file_type` (the
+        user's chosen default format) are tried first; if the book doesn't
+        have that format, falls back to the built-in preference order."""
         candidates = [f for f in files if not f.get("is_additional")] or files
 
         # Whole-book bundles (audiobooks) take priority over per-chapter files.
         by_type = {f["file_type"]: f for f in candidates if f.get("file_type")}
-        for file_type in PREFERRED_FILE_TYPES:
+        type_order = ([preferred_file_type] if preferred_file_type else []) + list(PREFERRED_FILE_TYPES)
+        for file_type in type_order:
             if file_type in by_type:
                 return by_type[file_type]
 
         by_ext = {f["extension"]: f for f in candidates if f.get("extension")}
-        for ext in PREFERRED_EXTENSIONS:
+        ext_order = ([preferred_ext] if preferred_ext else []) + list(PREFERRED_EXTENSIONS)
+        for ext in ext_order:
             if ext in by_ext:
                 return by_ext[ext]
         return candidates[0] if candidates else None

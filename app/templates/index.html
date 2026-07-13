@@ -2,33 +2,283 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LitRes Library Downloader</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 480px; margin: 4rem auto; color: #222; }
-    input { display: block; width: 100%; margin: 0.5rem 0; padding: 0.5rem; box-sizing: border-box; }
-    button { padding: 0.6rem 1.2rem; cursor: pointer; }
-    .error { color: #b00020; }
+    :root { --content-max: 720px; }
+    main.container { max-width: var(--content-max); }
+    header.hero { text-align: center; padding-bottom: 0; }
+    header.hero p { color: var(--pico-muted-color); }
+
+    .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
+    .toolbar .links a { margin-left: 0.75rem; cursor: pointer; }
+
+    #book-list { max-height: 320px; overflow-y: auto; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); padding: 0.25rem 0.75rem; background: var(--pico-card-background-color); }
+    .book-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.4rem 0; border-bottom: 1px solid var(--pico-muted-border-color); }
+    .book-row:last-child { border-bottom: none; }
+    .book-row input[type=checkbox] { margin: 0; }
+    .book-row span { font-size: 0.95rem; }
+
+    .badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.02em; }
+    .badge-idle { background: var(--pico-muted-border-color); color: var(--pico-muted-color); }
+    .badge-running { background: #fff3cd; color: #8a6d00; }
+    .badge-done { background: #d4edda; color: #1e7e34; }
+    .badge-error { background: #f8d7da; color: #a71d2a; }
+
+    #progress-current { color: var(--pico-muted-color); font-size: 0.9rem; min-height: 1.2em; }
+    #progress-log { max-height: 220px; overflow-y: auto; margin: 0.75rem 0 0; padding: 0; list-style: none; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); }
+    #progress-log li { padding: 0.35rem 0.75rem; font-size: 0.88rem; border-bottom: 1px solid var(--pico-muted-border-color); }
+    #progress-log li:last-child { border-bottom: none; }
+    #progress-log li.skipped { color: #a86b00; }
+    #progress-log li.done { color: #1e7e34; }
+    #progress-log li::before { margin-right: 0.5rem; }
+    #progress-log li.done::before { content: "✓"; }
+    #progress-log li.skipped::before { content: "⚠"; }
+
+    .format-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    #download-link { margin-top: 0.75rem; }
+    .muted { color: var(--pico-muted-color); font-size: 0.9em; }
+    article > h2:first-child, article > header:first-child { margin-top: 0; }
   </style>
 </head>
 <body>
-  <h1>My LitRes Library</h1>
+  <header class="container hero">
+    <h1>📚 LitRes Library Downloader</h1>
+    <p>Back up your own purchased books and audiobooks -- runs locally, one click at a time.</p>
+  </header>
 
-  {% if error %}
-    <p class="error">{{ error }}</p>
-  {% endif %}
+  <main class="container">
+    {% if error %}
+      <article style="border-left: 4px solid var(--pico-del-color)">
+        <p style="margin:0">{{ error }}</p>
+      </article>
+    {% endif %}
 
-  {% if logged_in %}
-    <p>Logged in as <strong>{{ login }}</strong>.</p>
-    <p><a href="/download"><button type="button">Download my library (.zip)</button></a></p>
-    <form method="post" action="/logout">
-      <button type="submit">Log out</button>
-    </form>
-  {% else %}
-    <form method="post" action="/login">
-      <input type="text" name="login" placeholder="Email or phone" required>
-      <input type="password" name="password" placeholder="Password" required>
-      <button type="submit">Log in</button>
-    </form>
-  {% endif %}
+    {% if logged_in %}
+      <nav>
+        <ul><li>Logged in as <strong>{{ login }}</strong></li></ul>
+        <ul><li>
+          <form method="post" action="/logout" style="margin:0">
+            <button type="submit" class="outline secondary">Log out</button>
+          </form>
+        </li></ul>
+      </nav>
+
+      <article>
+        <h2>Default format</h2>
+        <div class="format-grid">
+          <label>E-books
+            <select id="ebook-format">
+              {% for fmt in ebook_formats %}
+                <option value="{{ fmt }}">{{ fmt }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Audiobooks
+            <select id="audiobook-format">
+              {% for fmt in audiobook_formats %}
+                <option value="{{ fmt }}">{{ fmt }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <small class="muted">Used when a book has your chosen format; otherwise falls back automatically.</small>
+      </article>
+
+      <article>
+        <div class="toolbar">
+          <h2 style="margin:0">Your library</h2>
+          <input type="search" id="search-box" placeholder="Filter by title…" style="max-width:220px;margin:0">
+        </div>
+        <div class="toolbar">
+          <span id="selected-count" class="muted">Loading…</span>
+          <span class="links">
+            <a id="select-all">Select all</a>
+            <a id="select-none">Select none</a>
+          </span>
+        </div>
+        <div id="book-list"><p class="muted">Loading your library…</p></div>
+        <button type="button" id="start-download" style="margin-top:1rem">⬇ Download selected</button>
+      </article>
+
+      <article id="progress-section" style="display:none">
+        <div class="toolbar">
+          <h2 style="margin:0">Progress</h2>
+          <span id="progress-badge" class="badge badge-idle">Idle</span>
+        </div>
+        <progress id="progress-bar" value="0" max="100"></progress>
+        <p id="progress-count" class="muted"></p>
+        <p id="progress-current"></p>
+        <p id="progress-error" style="color:var(--pico-del-color)"></p>
+        <ul id="progress-log"></ul>
+        <a id="download-link" href="/download/file" style="display:none">
+          <button type="button">💾 Save zip file</button>
+        </a>
+      </article>
+
+      <script>
+        const state = { books: [], selected: new Set(), filter: '' };
+
+        function escapeHtml(s) {
+          const div = document.createElement('div');
+          div.textContent = s == null ? '' : String(s);
+          return div.innerHTML;
+        }
+
+        async function loadLibrary() {
+          const listEl = document.getElementById('book-list');
+          try {
+            const resp = await fetch('/library');
+            const data = await resp.json();
+            if (!data.ok) throw new Error(data.error || 'failed to load');
+            state.books = data.books;
+            state.selected = new Set(data.books.map(b => b.id));
+            renderList();
+          } catch (e) {
+            listEl.innerHTML = '<p style="color:var(--pico-del-color)">Could not load your library.</p>';
+          }
+        }
+
+        function visibleBooks() {
+          if (!state.filter) return state.books;
+          const f = state.filter.toLowerCase();
+          return state.books.filter(b => (b.title || '').toLowerCase().includes(f));
+        }
+
+        function renderList() {
+          const listEl = document.getElementById('book-list');
+          const books = visibleBooks();
+          if (state.books.length === 0) {
+            listEl.innerHTML = '<p class="muted">No books found.</p>';
+            updateSelectedCount();
+            return;
+          }
+          if (books.length === 0) {
+            listEl.innerHTML = '<p class="muted">No titles match your filter.</p>';
+            updateSelectedCount();
+            return;
+          }
+          listEl.innerHTML = books.map(b => `
+            <label class="book-row">
+              <input type="checkbox" data-id="${b.id}" ${state.selected.has(b.id) ? 'checked' : ''}>
+              <span>${escapeHtml(b.title)}</span>
+            </label>
+          `).join('');
+          listEl.querySelectorAll('input[type=checkbox]').forEach(cb => {
+            cb.addEventListener('change', () => {
+              const id = Number(cb.dataset.id);
+              if (cb.checked) state.selected.add(id); else state.selected.delete(id);
+              updateSelectedCount();
+            });
+          });
+          updateSelectedCount();
+        }
+
+        function updateSelectedCount() {
+          document.getElementById('selected-count').textContent =
+            `${state.selected.size} of ${state.books.length} selected`;
+        }
+
+        document.getElementById('search-box').addEventListener('input', (e) => {
+          state.filter = e.target.value;
+          renderList();
+        });
+
+        document.getElementById('select-all').addEventListener('click', () => {
+          visibleBooks().forEach(b => state.selected.add(b.id));
+          renderList();
+        });
+        document.getElementById('select-none').addEventListener('click', () => {
+          visibleBooks().forEach(b => state.selected.delete(b.id));
+          renderList();
+        });
+
+        document.getElementById('start-download').addEventListener('click', async () => {
+          if (state.selected.size === 0) {
+            alert('Select at least one book first.');
+            return;
+          }
+          const resp = await fetch('/download/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              art_ids: Array.from(state.selected),
+              ebook_format: document.getElementById('ebook-format').value,
+              audiobook_format: document.getElementById('audiobook-format').value,
+            }),
+          });
+          const data = await resp.json();
+          if (!data.ok) {
+            alert('Could not start download: ' + (data.error || 'unknown error'));
+            return;
+          }
+          document.getElementById('progress-section').style.display = 'block';
+          document.getElementById('progress-section').scrollIntoView({ behavior: 'smooth' });
+          pollStatus();
+        });
+
+        async function pollStatus() {
+          const resp = await fetch('/download/status');
+          const s = await resp.json();
+          renderProgress(s);
+          if (s.status === 'running') {
+            setTimeout(pollStatus, 1000);
+          }
+        }
+
+        function renderProgress(s) {
+          document.getElementById('progress-section').style.display = 'block';
+          const labels = { idle: 'Idle', running: 'Downloading…', done: 'Done', error: 'Error' };
+          const badge = document.getElementById('progress-badge');
+          badge.textContent = labels[s.status] || s.status;
+          badge.className = 'badge badge-' + s.status;
+
+          const total = s.total != null ? s.total : (state.selected.size || null);
+          document.getElementById('progress-count').textContent = total ? `${s.done} / ${total} books` : `${s.done} books`;
+
+          const bar = document.getElementById('progress-bar');
+          if (total) { bar.value = s.done; bar.max = total; }
+          else { bar.removeAttribute('value'); } // indeterminate
+
+          document.getElementById('progress-current').textContent =
+            s.current_title ? `Downloading: ${s.current_title}` : '';
+
+          const logEl = document.getElementById('progress-log');
+          logEl.innerHTML = s.log.map(item => item.status === 'skipped'
+            ? `<li class="skipped">${escapeHtml(item.title)} — no downloadable file</li>`
+            : `<li class="done">${escapeHtml(item.title)} — ${item.ext}, ${item.size_mb} MB</li>`
+          ).join('');
+          logEl.scrollTop = logEl.scrollHeight;
+
+          document.getElementById('download-link').style.display = s.status === 'done' ? 'inline-block' : 'none';
+          document.getElementById('progress-error').textContent = s.error || '';
+        }
+
+        (async function init() {
+          await loadLibrary();
+          const resp = await fetch('/download/status');
+          const s = await resp.json();
+          if (s.status === 'running' || s.status === 'done') {
+            renderProgress(s);
+            if (s.status === 'running') pollStatus();
+          }
+        })();
+      </script>
+    {% else %}
+      <article>
+        <h2>Log in to litres.ru</h2>
+        <form method="post" action="/login">
+          <label>Email or phone
+            <input type="text" name="login" required>
+          </label>
+          <label>Password
+            <input type="password" name="password" required>
+          </label>
+          <button type="submit">Log in</button>
+        </form>
+      </article>
+    {% endif %}
+  </main>
 </body>
 </html>
