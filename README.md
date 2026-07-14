@@ -116,6 +116,32 @@ Then open **http://127.0.0.1:8420** and log in. Your password is remembered in y
 
 ---
 
+## 🖼️ Desktop app (macOS / Windows / Linux)
+
+Prefer a real app window to a browser tab? `bookvault-desktop` runs the **same
+web app inside a native OS window** (WKWebView on macOS, WebView2 on Windows,
+WebKitGTK on Linux) via [pywebview](https://pywebview.flowrl.com/) — no browser,
+no terminal to keep open.
+
+```bash
+.venv/bin/pip install -e ./core -e ./web -e ./desktop
+.venv/bin/playwright install chromium        # if you haven't already
+.venv/bin/bookvault-desktop
+```
+
+It **starts the backend for you**: the desktop app launches the web server on a
+private `127.0.0.1` port in the background, shows a brief splash while your saved
+session restores, then loads the app — and closing the window shuts the backend
+down cleanly. It reuses `bookvault-web` verbatim (the backend is *imported*, not
+duplicated), so it's the same library browser, formats, progress, and results as
+the web app.
+
+> Runs from a source checkout today. Packaged installers (`.dmg` / `.msi` /
+> `.AppImage`) and package-manager channels (Homebrew / winget / AUR) are on the
+> way.
+
+---
+
 ## 🔌 Using it from Claude (MCP)
 
 The MCP server exposes your library to any MCP client (e.g. Claude Desktop) as tools:
@@ -303,6 +329,8 @@ web/                  bookvault-web — the web app (depends on bookvault-core)
     templates/ static/  HTML + CSS + JS (no build step, no framework)
 mcp/                  bookvault-mcp — the MCP server (depends on bookvault-core)
   bookvault_mcp/server.py  MCP tools; the `bookvault-mcp` command
+desktop/              bookvault-desktop — native window (depends on bookvault-web)
+  bookvault_desktop/app.py  embeds the web app in a pywebview window; `bookvault-desktop`
 tests/                pytest suite — fully mocked, no real Playwright/network
 Dockerfile.web        web-app image (Playwright base)
 Dockerfile.mcp        MCP-server image

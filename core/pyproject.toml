@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bookvault-core"
-version = "0.12.0"
+version = "1.0.0"
 description = "Shared core for BookVault: Playwright-driven litres.ru client, dedicated-thread session management, OS-keychain credentials, and a disk cache."
 requires-python = ">=3.11"
 dependencies = [

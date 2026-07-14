@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.0.0] - BookVault 1.0: now a native desktop app, too
+
+BookVault reaches 1.0 with a third way to run it: a **native desktop app** for
+macOS, Windows, and Linux, alongside the local web app and the MCP server. All
+three are front-ends over the same backend -- the desktop app embeds the exact
+`bookvault-web` server and shows it in a native window, with no browser tab or
+terminal needed.
+
+### Added
+- **`bookvault-desktop` -- a native desktop app.** A
+  [pywebview](https://pywebview.flowrl.com/) shell that starts the FastAPI web
+  app on a private `127.0.0.1` port in a background thread and shows it in a
+  native OS window (WKWebView on macOS, WebView2 on Windows, WebKitGTK on
+  Linux). It **reuses `bookvault-web` verbatim** -- the backend is imported, not
+  duplicated -- so the web app, the MCP server, and their Docker images are
+  unchanged. A splash is shown while a saved session restores (which drives a
+  real headless Chromium), then the live app loads; closing the window cleanly
+  stops the backend and the Playwright/Chromium session (bounded graceful
+  shutdown, so the browser is never orphaned).
+
+  ```bash
+  .venv/bin/pip install -e ./core -e ./web -e ./desktop
+  .venv/bin/bookvault-desktop
+  ```
+
+### Notes
+- The desktop app currently runs from a source checkout; **packaged installers**
+  (`.dmg` / `.msi` / `.AppImage`) and package-manager channels (Homebrew /
+  winget / AUR) are the next step.
+- `tests/test_desktop.py` skips itself unless the `desktop` package is
+  installed, so the released web/MCP CI is unaffected.
+
 ## [0.12.0] - Shared state across browsers, a results view, and your name in the header
 
 The web app's selection and format choices now live on the **server**, so every

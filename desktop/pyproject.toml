@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bookvault-desktop"
+version = "1.0.0"
+description = "Desktop wrapper around the BookVault local web app (embeds it in a native window via pywebview)."
+requires-python = ">=3.11"
+dependencies = [
+    # Reuse the web app verbatim: the desktop shell just embeds it in a
+    # native window, so bookvault-web (and, transitively, uvicorn/fastapi)
+    # is the whole backend. Zero source changes to bookvault_web.
+    "bookvault-core",
+    "bookvault-web",
+    # pywebview picks a native engine per OS at import time (WKWebView on
+    # macOS, WebView2 on Windows, WebKitGTK on Linux). We only ever import
+    # it lazily inside main(), so a headless CI box without a GUI backend
+    # can still import this package for its non-GUI helpers. Pinned exactly,
+    # matching the repo convention (a pywebview major could change engine
+    # resolution).
+    "pywebview==6.2.1",
+]
+
+[project.scripts]
+bookvault-desktop = "bookvault_desktop.app:main"
+
+[tool.setuptools]
+packages = ["bookvault_desktop"]
