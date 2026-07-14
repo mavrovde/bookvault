@@ -7,18 +7,18 @@ import time
 
 from fastapi.testclient import TestClient
 
-from app import credentials, download_job, session
+from app import activity, credentials, session
 from app.web import app
 from tests.fakes import client_factory
 
 
-def _wait_until_finished(timeout=2.0):
+def _wait_until_idle(timeout=2.0):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if download_job.snapshot()["status"] != "running":
-            return download_job.snapshot()
+        if activity.snapshot()["state"] == activity.IDLE:
+            return activity.snapshot()
         time.sleep(0.005)
-    raise AssertionError("job did not finish in time")
+    raise AssertionError("activity did not settle in time")
 
 
 def test_index_shows_login_form_when_not_logged_in():
@@ -244,22 +244,44 @@ def test_book_size_is_none_when_no_downloadable_file(monkeypatch):
     assert resp.json() == {"ok": True, "size_mb": None, "cached": False}
 
 
-def test_download_start_requires_login():
+def test_activity_status_default_shape_when_idle():
     with TestClient(app) as client:
-        resp = client.post("/download/start", json={})
+        resp = client.get("/activity")
+    body = resp.json()
+    assert body["state"] == "idle"
+    assert body["result"] is None
+    assert body["log"] == []
+    assert body["sizes"] == {}
+
+
+def test_activity_prepare_requires_login():
+    with TestClient(app) as client:
+        resp = client.post("/activity/prepare", json={})
     assert resp.status_code == 401
 
 
-def test_download_start_rejects_explicitly_empty_selection(monkeypatch):
+def test_activity_refresh_requires_login():
+    with TestClient(app) as client:
+        resp = client.post("/activity/refresh", json={})
+    assert resp.status_code == 401
+
+
+def test_activity_check_requires_login():
+    with TestClient(app) as client:
+        resp = client.post("/activity/check", json={})
+    assert resp.status_code == 401
+
+
+def test_activity_prepare_rejects_explicitly_empty_selection(monkeypatch):
     client_factory(monkeypatch, session, library=[{"id": 1, "title": "Book"}])
     with TestClient(app) as client:
         client.post("/login", data={"login": "u@example.com", "password": "pw"})
-        resp = client.post("/download/start", json={"art_ids": []})
+        resp = client.post("/activity/prepare", json={"art_ids": []})
     assert resp.status_code == 400
     assert "No books selected" in resp.json()["error"]
 
 
-def test_download_start_with_no_art_ids_downloads_everything(monkeypatch):
+def test_activity_prepare_with_no_art_ids_downloads_everything(monkeypatch):
     fake = client_factory(
         monkeypatch,
         session,
@@ -268,13 +290,13 @@ def test_download_start_with_no_art_ids_downloads_everything(monkeypatch):
     )
     with TestClient(app) as client:
         client.post("/login", data={"login": "u@example.com", "password": "pw"})
-        resp = client.post("/download/start", json={})
+        resp = client.post("/activity/prepare", json={})
         assert resp.json() == {"ok": True, "started": True}
-    _wait_until_finished()
+    _wait_until_idle()
     assert fake.download_calls == [1]
 
 
-def test_download_start_returns_started_false_when_already_running(monkeypatch):
+def test_activity_prepare_returns_started_false_when_already_running(monkeypatch):
     client_factory(
         monkeypatch,
         session,
@@ -283,28 +305,56 @@ def test_download_start_returns_started_false_when_already_running(monkeypatch):
     )
     with TestClient(app) as client:
         client.post("/login", data={"login": "u@example.com", "password": "pw"})
-        first = client.post("/download/start", json={})
-        second = client.post("/download/start", json={})
+        first = client.post("/activity/prepare", json={})
+        second = client.post("/activity/prepare", json={})
     assert first.json()["started"] is True
     assert second.json()["started"] is False
-    _wait_until_finished()
+    _wait_until_idle()
 
 
-def test_download_cancel_returns_false_when_nothing_running():
+def test_activity_refresh_reloads_library_and_reports_via_status(monkeypatch):
+    client_factory(
+        monkeypatch,
+        session,
+        library=[{"id": 1, "title": "Book", "art_type": 0, "persons": [], "cover_url": None}],
+        files_by_id={1: [{"id": 100, "extension": "epub", "is_additional": False, "size": 2_400_000}]},
+    )
     with TestClient(app) as client:
-        resp = client.post("/download/cancel")
+        client.post("/login", data={"login": "u@example.com", "password": "pw"})
+        resp = client.post("/activity/refresh", json={})
+        assert resp.json() == {"ok": True, "started": True}
+        final = _wait_until_idle()
+        # Sizes come back keyed by id (as JSON string keys over the wire).
+        status = client.get("/activity").json()
+    assert final["result"] == "done"
+    assert status["sizes"] == {"1": 2.4}
+
+
+def test_activity_check_sweeps_sizes(monkeypatch):
+    client_factory(
+        monkeypatch,
+        session,
+        library=[{"id": 1, "title": "Book"}],
+        files_by_id={1: [{"id": 100, "extension": "epub", "is_additional": False, "size": 1_000_000}]},
+    )
+    with TestClient(app) as client:
+        client.post("/login", data={"login": "u@example.com", "password": "pw"})
+        client.get("/library")  # warm the library cache the sweep reads from
+        resp = client.post("/activity/check", json={"selected": [1]})
+        assert resp.json() == {"ok": True, "started": True}
+        _wait_until_idle()
+        status = client.get("/activity").json()
+    assert status["result"] == "done"
+    assert status["sizes"] == {"1": 1.0}
+
+
+def test_activity_cancel_returns_false_when_nothing_running():
+    with TestClient(app) as client:
+        resp = client.post("/activity/cancel")
     assert resp.json() == {"ok": True, "cancelled": False}
 
 
-def test_download_status_default_shape_when_idle():
-    with TestClient(app) as client:
-        resp = client.get("/download/status")
-    body = resp.json()
-    assert body["status"] == "idle"
-    assert body["log"] == []
-
-
-def test_download_file_redirects_when_nothing_downloaded_yet():
+def test_download_file_redirects_when_nothing_prepared_yet():
     with TestClient(app) as client:
         resp = client.get("/download/file", follow_redirects=False)
     assert resp.status_code == 303
@@ -320,8 +370,8 @@ def test_download_file_serves_the_completed_zip(monkeypatch):
     )
     with TestClient(app) as client:
         client.post("/login", data={"login": "u@example.com", "password": "pw"})
-        client.post("/download/start", json={})
-        _wait_until_finished()
+        client.post("/activity/prepare", json={})
+        _wait_until_idle()
         resp = client.get("/download/file")
 
     assert resp.status_code == 200

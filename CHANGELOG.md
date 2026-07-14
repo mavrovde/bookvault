@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.6.0] - Move the activity state machine to the backend
+
+### Changed
+- The activity state machine now lives entirely in the backend
+  (`app/activity.py`), not the browser. States are `idle -> refreshing /
+  checking / preparing / stopping -> idle` with a terminal `result`
+  (`done` / `cancelled` / `error`). Only one activity runs at a time,
+  matching the single dedicated Playwright worker thread.
+- The paced per-book size-check sweep moved server-side: it's now the
+  `checking` activity rather than a loop in `app.js`. Pacing and
+  selected-books-first ordering happen on the backend; the browser just
+  passes its current selection when a sweep starts.
+- Library refresh became the `refreshing` activity, which reloads the list
+  and then rolls straight into a size sweep -- previously two separate
+  frontend steps.
+- The browser is now a thin renderer: it POSTs actions
+  (`/activity/refresh`, `/activity/check`, `/activity/prepare`,
+  `/activity/cancel`) and polls `GET /activity`, painting whatever state it
+  reports. Every button's enabled/label state is a pure function of that
+  reported state; the frontend holds no activity logic of its own.
+- Renamed the download routes to activity routes and merged the download
+  job into the state machine: `app/download_job.py` is now `app/activity.py`
+  (the zip build is the `preparing` activity). `GET /download/file` (serving
+  the finished zip) is unchanged.
+
 ## [0.5.0] - Toolbar regrouping, a stoppable size-check, and clearer labeling
 
 ### Added

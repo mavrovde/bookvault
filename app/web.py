@@ -19,8 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from . import cache, download_job, session
-from .client import AUDIOBOOK_FILE_TYPES, EBOOK_EXTENSIONS, LitresAuthError, LitresClient
+from . import activity, cache, session
+from .client import AUDIOBOOK_FILE_TYPES, EBOOK_EXTENSIONS, LitresAuthError
 
 logger = logging.getLogger(__name__)
 
@@ -79,23 +79,6 @@ def do_logout():
     return RedirectResponse("/", status_code=303)
 
 
-def _list_books(client):
-    books = []
-    for art in client.iter_library():
-        authors = [p.get("full_name") for p in (art.get("persons") or []) if p.get("role") == "author"]
-        cover_url = art.get("cover_url")
-        books.append(
-            {
-                "id": art.get("id"),
-                "title": art.get("title") or str(art.get("id")),
-                "authors": ", ".join(a for a in authors if a),
-                "is_audio": art.get("art_type") == 1,
-                "cover_url": f"https://static.litres.ru{cover_url}" if cover_url else None,
-            }
-        )
-    return books
-
-
 @app.get("/library")
 def get_library(refresh: bool = False):
     client = session.current_client()
@@ -106,7 +89,7 @@ def get_library(refresh: bool = False):
         if cached is not None:
             return {"ok": True, "books": cached}
     try:
-        books = session.run(_list_books, client)
+        books = session.run(activity.build_books, client)
     except Exception as exc:
         # A transient network blip, an anti-bot block, or a session that
         # was replaced (logout/re-login) mid-request should surface as a
@@ -119,26 +102,14 @@ def get_library(refresh: bool = False):
     return {"ok": True, "books": books}
 
 
-def _book_size_mb(client, art_id):
-    files = client.get_files(art_id)
-    best = client.pick_best_file(files)
-    size = best.get("size") if best else None
-    return round(size / 1e6, 1) if size else None, files
-
-
-def _size_from_files(files):
-    best = LitresClient.pick_best_file(None, files)
-    size = best.get("size") if best else None
-    return round(size / 1e6, 1) if size else None
-
-
 @app.get("/library/{art_id}/size")
 def get_book_size(art_id: int):
-    # Deliberately not part of /library: fetching every book's file size
-    # upfront would mean one extra API call per book (this backend has a
-    # single dedicated worker thread -- see session.py -- so that's fully
-    # sequential, not parallel). The UI fetches this lazily per row instead
-    # so the initial library list stays fast.
+    # A single book's size, on demand. Deliberately not part of /library:
+    # fetching every book's file size upfront would mean one extra API call
+    # per book (this backend has a single dedicated worker thread -- see
+    # session.py -- so that's fully sequential). The bulk equivalent is the
+    # CHECKING activity (app/activity.py), which sweeps sizes in the
+    # background; this route stays for one-off/programmatic lookups.
     client = session.current_client()
     if client is None:
         return JSONResponse({"ok": False, "error": "Not logged in"}, status_code=401)
@@ -147,62 +118,88 @@ def get_book_size(art_id: int):
         # No need to even touch the dedicated Playwright thread for a cache
         # hit -- this can run entirely on the request's own async handler,
         # so it stays instant even while that thread is busy downloading.
-        # `cached` tells the frontend's paced sweep (app.js) it didn't just
-        # hit litres.ru, so it doesn't need to wait before its next request.
-        return {"ok": True, "size_mb": _size_from_files(cached_files), "cached": True}
+        return {"ok": True, "size_mb": activity.size_of_files(cached_files), "cached": True}
     try:
-        size_mb, files = session.run(_book_size_mb, client, art_id)
+        size_mb, files = session.run(activity.fetch_size, client, art_id)
     except Exception as exc:
-        # Best-effort -- the frontend already treats a failed size fetch
-        # as "leave this row blank" (see fetchSizesInBackground in app.js),
-        # so a clean error here is enough; no need to retry server-side.
+        # Best-effort -- a failed size fetch just leaves that book's size
+        # unknown; a clean error here is enough, no need to retry serverside.
         logger.info("Size fetch failed for art %s: %s", art_id, exc)
         return JSONResponse({"ok": False, "error": "Could not fetch size"}, status_code=503)
     cache.set_files(art_id, files)
     return {"ok": True, "size_mb": size_mb, "cached": False}
 
 
-class DownloadRequest(BaseModel):
+# --------------------------------------------------------------------------
+# Activity: the single backend state machine (see app/activity.py). The UI
+# starts an activity via one of the POST routes below and then polls
+# GET /activity to render whatever state it reports -- it owns no
+# activity/progress logic of its own.
+# --------------------------------------------------------------------------
+
+
+class PrepareRequest(BaseModel):
     art_ids: Optional[List[int]] = None
     ebook_format: Optional[str] = None
     audiobook_format: Optional[str] = None
+    # Ids to resolve first during the size sweep that follows a refresh --
+    # normally the user's current checkbox selection, so a selected book
+    # isn't stuck behind a whole library's worth of others.
+    selected: Optional[List[int]] = None
 
 
-@app.post("/download/start")
-def start_download(req: DownloadRequest):
+class SweepRequest(BaseModel):
+    selected: Optional[List[int]] = None
+
+
+@app.get("/activity")
+def get_activity():
+    return activity.snapshot()
+
+
+@app.post("/activity/refresh")
+def refresh_activity(req: SweepRequest):
     client = session.current_client()
     if client is None:
         return JSONResponse({"ok": False, "error": "Not logged in"}, status_code=401)
-    # `None` means "no filter" (download everything); an explicitly empty
+    started = activity.refresh(client, req.selected)
+    return {"ok": True, "started": started}
+
+
+@app.post("/activity/check")
+def check_activity(req: SweepRequest):
+    client = session.current_client()
+    if client is None:
+        return JSONResponse({"ok": False, "error": "Not logged in"}, status_code=401)
+    started = activity.check_sizes(client, req.selected)
+    return {"ok": True, "started": started}
+
+
+@app.post("/activity/prepare")
+def prepare_activity(req: PrepareRequest):
+    client = session.current_client()
+    if client is None:
+        return JSONResponse({"ok": False, "error": "Not logged in"}, status_code=401)
+    # `None` means "no filter" (prepare everything); an explicitly empty
     # list means the caller selected zero books, which is an error, not
     # "everything" -- those must not collapse into the same falsy check.
     if req.art_ids is not None and len(req.art_ids) == 0:
         return JSONResponse({"ok": False, "error": "No books selected"}, status_code=400)
     art_ids = set(req.art_ids) if req.art_ids is not None else None
-    logger.info(
-        "Download requested: %s, ebook_format=%s, audiobook_format=%s",
-        f"{len(art_ids)} book(s)" if art_ids is not None else "entire library",
-        req.ebook_format, req.audiobook_format,
-    )
-    started = download_job.start(client, art_ids, req.ebook_format, req.audiobook_format)
+    started = activity.prepare(client, art_ids, req.ebook_format, req.audiobook_format)
     return {"ok": True, "started": started}
 
 
-@app.post("/download/cancel")
-def cancel_download():
-    logger.info("Cancel requested via /download/cancel")
-    cancelled = download_job.cancel()
+@app.post("/activity/cancel")
+def cancel_activity():
+    logger.info("Cancel requested via /activity/cancel")
+    cancelled = activity.cancel()
     return {"ok": True, "cancelled": cancelled}
-
-
-@app.get("/download/status")
-def download_status():
-    return download_job.snapshot()
 
 
 @app.get("/download/file")
 def download_file_route():
-    zip_path = download_job.snapshot().get("zip_path")
+    zip_path = activity.snapshot().get("zip_path")
     if not zip_path or not Path(zip_path).exists():
         return RedirectResponse("/", status_code=303)
     return FileResponse(zip_path, filename="litres-library.zip", media_type="application/zip")

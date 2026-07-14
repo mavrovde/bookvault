@@ -1,49 +1,33 @@
+// The frontend is a thin renderer. It owns no activity/progress logic: the
+// backend runs a single state machine (see app/activity.py) with states
+// idle | refreshing | checking | preparing | stopping and a terminal
+// `result` (done | cancelled | error). This file just:
+//   1. dispatches user actions to the backend (refresh / prepare / cancel),
+//   2. polls GET /activity and paints whatever state it reports,
+//   3. renders the book list / filters / selection (pure display state).
+// Every enable/disable/label rule below is a pure function of the backend's
+// reported `state` -- there is no client-side notion of "what's running."
 const state = { books: [], selected: new Set(), filter: '', typeFilter: 'all', sortBy: 'title-asc' };
 
-// -- Activity state machine ------------------------------------------------
-// Checking sizes, downloading, and stopping a download all need the one
-// shared progress card (#progress-section) and shouldn't run at the same
-// time -- letting them overlap would mean the bar/badge jumping between
-// unrelated meanings mid-operation. STOPPING is its own state (not a
-// separate "cancelRequested" flag bolted onto DOWNLOADING) because it has
-// its own button visibility/label rules, same as any other state here.
-// Modeling this as an explicit state machine -- rather than ad-hoc
-// booleans -- means a future activity (e.g. an export step) is just one
-// more STATE value and one more render*() function, not a new set of
-// enable/disable rules scattered across every button.
-const STATE = { IDLE: 'idle', CHECKING: 'checking', DOWNLOADING: 'downloading', STOPPING: 'stopping' };
-let activity = STATE.IDLE;
+// The last activity state the backend reported. Buttons derive purely from
+// this (plus, for Prepare, the selection count), so it's cached here for the
+// selection handlers that re-evaluate buttons between polls.
+let currentState = 'idle';
 
-// STOPPING is entered from either CHECKING or DOWNLOADING (see the
-// cancel-download handler below) -- this remembers which one, so the loop
-// that was actually running knows to unwind itself. Stopping a download
-// goes through the backend (/download/cancel, checked between books);
-// stopping a size-check sweep is purely a frontend loop, so it's this flag
-// the while loop in fetchSizesInBackground polls each iteration.
-let stopRequested = false;
+const BUSY_STATES = new Set(['refreshing', 'checking', 'preparing', 'stopping']);
 
-// Every button's visibility/disabled state is a pure function of `activity`
-// (plus, for Download, the selection count) -- recomputed as a whole
-// rather than each transition trying to patch just the buttons it thinks
-// it affects.
+// Every button's enabled/label state is a pure function of the backend
+// `state` (plus selection count for Prepare) -- recomputed as a whole rather
+// than each action patching the buttons it thinks it affects.
 function updateButtons() {
-  const busy = activity !== STATE.IDLE;
+  const busy = BUSY_STATES.has(currentState);
   document.getElementById('refresh-library').disabled = busy;
   document.getElementById('start-download').disabled = busy || state.selected.size === 0;
 
-  // Always visible (like Refresh/Download), just enabled/disabled --
-  // hiding it entirely made it disappear before anyone could react when
-  // checking sizes resolves from a warm cache in well under a second.
   const cancelBtn = document.getElementById('cancel-download');
-  const stopping = activity === STATE.STOPPING;
-  const stoppable = activity === STATE.DOWNLOADING || activity === STATE.CHECKING;
+  const stoppable = currentState === 'checking' || currentState === 'preparing';
   cancelBtn.disabled = !stoppable;
-  cancelBtn.textContent = stopping ? 'Stopping…' : 'Stop';
-}
-
-function setActivity(next) {
-  activity = next;
-  updateButtons();
+  cancelBtn.textContent = currentState === 'stopping' ? 'Stopping…' : 'Stop';
 }
 
 function escapeHtml(s) {
@@ -118,151 +102,6 @@ function bookCardHtml(b) {
   `;
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// A FIFO of book ids still needing a size fetch, processed by the single
-// paced worker below. Selecting a book jumps it to the front (see
-// prioritizeSize) so checking a box doesn't mean waiting for a sweep
-// through however many hundreds of other books come first in the list --
-// without that, pacing the sweep (below) to avoid looking like scraping
-// effectively meant "selected books may never get a size in practice."
-let pendingSizeIds = [];
-
-function prioritizeSize(id) {
-  const idx = pendingSizeIds.indexOf(id);
-  if (idx > 0) {
-    pendingSizeIds.splice(idx, 1);
-    pendingSizeIds.unshift(id);
-  }
-}
-
-// The progress card is always on screen (see index.html) -- these
-// render*() functions only ever update its contents, never mount/unmount
-// it, so switching between idle/checking/downloading reads as the same
-// component updating rather than something popping in and out of the page.
-function renderIdle(message) {
-  const badge = document.getElementById('progress-badge');
-  badge.textContent = 'Idle';
-  badge.className = 'badge badge-idle';
-  const bar = document.getElementById('progress-bar');
-  bar.classList.remove('indeterminate');
-  bar.style.width = '0%';
-  document.getElementById('progress-count').textContent = '';
-  document.getElementById('progress-current').textContent = message;
-  document.getElementById('progress-error').textContent = '';
-}
-
-function renderRefreshingLibrary() {
-  const badge = document.getElementById('progress-badge');
-  badge.textContent = 'Refreshing…';
-  badge.className = 'badge badge-running';
-  const bar = document.getElementById('progress-bar');
-  bar.classList.add('indeterminate');
-  document.getElementById('progress-count').textContent = '';
-  document.getElementById('progress-current').textContent = 'Reloading your library list from litres.ru…';
-  document.getElementById('progress-error').textContent = '';
-}
-
-function renderChecking(done, total) {
-  const badge = document.getElementById('progress-badge');
-  badge.textContent = activity === STATE.STOPPING ? 'Stopping…' : 'Checking sizes…';
-  badge.className = 'badge badge-running';
-  const bar = document.getElementById('progress-bar');
-  bar.classList.remove('indeterminate');
-  bar.style.width = Math.min(100, (done / total) * 100) + '%';
-  document.getElementById('progress-count').textContent = `${done} / ${total} sizes checked`;
-  document.getElementById('progress-current').textContent =
-    done < total ? 'Cached books resolve instantly; new ones are paced to be gentle on litres.ru.' : '';
-  document.getElementById('progress-error').textContent = '';
-  document.getElementById('progress-log').innerHTML = '';
-  document.getElementById('download-link').style.display = 'none';
-}
-
-// The actual size-checking loop, assuming the caller has *already* put
-// `activity` into CHECKING (or STOPPING, if Stop was clicked before this
-// even started) -- e.g. right when the Refresh button was clicked, not
-// only once this function gets around to running. Always leaves `activity`
-// back at IDLE, regardless of which entry point (below) called it.
-async function checkSizes() {
-  if (stopRequested) {
-    renderIdle('Stopped.');
-    stopRequested = false;
-    setActivity(STATE.IDLE);
-    return;
-  }
-
-  pendingSizeIds = state.books.filter(b => b.size_mb == null).map(b => b.id);
-  const total = pendingSizeIds.length;
-  if (total === 0) {
-    setActivity(STATE.IDLE);
-    return; // nothing to check -- leave whatever's currently shown alone
-  }
-
-  // Sequential on purpose -- the backend has a single dedicated
-  // worker thread (Playwright thread-affinity, see session.py), so
-  // "parallel" fetches here would just queue up behind each other
-  // anyway. Runs after the list is already visible/interactive.
-  //
-  // Paced on purpose too: a large library (hundreds of books) means this
-  // loop fires one request per book every time the page loads -- with no
-  // delay, that's a burst of back-to-back calls that reads a lot like
-  // scraping to litres.ru's anti-bot checks. A small gap between requests
-  // mirrors the pause iter_library already takes between library pages.
-  //
-  // But only when it's actually a live call: the backend caches these
-  // responses (see app/cache.py) and says so via `cached` in the response
-  // -- a cache hit didn't touch litres.ru at all, so there's no reason to
-  // slow down for it. That also means a book's size shows up immediately
-  // whenever it's already known, not just once its turn in the queue
-  // comes up, which matters if someone's choosing what to download based
-  // on size.
-  let done = 0;
-  renderChecking(done, total);
-  while (pendingSizeIds.length > 0) {
-    if (stopRequested) break; // Stop was clicked -- see the cancel-download handler below
-    const id = pendingSizeIds.shift();
-    const b = state.books.find(x => x.id === id);
-    if (!b || b.size_mb != null) { done++; continue; } // already resolved elsewhere -- no need to delay for it
-    let wasLiveFetch = true;
-    try {
-      const resp = await fetch(`/library/${id}/size`);
-      const data = await resp.json();
-      if (data.ok) {
-        wasLiveFetch = !data.cached;
-        b.size_mb = data.size_mb;
-        const el = document.getElementById(`size-${id}`);
-        if (el && b.size_mb != null) el.textContent = `${b.size_mb} MB`;
-        if (state.selected.has(id)) updateSelectedCount();
-      }
-    } catch (e) {
-      // best-effort -- leave this row's size blank on failure
-    }
-    done++;
-    renderChecking(done, total);
-    if (wasLiveFetch) await sleep(200);
-  }
-  const wasStopped = stopRequested;
-  renderIdle(wasStopped
-    ? `Stopped -- checked ${done} of ${total} sizes.`
-    : `Checked sizes for ${done} of ${total} book${total === 1 ? '' : 's'}.`);
-  stopRequested = false;
-  setActivity(STATE.IDLE);
-  // Sizes load lazily and can change size-based sort order -- only
-  // worth a full re-render for that sort mode, once all sizes are in.
-  if (state.sortBy.startsWith('size')) renderList();
-}
-
-// Self-contained entry point for the automatic sweep on page load -- claims
-// CHECKING itself, unlike the Refresh button (below) which claims it before
-// this even starts, to cover the library-reload network round-trip too.
-async function fetchSizesInBackground() {
-  if (activity !== STATE.IDLE) return; // e.g. a download owns the shared progress card right now
-  setActivity(STATE.CHECKING);
-  await checkSizes();
-}
-
 function renderList() {
   const listEl = document.getElementById('book-list');
   const books = visibleBooks();
@@ -280,7 +119,7 @@ function renderList() {
   listEl.querySelectorAll('input[type=checkbox]').forEach(cb => {
     cb.addEventListener('change', () => {
       const id = Number(cb.dataset.id);
-      if (cb.checked) { state.selected.add(id); prioritizeSize(id); } else { state.selected.delete(id); }
+      if (cb.checked) { state.selected.add(id); } else { state.selected.delete(id); }
       cb.closest('.book-card').classList.toggle('selected', cb.checked);
       updateSelectedCount();
     });
@@ -298,14 +137,169 @@ function updateSelectedCount() {
     if (b.size_mb != null) sumMb += b.size_mb;
     else unknown += 1;
   }
-  // `unknown` books haven't had their size fetched yet (sizes load
-  // lazily in the background, see fetchSizesInBackground) -- say so
-  // explicitly, since a bare number here previously read as
-  // unexplained "estimating" noise.
+  // `unknown` books haven't had their size resolved yet (the backend's
+  // CHECKING sweep fills them in) -- say so explicitly, since a bare number
+  // here previously read as unexplained "estimating" noise.
   const sizeSummary = n === 0 ? '' : `(~${formatSize(sumMb)} so far${unknown > 0 ? `, size of ${unknown} more still loading…` : ''})`;
   document.getElementById('selected-size').textContent = sizeSummary;
 
   updateButtons();
+}
+
+// Merge sizes resolved by the backend's CHECKING sweep into the local book
+// list and paint each row. `sizes` is {id: mb|null}; a null means the book
+// has no downloadable file (its row just stays blank).
+function applySizes(sizes) {
+  if (!sizes) return;
+  let changed = false;
+  for (const [idStr, mb] of Object.entries(sizes)) {
+    const id = Number(idStr);
+    const b = state.books.find(x => x.id === id);
+    if (b && b.size_mb == null && mb != null) { b.size_mb = mb; changed = true; }
+    const el = document.getElementById(`size-${id}`);
+    if (el && mb != null) el.textContent = `${mb} MB`;
+  }
+  if (changed) {
+    updateSelectedCount();
+    // Sizes can change size-based sort order -- only worth a re-render for
+    // those sort modes.
+    if (state.sortBy.startsWith('size')) renderList();
+  }
+}
+
+// -- Rendering the activity state ------------------------------------------
+// One function maps the backend snapshot onto the shared progress card. It
+// never mounts/unmounts anything -- the card is always on screen (see
+// index.html) so switching between states reads as the same component
+// updating rather than something popping in and out.
+const BADGE = {
+  refreshing: ['Refreshing…', 'badge-running'],
+  checking: ['Checking sizes…', 'badge-running'],
+  preparing: ['Building zip…', 'badge-running'],
+  stopping: ['Stopping…', 'badge-running'],
+};
+const RESULT_BADGE = {
+  done: ['Done', 'badge-done'],
+  cancelled: ['Stopped', 'badge-cancelled'],
+  error: ['Error', 'badge-error'],
+};
+
+function renderActivity(s) {
+  const badge = document.getElementById('progress-badge');
+  const [label, cls] = s.state === 'idle'
+    ? (RESULT_BADGE[s.result] || ['Idle', 'badge-idle'])
+    : (BADGE[s.state] || ['Idle', 'badge-idle']);
+  badge.textContent = label;
+  badge.className = 'badge ' + cls;
+
+  const bar = document.getElementById('progress-bar');
+  const countEl = document.getElementById('progress-count');
+  const currentEl = document.getElementById('progress-current');
+
+  // Progress bar + count line, per state.
+  bar.classList.remove('indeterminate');
+  if (s.state === 'refreshing' || s.state === 'stopping') {
+    bar.classList.add('indeterminate');
+    countEl.textContent = '';
+  } else if (s.state === 'checking') {
+    bar.style.width = s.total ? Math.min(100, (s.done / s.total) * 100) + '%' : '0%';
+    countEl.textContent = s.total ? `${s.done} / ${s.total} sizes checked` : '';
+  } else if (s.state === 'preparing') {
+    if (s.total) bar.style.width = Math.min(100, (s.done / s.total) * 100) + '%';
+    else bar.classList.add('indeterminate');
+    countEl.textContent = s.total ? `${s.done} / ${s.total} books` : `${s.done} books`;
+  } else { // idle
+    bar.style.width = s.result === 'done' ? '100%' : '0%';
+    countEl.textContent = '';
+  }
+
+  // Current line: a book title while preparing, the backend's message
+  // otherwise (which also carries the "what just happened" summary at idle).
+  if (s.state === 'preparing' && s.current_title) {
+    currentEl.textContent = `Fetching: ${s.current_title}`;
+  } else {
+    currentEl.textContent = s.message
+      || (s.state === 'idle' ? 'Nothing running right now -- select some books and hit Prepare zip, or use Refresh to check for new purchases.' : '');
+  }
+
+  // Per-book log (preparing / its result only).
+  const logEl = document.getElementById('progress-log');
+  logEl.innerHTML = (s.log || []).map(item => {
+    if (item.status === 'skipped') {
+      return `<li class="skipped"><span class="icon">!</span><span class="title">${escapeHtml(item.title)}</span><span class="detail">${escapeHtml(item.reason || 'Skipped -- no file available')}</span></li>`;
+    }
+    if (item.status === 'error') {
+      return `<li class="error"><span class="icon">✗</span><span class="title">${escapeHtml(item.title)}</span><span class="detail" title="${escapeHtml(item.detail || '')}">${escapeHtml(item.error || 'Download failed')}</span></li>`;
+    }
+    return `<li class="done"><span class="icon">✓</span><span class="title">${escapeHtml(item.title)}</span><span class="detail">${item.ext}, ${item.size_mb} MB</span></li>`;
+  }).join('');
+  logEl.scrollTop = logEl.scrollHeight;
+
+  // Only a finished zip build sets `zip_path` (any new activity clears it),
+  // so this is what distinguishes "a zip is ready to save" from a size sweep
+  // that also ends at result==="done" with a non-zero count.
+  document.getElementById('download-link').style.display =
+    s.zip_path && s.done > 0 && (s.result === 'done' || s.result === 'cancelled') ? 'inline-block' : 'none';
+  document.getElementById('progress-error').textContent = s.error || '';
+}
+
+// -- Polling ---------------------------------------------------------------
+// A single loop drives everything: fetch the snapshot, paint sizes + the
+// activity card, and keep polling while the backend is busy. Any user action
+// that starts an activity just calls startPolling().
+let polling = false;
+
+async function poll() {
+  let s;
+  try {
+    const resp = await fetch('/activity');
+    s = await resp.json();
+  } catch (e) {
+    setTimeout(poll, 1000); // transient error -- try again next tick
+    return;
+  }
+  const prev = currentState;
+  currentState = s.state;
+
+  // A refresh reloads the library list itself -- once it leaves the
+  // refreshing state, re-fetch the (now warm) /library so new titles show,
+  // then re-apply any sizes resolved so far.
+  if (prev === 'refreshing' && s.state !== 'refreshing') {
+    await loadLibrary(false);
+  }
+
+  applySizes(s.sizes);
+  renderActivity(s);
+  updateButtons();
+
+  if (BUSY_STATES.has(s.state)) {
+    setTimeout(poll, 1000);
+  } else {
+    polling = false;
+  }
+}
+
+function startPolling() {
+  if (polling) return;
+  polling = true;
+  poll();
+}
+
+// -- Actions: each just tells the backend to start an activity, then polls --
+async function startActivity(url, body) {
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    const data = await resp.json();
+    startPolling();
+    return data;
+  } catch (e) {
+    startPolling();
+    return { ok: false };
+  }
 }
 
 document.getElementById('search-box').addEventListener('input', (e) => {
@@ -313,17 +307,13 @@ document.getElementById('search-box').addEventListener('input', (e) => {
   renderList();
 });
 
-document.getElementById('refresh-library').addEventListener('click', async () => {
-  if (activity !== STATE.IDLE) return;
-  // Claimed here, *before* the network round-trip below -- not once
-  // checkSizes() gets around to running -- otherwise activity is still
-  // IDLE for as long as loadLibrary takes (several seconds against the
-  // real litres.ru API), and a second click in that window would start a
-  // second concurrent refresh.
-  setActivity(STATE.CHECKING);
-  renderRefreshingLibrary();
-  await loadLibrary(true);
-  await checkSizes();
+document.getElementById('refresh-library').addEventListener('click', () => {
+  if (BUSY_STATES.has(currentState)) return;
+  // Optimistically reflect "busy" so a second click in the network window
+  // can't fire a second refresh; the next poll replaces this with the truth.
+  currentState = 'refreshing';
+  updateButtons();
+  startActivity('/activity/refresh', { selected: Array.from(state.selected) });
 });
 
 document.getElementById('type-filter').addEventListener('click', (e) => {
@@ -340,10 +330,7 @@ document.getElementById('sort-by').addEventListener('change', (e) => {
 });
 
 document.getElementById('select-all').addEventListener('click', () => {
-  // Reverse order so the *first* visible book ends up at the very front of
-  // the pending-size queue after all these prioritizeSize() calls, not the
-  // last one -- still paced one-at-a-time, just reordered.
-  visibleBooks().slice().reverse().forEach(b => { state.selected.add(b.id); prioritizeSize(b.id); });
+  visibleBooks().forEach(b => state.selected.add(b.id));
   renderList();
 });
 document.getElementById('select-none').addEventListener('click', () => {
@@ -352,116 +339,51 @@ document.getElementById('select-none').addEventListener('click', () => {
 });
 
 document.getElementById('start-download').addEventListener('click', async () => {
-  if (state.selected.size === 0 || activity !== STATE.IDLE) return;
-  setActivity(STATE.DOWNLOADING);
-  try {
-    const resp = await fetch('/download/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        art_ids: Array.from(state.selected),
-        ebook_format: document.getElementById('ebook-format').value,
-        audiobook_format: document.getElementById('audiobook-format').value,
-      }),
-    });
-    const data = await resp.json();
-    if (!data.ok) {
-      alert('Could not start preparing the zip: ' + (data.error || 'unknown error'));
-      setActivity(STATE.IDLE);
-      return;
-    }
-    document.getElementById('progress-section').scrollIntoView({ behavior: 'smooth' });
-    pollStatus();
-  } catch (e) {
-    setActivity(STATE.IDLE);
+  if (state.selected.size === 0 || BUSY_STATES.has(currentState)) return;
+  currentState = 'preparing';
+  updateButtons();
+  const data = await startActivity('/activity/prepare', {
+    art_ids: Array.from(state.selected),
+    ebook_format: document.getElementById('ebook-format').value,
+    audiobook_format: document.getElementById('audiobook-format').value,
+  });
+  if (data && data.ok === false) {
+    alert('Could not start preparing the zip: ' + (data.error || 'unknown error'));
+    return;
   }
+  document.getElementById('progress-section').scrollIntoView({ behavior: 'smooth' });
 });
 
-document.getElementById('cancel-download').addEventListener('click', async () => {
-  if (activity !== STATE.DOWNLOADING && activity !== STATE.CHECKING) return;
-  const wasDownloading = activity === STATE.DOWNLOADING;
-  stopRequested = true;
-  setActivity(STATE.STOPPING);
-  if (wasDownloading) {
-    // Cancellation only takes effect between books (see download_job.py's
-    // module docstring -- an in-flight file transfer can't be interrupted),
-    // so without an explicit STOPPING state, clicking Stop looks completely
-    // unresponsive for as long as the current book takes.
-    await fetch('/download/cancel', { method: 'POST' });
-  } else {
-    // Checking is a purely frontend loop (see fetchSizesInBackground) --
-    // it notices stopRequested on its next iteration (at most one paced
-    // step away) and unwinds itself back to STATE.IDLE from there.
-    document.getElementById('progress-badge').textContent = 'Stopping…';
-  }
+document.getElementById('cancel-download').addEventListener('click', () => {
+  if (currentState !== 'checking' && currentState !== 'preparing') return;
+  // Optimistically show "Stopping…" so the click feels responsive even
+  // though cancellation only takes effect between books/size fetches (see
+  // app/activity.py); the next poll confirms the real state.
+  currentState = 'stopping';
+  updateButtons();
+  fetch('/activity/cancel', { method: 'POST' });
+  startPolling();
 });
-
-async function pollStatus() {
-  const resp = await fetch('/download/status');
-  const s = await resp.json();
-  renderProgress(s);
-  if (s.status === 'running') {
-    setTimeout(pollStatus, 1000);
-  } else {
-    setActivity(STATE.IDLE);
-  }
-}
-
-function renderProgress(s) {
-  const labels = { idle: 'Idle', running: 'Building zip…', done: 'Done', error: 'Error', cancelled: 'Stopped' };
-  const badge = document.getElementById('progress-badge');
-  const stopping = activity === STATE.STOPPING;
-  badge.textContent = stopping ? 'Stopping…' : (labels[s.status] || s.status);
-  badge.className = 'badge badge-' + s.status;
-
-  const total = s.total != null ? s.total : (state.selected.size || null);
-  document.getElementById('progress-count').textContent = total ? `${s.done} / ${total} books` : `${s.done} books`;
-
-  const bar = document.getElementById('progress-bar');
-  if (total) {
-    bar.classList.remove('indeterminate');
-    bar.style.width = Math.min(100, (s.done / total) * 100) + '%';
-  } else if (s.status === 'running') {
-    bar.classList.add('indeterminate');
-  } else {
-    bar.classList.remove('indeterminate');
-    bar.style.width = s.status === 'done' ? '100%' : '0%';
-  }
-
-  document.getElementById('progress-current').textContent = s.current_title
-    ? `Fetching: ${s.current_title}` + (stopping ? ' -- stopping once this one finishes' : '')
-    : '';
-
-  const logEl = document.getElementById('progress-log');
-  logEl.innerHTML = s.log.map(item => {
-    if (item.status === 'skipped') {
-      return `<li class="skipped"><span class="icon">!</span><span class="title">${escapeHtml(item.title)}</span><span class="detail">${escapeHtml(item.reason || 'Skipped -- no file available')}</span></li>`;
-    }
-    if (item.status === 'error') {
-      return `<li class="error"><span class="icon">✗</span><span class="title">${escapeHtml(item.title)}</span><span class="detail" title="${escapeHtml(item.detail || '')}">${escapeHtml(item.error || 'Download failed')}</span></li>`;
-    }
-    return `<li class="done"><span class="icon">✓</span><span class="title">${escapeHtml(item.title)}</span><span class="detail">${item.ext}, ${item.size_mb} MB</span></li>`;
-  }).join('');
-  logEl.scrollTop = logEl.scrollHeight;
-
-  document.getElementById('download-link').style.display = (s.status === 'done' || s.status === 'cancelled') && s.done > 0 ? 'inline-block' : 'none';
-  document.getElementById('progress-error').textContent = s.error || '';
-}
 
 (async function init() {
   await loadLibrary();
-  const resp = await fetch('/download/status');
-  const s = await resp.json();
-  if (s.status === 'running') {
-    // A download survived a page reload -- it already owns the shared
-    // progress card, so don't also kick off a size-check sweep against it.
-    setActivity(STATE.DOWNLOADING);
-    renderProgress(s);
-    pollStatus();
-    return;
+  let s;
+  try {
+    s = await (await fetch('/activity')).json();
+  } catch (e) {
+    s = { state: 'idle', result: null, sizes: {}, log: [] };
   }
-  if (s.status === 'done' || s.status === 'cancelled') {
-    renderProgress(s);
+  currentState = s.state;
+  applySizes(s.sizes);
+  renderActivity(s);
+  updateButtons();
+
+  if (BUSY_STATES.has(s.state)) {
+    // An activity (e.g. a zip build) survived a page reload -- just attach
+    // to it; don't kick off a competing size sweep.
+    startPolling();
+  } else {
+    // Idle: start the background size sweep, then poll it to completion.
+    startActivity('/activity/check', { selected: Array.from(state.selected) });
   }
-  fetchSizesInBackground();
 })();

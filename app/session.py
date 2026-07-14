@@ -5,7 +5,7 @@ from .env, or fail" dance -- kept in one place so they can't drift.
 
 Playwright's sync API is tied to whichever single thread created it -- every
 call touching a `LitresClient` (this module's own login/restore code, but
-also `web.py`'s /library route and `download_job.py`'s background job) MUST
+also `web.py`'s /library route and `activity.py`'s background activities) MUST
 run on that same thread or it fails with "Cannot switch to a different
 thread". `run`/`run_async` below are the one gateway to that dedicated
 thread; nothing else should call a LitresClient method directly.

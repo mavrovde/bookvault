@@ -1,7 +1,7 @@
 """Test doubles shared across the suite. None of these touch Playwright,
 the network, or the real OS keychain -- that's the whole point: they let us
 exercise the real orchestration/parsing code in client.py, session.py,
-download_job.py, web.py, and mcp_server.py against controllable, fast,
+activity.py, web.py, and mcp_server.py against controllable, fast,
 offline fakes.
 """
 from __future__ import annotations
@@ -62,7 +62,7 @@ def make_bare_client(handler, extra_headers=None) -> LitresClient:
 
 
 class FakeLitresClient:
-    """A full high-level fake for testing orchestration code (download_job,
+    """A full high-level fake for testing orchestration code (activity,
     web routes, session, mcp tools) that doesn't care about HTTP-layer
     details, just the client's public behavior/failure modes."""
 

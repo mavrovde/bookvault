@@ -61,13 +61,30 @@ app/
   client.py       LitresClient -- Playwright-driven login + library/file/download API calls
   session.py      shared login/session-restore logic + the single dedicated Playwright thread
   credentials.py  password storage via the OS keychain (the `keyring` package)
-  download_job.py background download job: selection filtering, per-book error handling, cancellation
-  web.py          FastAPI app: library browser, format defaults, live progress
+  activity.py     the one backend state machine: refresh / size-sweep / zip-build / cancel
+  cache.py        disk-backed cache for the library listing and per-book file listings
+  web.py          FastAPI app: library browser, format defaults, activity control + status
   mcp_server.py   MCP server exposing the same functionality as tools
-  templates/      the web app's HTML/CSS/JS (no build step, no frontend framework)
+  templates/      the web app's HTML; static/ its CSS + JS (no build step, no framework)
 run.py            starts the web app (uvicorn)
 tests/            pytest suite -- fully mocked, no real Playwright/network involved
 ```
+
+### One state machine, on the backend
+
+Everything the app can be *doing* -- reloading the library list, sweeping
+book sizes, building the download zip, or being cancelled -- is one backend
+state machine in `activity.py`, with states `idle -> refreshing / checking
+/ preparing / stopping -> idle` and a terminal `result` (`done` /
+`cancelled` / `error`). Only one activity runs at a time, which falls
+naturally out of the single dedicated Playwright thread (see `session.py`):
+there's only ever one worker, so there's only ever one thing to be doing.
+
+The browser is a thin renderer. It POSTs an action (`/activity/refresh`,
+`/activity/prepare`, `/activity/cancel`), then polls `GET /activity` and
+paints whatever state it reports -- every button's enabled/label state is a
+pure function of that state. The frontend owns no activity logic, no pacing,
+and no size-fetch loop of its own; those all live in `activity.py`.
 
 ### Why Playwright instead of plain HTTP requests?
 
