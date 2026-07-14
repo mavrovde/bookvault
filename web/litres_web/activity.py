@@ -45,7 +45,7 @@ from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from litres_core import cache, session
-from litres_core.client import DownloadCancelled, LitresClient
+from litres_core.client import DownloadCancelled, LitresBlocked, LitresClient
 
 logger = logging.getLogger(__name__)
 
@@ -520,10 +520,16 @@ def _friendly_error(exc: Exception) -> str:
     a non-technical user."""
     text = str(exc)
     lower = text.lower()
-    if "ddos-guard" in lower:
-        return "Blocked by litres.ru's anti-bot check (DDoS-Guard) -- wait a bit, then retry this book."
+    # A LitresBlocked that reaches here survived the client's own retries +
+    # cookie re-warm, so it's a genuinely persistent anti-bot/rate-limit block:
+    # waiting a few minutes is the only thing that helps (retrying now won't).
+    if isinstance(exc, LitresBlocked) or "ddos-guard" in lower:
+        return "litres.ru's anti-bot check kept blocking this even after automatic retries -- wait a few minutes, then try again."
     if "(403)" in text:
-        return "Blocked by litres.ru (403 Forbidden) -- wait a bit, then retry this book."
+        # Not an anti-bot block (the client already tried both the purchase and
+        # subscription download endpoints and litres refused both) -- retrying
+        # won't change the answer, so don't tell the user to.
+        return "litres.ru won't serve this title (403) -- it may be subscription-only, region-locked, or preview-only. The other books still downloaded."
     if "(429)" in text:
         return "Rate-limited by litres.ru (429) -- wait a few minutes before retrying."
     if "(401)" in text or "permissionmissing" in lower:

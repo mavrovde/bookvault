@@ -556,9 +556,11 @@ class LitresClient:
                         "Download request failed for art %s: HTTP %s (server=%s)",
                         art_id, resp.status_code, server,
                     )
-                    raise LitresAuthError(
+                    exc = LitresAuthError(
                         f"Download failed for art {art_id} ({resp.status_code}): {snippet}"
                     )
+                    exc.status = resp.status_code  # lets the caller try the alternate endpoint on a 403
+                    raise exc
                 total = int((resp.headers or {}).get("content-length") or 0) or None
                 with open(dest, "wb") as f:
                     for chunk in resp.iter_chunks(1024 * 1024):
@@ -575,22 +577,13 @@ class LitresClient:
         logger.debug("Streamed %d bytes to %s", written, dest)
         return dest
 
-    def download_file(
-        self, art_id, release_file_id, filename: str, dest: Path, subscr: bool = False,
-        should_cancel=None, on_progress=None,
-    ) -> Path:
-        """Stream a purchased file to `dest`, retrying transient anti-bot
-        blocks (DDoS-Guard 403 / 429 / 503) with jittered backoff and a
-        __ddg* cookie re-warm between tries -- rather than failing the item and
-        moving on, which is the very pattern that hardens a soft block.
-
-        `should_cancel`, if given, is polled between chunks (and during backoff
-        sleeps) so a Stop interrupts an in-flight transfer within ~one chunk.
-        `on_progress(written, total)`, if given, reports live byte progress."""
-        segment = "download_book_subscr" if subscr else "download_book"
-        url = f"{DOWNLOAD_BASE}/{segment}/{art_id}/{release_file_id}/{filename}"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        logger.debug("Streaming GET %s (timeout=%dms)", url, DOWNLOAD_TIMEOUT_MS)
+    def _download_url_with_backoff(self, url, dest, should_cancel, on_progress, art_id) -> Path:
+        """Stream one URL to `dest`, retrying transient anti-bot blocks
+        (DDoS-Guard 403 / 429 / 503) with jittered backoff and a __ddg* cookie
+        re-warm between tries -- rather than failing and moving on, the very
+        pattern that hardens a soft block. Re-raises LitresBlocked once retries
+        are exhausted, LitresAuthError (with .status) on an ordinary bad status,
+        DownloadCancelled on Stop."""
         for attempt in range(MAX_TRANSIENT_RETRIES + 1):
             cookies = {c["name"]: c["value"] for c in self.context.cookies()}
             try:
@@ -610,3 +603,48 @@ class LitresClient:
                 if not _sleep_interruptible(delay, should_cancel):
                     raise DownloadCancelled(f"Download cancelled during backoff for art {art_id}")
         raise LitresBlocked(f"Download blocked for art {art_id}")  # unreachable, keeps type-checkers happy
+
+    def download_file(
+        self, art_id, release_file_id, filename: str, dest: Path, subscr: bool = False,
+        should_cancel=None, on_progress=None,
+    ) -> Path:
+        """Stream a file to `dest`, handling both ways litres.ru can turn us
+        away without the user having to intervene:
+
+        - **Anti-bot blocks** (DDoS-Guard 403 / 429 / 503) are retried with
+          backoff + a cookie re-warm (see _download_url_with_backoff).
+        - **Endpoint mismatch:** litres serves purchases from `download_book`
+          and subscription/abonement titles from `download_book_subscr`. We
+          can't tell which a given art needs up front, so if the first endpoint
+          returns a plain 403 (litres itself refusing, *not* an anti-bot block)
+          we automatically try the other one before giving up. `subscr` just
+          picks which to try first.
+
+        `should_cancel` interrupts an in-flight transfer/backoff within ~one
+        chunk; `on_progress(written, total)` reports live byte progress."""
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        segments = (
+            ["download_book_subscr", "download_book"] if subscr
+            else ["download_book", "download_book_subscr"]
+        )
+        last_exc = None
+        for i, segment in enumerate(segments):
+            url = f"{DOWNLOAD_BASE}/{segment}/{art_id}/{release_file_id}/{filename}"
+            logger.debug("Streaming GET %s (timeout=%dms)", url, DOWNLOAD_TIMEOUT_MS)
+            try:
+                return self._download_url_with_backoff(url, dest, should_cancel, on_progress, art_id)
+            except LitresBlocked:
+                raise  # a persistent anti-bot block won't be fixed by the other endpoint
+            except LitresAuthError as exc:
+                last_exc = exc
+                # Only a plain 403 (litres refusing this endpoint) is worth
+                # trying the alternate endpoint for; other errors (500, timeout)
+                # it wouldn't fix either.
+                if getattr(exc, "status", None) == 403 and i + 1 < len(segments):
+                    logger.info(
+                        "Endpoint '%s' refused art %s (403) -- trying '%s'",
+                        segment, art_id, segments[i + 1],
+                    )
+                    continue
+                raise
+        raise last_exc  # pragma: no cover - loop always returns or raises above

@@ -275,14 +275,15 @@ def test_download_file_reports_none_total_without_content_length(tmp_path):
     assert calls and all(total is None for _, total in calls)
 
 
-def test_download_file_raises_on_non_block_failure_without_retrying(tmp_path):
-    # A plain failure (not an anti-bot block -- e.g. a rights-limited 403 with
-    # no DDoS-Guard signature) must fail immediately, not enter the retry loop.
+def test_download_file_gives_up_after_both_endpoints_403_without_block_retrying(tmp_path):
+    # A plain 403 (not an anti-bot block) is NOT hammered with block-retries;
+    # the client tries the alternate (subscription) endpoint once and, when it
+    # also 403s, fails -- so exactly two requests, not the 3-retry loop.
     calls = {"n": 0}
 
     def handler(request):
         calls["n"] += 1
-        return httpx.Response(403, text="Forbidden")  # no ddos-guard server/body
+        return httpx.Response(403, text="Forbidden")  # no ddos-guard on either endpoint
 
     client = make_bare_client(lambda *a: None)
     client._httpx_transport = httpx.MockTransport(handler)
@@ -290,7 +291,7 @@ def test_download_file_raises_on_non_block_failure_without_retrying(tmp_path):
     with pytest.raises(LitresAuthError, match="403"):
         client.download_file(1, 2, "book.epub", dest)
     assert not dest.exists()
-    assert calls["n"] == 1  # single-shot -- a non-block failure is not retried
+    assert calls["n"] == 2  # purchase endpoint + subscription endpoint, then give up
 
 
 def test_download_retries_a_ddos_guard_block_then_succeeds(tmp_path):
@@ -404,3 +405,41 @@ def test_get_files_raises_blocked_after_persistent_api_block():
     client = make_bare_client(handler)
     with pytest.raises(LitresBlocked):
         client.get_files(1)
+
+
+def test_download_falls_back_to_subscription_endpoint_on_a_plain_403(tmp_path):
+    # download_book 403s (litres refusing the purchase endpoint), but the
+    # subscription endpoint serves it -- the client must try both, unprompted.
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        if "download_book_subscr" in request.url.path:
+            return httpx.Response(200, content=b"the subscription file")
+        return httpx.Response(403, text="Forbidden")  # plain 403, not DDoS-Guard
+
+    client = make_bare_client(lambda *a: None)
+    client._httpx_transport = httpx.MockTransport(handler)
+    dest = tmp_path / "book.zip"
+    client.download_file(1, 2, "book.zip", dest)
+    assert dest.read_bytes() == b"the subscription file"
+    assert any("download_book/" in p for p in seen)  # tried the purchase endpoint first
+    assert any("download_book_subscr/" in p for p in seen)  # then fell back
+
+
+def test_download_does_not_fall_back_on_an_anti_bot_block(tmp_path):
+    # A DDoS-Guard block is retried on the *same* endpoint (re-warm + backoff),
+    # not swapped to the subscription one -- the other endpoint won't clear a
+    # bot check. Persisting, it raises LitresBlocked.
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        return httpx.Response(403, headers={"server": "ddos-guard"}, content=b"blocked")
+
+    client = make_bare_client(lambda *a: None)
+    client._httpx_transport = httpx.MockTransport(handler)
+    with pytest.raises(LitresBlocked):
+        client.download_file(1, 2, "book.zip", tmp_path / "book.zip")
+    assert all("download_book/" in p for p in seen)  # never touched the subscr endpoint
+    assert not any("download_book_subscr" in p for p in seen)
