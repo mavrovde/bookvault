@@ -6,7 +6,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from litres_core.client import LitresAuthError, LitresClient
+from litres_core.client import DownloadCancelled, LitresAuthError, LitresClient
 from tests.fakes import FakeAPIResponse, make_bare_client
 
 # --------------------------------------------------------------------------
@@ -253,6 +253,25 @@ def test_download_file_raises_on_failure_status(tmp_path):
     with pytest.raises(LitresAuthError, match="403"):
         client.download_file(1, 2, "book.epub", dest)
     assert not dest.exists()
+
+
+def test_download_file_cancels_mid_transfer_and_discards_the_partial(tmp_path):
+    # A multi-chunk body; should_cancel flips True after the first chunk, so the
+    # transfer must abort mid-stream and leave no partial file behind.
+    client = make_bare_client(lambda *a: None)
+    client._httpx_transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, content=b"\xcd" * (5 * 1024 * 1024))
+    )
+    polls = {"n": 0}
+
+    def should_cancel():
+        polls["n"] += 1
+        return polls["n"] >= 2  # let the first chunk through, then cancel
+
+    dest = tmp_path / "audiobook.zip"
+    with pytest.raises(DownloadCancelled):
+        client.download_file(1, 2, "audiobook.zip", dest, should_cancel=should_cancel)
+    assert not dest.exists()  # the partial write was discarded
 
 
 def test_get_merges_extra_headers_with_explicit_headers():

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.3] - Cancel interrupts an in-progress download
+
+### Changed
+- Stop now interrupts the file that's currently downloading, not just the
+  queue between books. `download_file` polls a cancel callback between
+  streamed chunks, so a Stop takes effect within a fraction of a second
+  (measured ~60 ms mid-transfer) and the partial file is discarded --
+  previously an in-flight ~2GB audiobook had to finish (or hit its timeout)
+  before the Stop registered. This builds directly on 0.7.2's chunked
+  streaming. A transfer that stalls without sending any bytes still relies on
+  the per-file timeout as a backstop.
+
 ## [0.7.2] - Stream downloads to disk; smart per-member zip packing
 
 ### Fixed

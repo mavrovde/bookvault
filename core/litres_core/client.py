@@ -85,6 +85,11 @@ class LitresAuthError(RuntimeError):
     """Login failed, or an existing session is no longer valid."""
 
 
+class DownloadCancelled(RuntimeError):
+    """Raised by download_file when cancellation is requested mid-transfer --
+    distinct from a real failure so the caller can treat it as a clean stop."""
+
+
 class LitresClient:
     """Logs into litres.ru and pulls the caller's own purchased library.
 
@@ -281,7 +286,7 @@ class LitresClient:
         return file_entry.get("extension") or EXT_BY_FILE_TYPE.get(file_entry.get("file_type")) or "fb2"
 
     def download_file(
-        self, art_id, release_file_id, filename: str, dest: Path, subscr: bool = False
+        self, art_id, release_file_id, filename: str, dest: Path, subscr: bool = False, should_cancel=None
     ) -> Path:
         segment = "download_book_subscr" if subscr else "download_book"
         url = f"{DOWNLOAD_BASE}/{segment}/{art_id}/{release_file_id}/{filename}"
@@ -295,23 +300,35 @@ class LitresClient:
         # carries the same authentication/anti-bot profile as the rest of the
         # client -- Playwright's request client is itself a separate HTTP client
         # from the browser, so nothing about the bot fingerprint changes here.
+        #
+        # `should_cancel`, if given, is polled between chunks so a Stop can
+        # interrupt an in-flight transfer within ~one chunk rather than having
+        # to wait for the whole (possibly ~2GB) file to finish -- the streaming
+        # loop is what makes mid-transfer cancellation possible at all.
         cookies = {c["name"]: c["value"] for c in self.context.cookies()}
         timeout = httpx.Timeout(DOWNLOAD_TIMEOUT_MS / 1000)
         logger.debug("Streaming GET %s (timeout=%dms)", url, DOWNLOAD_TIMEOUT_MS)
-        with httpx.Client(
-            transport=self._httpx_transport, follow_redirects=True, timeout=timeout, cookies=cookies
-        ) as http:
-            with http.stream("GET", url, headers=self._extra_headers) as resp:
-                if resp.status_code != 200:
-                    snippet = resp.read()[:300].decode("utf-8", "replace")
-                    logger.warning("Download request failed for art %s: HTTP %s", art_id, resp.status_code)
-                    raise LitresAuthError(
-                        f"Download failed for art {art_id} ({resp.status_code}): {snippet}"
-                    )
-                written = 0
-                with open(dest, "wb") as f:
-                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                        f.write(chunk)
-                        written += len(chunk)
+        written = 0
+        try:
+            with httpx.Client(
+                transport=self._httpx_transport, follow_redirects=True, timeout=timeout, cookies=cookies
+            ) as http:
+                with http.stream("GET", url, headers=self._extra_headers) as resp:
+                    if resp.status_code != 200:
+                        snippet = resp.read()[:300].decode("utf-8", "replace")
+                        logger.warning("Download request failed for art %s: HTTP %s", art_id, resp.status_code)
+                        raise LitresAuthError(
+                            f"Download failed for art {art_id} ({resp.status_code}): {snippet}"
+                        )
+                    with open(dest, "wb") as f:
+                        for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                            if should_cancel is not None and should_cancel():
+                                raise DownloadCancelled(f"Download cancelled mid-transfer for art {art_id}")
+                            f.write(chunk)
+                            written += len(chunk)
+        except DownloadCancelled:
+            dest.unlink(missing_ok=True)  # discard the partial file
+            logger.info("Cancelled download of art %s mid-transfer (%d bytes discarded)", art_id, written)
+            raise
         logger.debug("Streamed %d bytes to %s", written, dest)
         return dest

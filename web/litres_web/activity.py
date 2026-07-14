@@ -23,13 +23,13 @@ error) plus a human `message`, so the UI can show "what just happened"
 while sitting idle. The frontend polls `snapshot()` and renders whatever
 state it reports -- it owns no activity logic of its own.
 
-Cancellation is cooperative and checked *between* books/size fetches: it
-stops the queue promptly once the current item finishes, but can't
-interrupt a single HTTP request already in flight (Python can't safely
-preempt a blocking call on another thread, and Playwright's sync API only
-tolerates being touched from the thread that created it). That's why
-client.download_file uses a bounded timeout -- a stuck transfer self-aborts
-instead of tying up the one worker thread forever.
+Cancellation is cooperative. Between books/size fetches the loop checks the
+cancel event, and *within* a download `client.download_file` polls it
+between streamed chunks -- so a Stop interrupts an in-flight transfer within
+a fraction of a second (the partial file is discarded), rather than having
+to wait for a possibly ~2GB audiobook to finish. `client.download_file`
+still uses a bounded timeout as a backstop for a transfer that stalls
+without delivering any bytes to interrupt on.
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from litres_core import cache, session
-from litres_core.client import LitresClient
+from litres_core.client import DownloadCancelled, LitresClient
 
 logger = logging.getLogger(__name__)
 
@@ -418,7 +418,9 @@ def _run_prepare(
                     safe_title = "".join(c for c in title if c.isalnum() or c in " ._-")[:150]
                     dest = workdir / f"{safe_title}.{ext}"
                     started_at = time.monotonic()
-                    client.download_file(art_id, best["id"], dest.name, dest)
+                    client.download_file(
+                        art_id, best["id"], dest.name, dest, should_cancel=_cancel_event.is_set
+                    )
                     elapsed = time.monotonic() - started_at
                     _add_to_zip(zf, dest, safe_title, is_audio)
                     dest.unlink()
@@ -426,6 +428,12 @@ def _run_prepare(
                         "Downloaded %r (art %s): %s, %.1f MB in %.1fs",
                         title, art_id, ext, size_mb, elapsed,
                     )
+                except DownloadCancelled:
+                    # Stop was pressed mid-transfer -- download_file already
+                    # discarded the partial file. Stop the queue cleanly (this
+                    # book is neither "done" nor an error, just not included).
+                    cancelled = True
+                    break
                 except Exception as exc:
                     # One book failing (a stalled/timed-out transfer, an
                     # anti-bot block, ...) shouldn't sink the whole job --

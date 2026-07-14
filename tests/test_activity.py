@@ -15,6 +15,7 @@ import time
 import zipfile
 
 from litres_core import cache
+from litres_core.client import DownloadCancelled
 from litres_web import activity
 from tests.fakes import FakeLitresClient
 
@@ -146,7 +147,7 @@ def test_cancel_stops_the_prepare_queue_before_the_next_book():
     )
     original_download = client.download_file
 
-    def download_and_cancel_after_first(art_id, release_file_id, filename, dest, subscr=False):
+    def download_and_cancel_after_first(art_id, release_file_id, filename, dest, subscr=False, should_cancel=None):
         result = original_download(art_id, release_file_id, filename, dest, subscr)
         if art_id == 1:
             activity.cancel()
@@ -159,6 +160,29 @@ def test_cancel_stops_the_prepare_queue_before_the_next_book():
     assert result["result"] == "cancelled"
     assert result["done"] == 1
     assert client.download_calls == [1]  # never reached book 2 or 3
+
+
+def test_cancel_interrupts_a_download_mid_transfer():
+    """Stop pressed while a large file is downloading: download_file raises
+    DownloadCancelled, the partial book is dropped (not "done", not an error),
+    and the queue stops -- book 2 is never attempted."""
+    client = _make_client(_book(1, "Big audiobook", TEXT_FILES), _book(2, "Next up", TEXT_FILES))
+    attempted = []
+
+    def cancel_mid_transfer(art_id, release_file_id, filename, dest, subscr=False, should_cancel=None):
+        attempted.append(art_id)
+        activity.cancel()  # user hits Stop while this transfer is in flight
+        assert should_cancel is not None and should_cancel()
+        raise DownloadCancelled(f"cancelled mid-transfer for art {art_id}")
+
+    client.download_file = cancel_mid_transfer
+    activity.prepare(client)
+    result = wait_until_idle()
+
+    assert result["result"] == "cancelled"
+    assert result["done"] == 0  # the interrupted book didn't complete
+    assert result["log"] == []  # and wasn't recorded as done or as an error
+    assert attempted == [1]  # stopped immediately; book 2 never started
 
 
 def test_prepare_total_reflects_selection_size_not_full_library():
@@ -269,7 +293,7 @@ def test_prepare_deflates_an_ebook_zip_so_extractors_do_not_break():
     archive must carry exactly one EOCD and the member must be compressed."""
     client = _make_client(_book(1, "An Ebook", TEXT_FILES))
 
-    def download_epub(art_id, release_file_id, filename, dest, subscr=False):
+    def download_epub(art_id, release_file_id, filename, dest, subscr=False, should_cancel=None):
         _write_zip(dest, [("mimetype", b"application/epub+zip"), ("body.xhtml", b"<html/>")])
         client.download_calls.append(art_id)
         return dest
@@ -293,7 +317,7 @@ def test_prepare_unpacks_an_audiobook_zip_into_stored_tracks():
     zip signature to confuse Archive Utility."""
     client = _make_client(({"id": 1, "title": "An Audiobook", "art_type": 1}, TEXT_FILES))
 
-    def download_zip_with_mp3(art_id, release_file_id, filename, dest, subscr=False):
+    def download_zip_with_mp3(art_id, release_file_id, filename, dest, subscr=False, should_cancel=None):
         _write_zip(dest, [
             ("01 - intro.mp3", b"\xff\xfb" + b"chapter-one-audio" * 50),
             ("02 - outro.mp3", b"\xff\xfb" + b"chapter-two-audio" * 50),

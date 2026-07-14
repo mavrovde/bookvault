@@ -224,9 +224,11 @@ dependency-vulnerability audit on every push/PR.
 
 Tracked as [GitHub issues](https://github.com/mavrovde/litres-assistant/issues):
 
-- Cancelling a download takes effect between books, not mid-transfer --
-  Python/Playwright can't safely preempt a request that's already in
-  flight, so a stuck book still has to hit its own timeout.
+- Cancelling stops the queue between books and also interrupts the file
+  currently downloading (the transfer is polled between streamed chunks and
+  the partial file is discarded), so Stop takes effect within a fraction of
+  a second. A transfer that stalls without sending any bytes still has to
+  hit its own timeout before it can be interrupted.
 - Response-shape assumptions for the library/file-listing endpoints were
   confirmed against a limited sample of real library items; edge cases in
   large/varied libraries (podcasts, webtoons, DRM-restricted items) may need
