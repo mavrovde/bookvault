@@ -64,5 +64,12 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry-backed build cache (a per-image `buildcache` tag in GHCR).
+          # This workflow only runs on tags, and GitHub Actions (`type=gha`)
+          # cache is scoped per git ref -- so a tag run could never reuse a
+          # previous tag's cache, and every release rebuilt from scratch
+          # (re-pulling the ~2.5GB Playwright base + re-running pip install for
+          # both arches). A registry cache is ref-agnostic: every release reuses
+          # it, so unchanged layers (base image, dependency install) are skipped.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache,mode=max
