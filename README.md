@@ -68,9 +68,17 @@ It comes in two flavours that share the same login/session code:
 
 ## 🚀 Quick start
 
-Pick whichever fits you. Both end with the app at **http://127.0.0.1:8420**.
+Pick whichever fits you.
 
-### Option A — Docker (easiest, nothing to install but Docker)
+### Option A — Download the macOS app (no terminal, no Python)
+
+Grab **[`BookVault.dmg` from the latest release](https://github.com/mavrovde/bookvault/releases/latest)**,
+open it, and drag **BookVault** to Applications. First launch: right-click the
+app → **Open** (it's an unsigned build, so Gatekeeper asks once), then log in.
+On first run it downloads the browser engine it needs (~150 MB, one time) — a
+splash shows the progress. See [Desktop app](#-desktop-app-macos--windows--linux).
+
+### Option B — Docker (easiest cross-platform, nothing to install but Docker)
 
 ```bash
 git clone https://github.com/mavrovde/bookvault.git
@@ -81,7 +89,7 @@ docker compose up -d
 Open **http://127.0.0.1:8420**, log in with your litres.ru account, and you're set.
 Full details in [Running in Docker](#-running-in-docker).
 
-### Option B — Run it locally (Python 3.11+)
+### Option C — Run it locally (Python 3.11+)
 
 ```bash
 git clone https://github.com/mavrovde/bookvault.git
@@ -121,7 +129,32 @@ Then open **http://127.0.0.1:8420** and log in. Your password is remembered in y
 Prefer a real app window to a browser tab? `bookvault-desktop` runs the **same
 web app inside a native OS window** (WKWebView on macOS, WebView2 on Windows,
 WebKitGTK on Linux) via [pywebview](https://pywebview.flowrl.com/) — no browser,
-no terminal to keep open.
+no terminal to keep open. It **starts the backend for you**: the app launches the
+web server on a private `127.0.0.1` port in the background, shows a brief splash
+while your saved session restores, then loads the app — and closing the window
+shuts the backend down cleanly. It reuses `bookvault-web` verbatim (the backend
+is *imported*, not duplicated), so it's the same library browser, formats,
+progress, and results as the web app.
+
+### Install (macOS)
+
+Download **[`BookVault.dmg` from the latest release](https://github.com/mavrovde/bookvault/releases/latest)**,
+open it, and drag **BookVault** to Applications.
+
+- **First launch:** it's an *unsigned* build, so macOS Gatekeeper blocks a plain
+  double-click. Right-click the app → **Open** → **Open** (once), or clear the
+  quarantine flag: `xattr -dr com.apple.quarantine /Applications/BookVault.app`.
+- **First run downloads the browser engine** it needs for the litres.ru login
+  (~150 MB, one time) — a splash shows progress. After that, launches are quick
+  and offline until you log in.
+- Your session, cache, and settings live in
+  `~/Library/Application Support/BookVault/`; downloads go to
+  `~/Downloads/litres-library/`.
+
+> Windows (`.msi`) and Linux (`.AppImage`) installers, plus Homebrew / winget /
+> AUR, are on the way. Until then, run those platforms from source (below).
+
+### Run from source (any OS)
 
 ```bash
 .venv/bin/pip install -e ./core -e ./web -e ./desktop
@@ -129,16 +162,18 @@ no terminal to keep open.
 .venv/bin/bookvault-desktop
 ```
 
-It **starts the backend for you**: the desktop app launches the web server on a
-private `127.0.0.1` port in the background, shows a brief splash while your saved
-session restores, then loads the app — and closing the window shuts the backend
-down cleanly. It reuses `bookvault-web` verbatim (the backend is *imported*, not
-duplicated), so it's the same library browser, formats, progress, and results as
-the web app.
+### Build the macOS app yourself
 
-> Runs from a source checkout today. Packaged installers (`.dmg` / `.msi` /
-> `.AppImage`) and package-manager channels (Homebrew / winget / AUR) are on the
-> way.
+[PyInstaller](https://pyinstaller.org/) bundles it into a `.app` + `.dmg`
+(Chromium is fetched on first run, so the installer stays ~80 MB):
+
+```bash
+.venv/bin/pip install pyinstaller
+packaging/macos/build.sh                     # -> packaging/macos/dist/BookVault-<version>.dmg
+```
+
+CI (`.github/workflows/desktop-macos.yml`) runs this on every release tag and
+attaches the `.dmg` to the GitHub Release.
 
 ---
 
@@ -331,6 +366,7 @@ mcp/                  bookvault-mcp — the MCP server (depends on bookvault-cor
   bookvault_mcp/server.py  MCP tools; the `bookvault-mcp` command
 desktop/              bookvault-desktop — native window (depends on bookvault-web)
   bookvault_desktop/app.py  embeds the web app in a pywebview window; `bookvault-desktop`
+packaging/macos/      PyInstaller spec + build.sh → BookVault.app / .dmg
 tests/                pytest suite — fully mocked, no real Playwright/network
 Dockerfile.web        web-app image (Playwright base)
 Dockerfile.mcp        MCP-server image
