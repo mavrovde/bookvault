@@ -96,6 +96,17 @@ def get_library(refresh: bool = False):
         cached = cache.get_library()
         if cached is not None:
             return {"ok": True, "books": cached}
+        # Fresh cache expired. A live re-fetch runs on the single Playwright
+        # worker thread (session.py); if that thread is mid-activity (e.g. a
+        # large download), the fetch would block for the whole activity and
+        # the library would appear to vanish on any page load/reload. Serve
+        # the slightly-stale list instead -- it's still the user's library,
+        # just possibly missing a brand-new purchase until the activity ends
+        # and a refresh runs.
+        if activity.snapshot()["state"] != activity.IDLE:
+            stale = cache.get_library_stale()
+            if stale is not None:
+                return {"ok": True, "books": stale}
     try:
         books = session.run(activity.build_books, client)
     except Exception as exc:

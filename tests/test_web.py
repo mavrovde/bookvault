@@ -153,6 +153,35 @@ def test_library_second_request_is_served_from_cache_not_refetched(monkeypatch):
     assert len(calls) == 1  # second request hit the cache, not litres.ru again
 
 
+def test_library_serves_stale_cache_while_an_activity_is_busy(monkeypatch):
+    # When the fresh cache has expired AND an activity is in progress (the one
+    # worker thread is busy, e.g. a large download), the route must serve the
+    # slightly-stale cached list rather than block on a live re-fetch -- so the
+    # library never appears to vanish mid-download.
+    from litres_core import cache
+
+    fake = client_factory(monkeypatch, session, library=[{"id": 1, "title": "Book One"}])
+    calls = []
+    original = fake.iter_library
+
+    def counting_iter_library(limit=100):
+        calls.append(1)
+        return original(limit)
+
+    fake.iter_library = counting_iter_library
+
+    with TestClient(app) as client:
+        client.post("/login", data={"login": "u@example.com", "password": "pw"})
+        warm = client.get("/library")  # warms the cache (one live fetch)
+        monkeypatch.setattr(cache, "LIBRARY_TTL", 0)  # fresh cache now considered expired
+        monkeypatch.setattr(activity, "_state", {**activity._state, "state": activity.PREPARING})
+        resp = client.get("/library")
+
+    assert resp.status_code == 200
+    assert resp.json() == warm.json()  # same (now-stale) list served, not blanked
+    assert len(calls) == 1  # served from stale cache -- no second (blocking) fetch
+
+
 def test_library_refresh_param_bypasses_the_cache(monkeypatch):
     fake = client_factory(monkeypatch, session, library=[{"id": 1, "title": "Book One"}])
     calls = []

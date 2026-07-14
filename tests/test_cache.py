@@ -22,6 +22,20 @@ def test_get_library_is_none_once_ttl_expires(monkeypatch):
     assert cache.get_library() is None
 
 
+def test_get_library_stale_returns_data_past_ttl(monkeypatch):
+    # get_library_stale ignores TTL freshness -- it's what lets the /library
+    # route serve a usable list instead of blocking on the busy worker thread.
+    monkeypatch.setattr(cache, "LIBRARY_TTL", 0)
+    books = [{"id": 1, "title": "Book One"}]
+    cache.set_library(books)
+    assert cache.get_library() is None      # TTL-expired: fresh accessor says None
+    assert cache.get_library_stale() == books  # but the stale accessor still has it
+
+
+def test_get_library_stale_is_none_when_nothing_cached():
+    assert cache.get_library_stale() is None
+
+
 def test_get_files_is_none_when_nothing_cached():
     assert cache.get_files(1) is None
 

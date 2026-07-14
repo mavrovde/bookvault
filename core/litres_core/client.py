@@ -286,7 +286,8 @@ class LitresClient:
         return file_entry.get("extension") or EXT_BY_FILE_TYPE.get(file_entry.get("file_type")) or "fb2"
 
     def download_file(
-        self, art_id, release_file_id, filename: str, dest: Path, subscr: bool = False, should_cancel=None
+        self, art_id, release_file_id, filename: str, dest: Path, subscr: bool = False,
+        should_cancel=None, on_progress=None,
     ) -> Path:
         segment = "download_book_subscr" if subscr else "download_book"
         url = f"{DOWNLOAD_BASE}/{segment}/{art_id}/{release_file_id}/{filename}"
@@ -305,6 +306,11 @@ class LitresClient:
         # interrupt an in-flight transfer within ~one chunk rather than having
         # to wait for the whole (possibly ~2GB) file to finish -- the streaming
         # loop is what makes mid-transfer cancellation possible at all.
+        #
+        # `on_progress(written, total)`, if given, is called after each chunk
+        # with the bytes written so far and the total from Content-Length (or
+        # None if the server didn't send one) -- the same streaming loop is
+        # what lets us report live download progress at all.
         cookies = {c["name"]: c["value"] for c in self.context.cookies()}
         timeout = httpx.Timeout(DOWNLOAD_TIMEOUT_MS / 1000)
         logger.debug("Streaming GET %s (timeout=%dms)", url, DOWNLOAD_TIMEOUT_MS)
@@ -320,12 +326,15 @@ class LitresClient:
                         raise LitresAuthError(
                             f"Download failed for art {art_id} ({resp.status_code}): {snippet}"
                         )
+                    total = int(resp.headers.get("content-length") or 0) or None
                     with open(dest, "wb") as f:
                         for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
                             if should_cancel is not None and should_cancel():
                                 raise DownloadCancelled(f"Download cancelled mid-transfer for art {art_id}")
                             f.write(chunk)
                             written += len(chunk)
+                            if on_progress is not None:
+                                on_progress(written, total)
         except DownloadCancelled:
             dest.unlink(missing_ok=True)  # discard the partial file
             logger.info("Cancelled download of art %s mid-transfer (%d bytes discarded)", art_id, written)

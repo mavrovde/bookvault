@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.8.0] - Live download progress; library survives long downloads
+
+### Added
+- Live per-file download progress. `download_file` now takes an
+  `on_progress(written, total)` callback, invoked after each streamed 1 MiB
+  chunk with the bytes written so far and the total from `Content-Length`
+  (or `None` if the server sends none). The zip-build activity threads this
+  into its state machine (`current_downloaded` / `current_total`), so the UI
+  can show a live `12.3 / 45.0 MB` readout for the file currently
+  downloading.
+
+### Changed
+- The zip-build progress bar now reflects **bytes**, not just whole books.
+  It blends the current file's download fraction into the book count
+  (`(books_done + current_file_fraction) / total`), so a single-book job (or
+  the last book of any job) visibly fills mid-transfer instead of sitting at
+  0% until that one file finishes. Whole-library jobs (book count unknown)
+  fill by the current file's byte fraction so the bar still moves.
+
+### Fixed
+- The library no longer vanishes during a long download. A cache-miss
+  `/library` fetch runs on the single Playwright worker thread; while that
+  thread is busy with an activity (e.g. a large audiobook download) the
+  request used to block for the whole download, and a page reload showed
+  "Could not load your library." The route now serves the slightly-stale
+  cached list when an activity is in progress, and the frontend keeps any
+  list it already has (retrying quietly) rather than blanking it on a
+  transient failure.
+
 ## [0.7.3] - Cancel interrupts an in-progress download
 
 ### Changed

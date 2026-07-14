@@ -73,6 +73,8 @@ _state = {
     "result": None,         # None | done | cancelled | error -- outcome of the last finished activity
     "message": "",          # human-friendly line describing what's happening / what just happened
     "current_title": None,  # book currently being fetched (PREPARING only)
+    "current_downloaded": None,  # bytes downloaded for the current file (PREPARING only)
+    "current_total": None,       # total bytes of the current file when known (PREPARING only)
     "done": 0,              # progress counter (CHECKING: sizes resolved; PREPARING: books zipped)
     "total": None,          # progress denominator when known
     "log": [],              # per-book results (PREPARING only): {"title","status",...}
@@ -153,6 +155,8 @@ def _begin(state: str, *, total=None, message="") -> bool:
             result=None,
             message=message,
             current_title=None,
+            current_downloaded=None,
+            current_total=None,
             done=0,
             total=total,
             log=[],
@@ -394,7 +398,7 @@ def _run_prepare(
                 if art_ids is not None and art_id not in art_ids:
                     continue
                 title = art.get("title") or str(art_id)
-                _update(current_title=title)
+                _update(current_title=title, current_downloaded=None, current_total=None)
                 logger.info("Downloading %r (art %s)", title, art_id)
 
                 try:
@@ -417,9 +421,19 @@ def _run_prepare(
                         is_audio = art.get("art_type") == 1
                     safe_title = "".join(c for c in title if c.isalnum() or c in " ._-")[:150]
                     dest = workdir / f"{safe_title}.{ext}"
+                    # Seed the total from the known file size so the MB readout
+                    # shows "0 / N MB" the instant the transfer starts; the
+                    # callback prefers the live Content-Length but falls back to
+                    # this when the server sends none, so the total never blanks.
+                    best_size = best.get("size") or None
+                    _update(current_downloaded=0, current_total=best_size)
                     started_at = time.monotonic()
                     client.download_file(
-                        art_id, best["id"], dest.name, dest, should_cancel=_cancel_event.is_set
+                        art_id, best["id"], dest.name, dest,
+                        should_cancel=_cancel_event.is_set,
+                        on_progress=lambda written, total: _update(
+                            current_downloaded=written, current_total=total or best_size
+                        ),
                     )
                     elapsed = time.monotonic() - started_at
                     _add_to_zip(zf, dest, safe_title, is_audio)
@@ -462,6 +476,8 @@ def _run_prepare(
                 state=IDLE,
                 result="cancelled" if cancelled else "done",
                 current_title=None,
+                current_downloaded=None,
+                current_total=None,
                 zip_path=str(zip_path),
                 message="Stopped." if cancelled else "",
             )
@@ -472,7 +488,10 @@ def _run_prepare(
         )
     except Exception as exc:
         logger.exception("Zip build crashed")
-        _update(state=IDLE, result="error", error=_friendly_error(exc), current_title=None, message="")
+        _update(
+            state=IDLE, result="error", error=_friendly_error(exc),
+            current_title=None, current_downloaded=None, current_total=None, message="",
+        )
 
 
 def _friendly_error(exc: Exception) -> str:

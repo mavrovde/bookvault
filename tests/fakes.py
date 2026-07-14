@@ -120,12 +120,16 @@ class FakeLitresClient:
     def file_extension(file_entry):
         return LitresClient.file_extension(file_entry)
 
-    def download_file(self, art_id, release_file_id, filename, dest, subscr=False, should_cancel=None):
+    def download_file(self, art_id, release_file_id, filename, dest, subscr=False,
+                      should_cancel=None, on_progress=None):
         self.download_calls.append(art_id)
         if art_id in self.fail_downloads:
             raise LitresAuthError(f"Download failed for art {art_id} (403): DDoS-Guard")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(b"FAKEDATA")
+        data = b"FAKEDATA"
+        dest.write_bytes(data)
+        if on_progress is not None:
+            on_progress(len(data), len(data))
         return dest
 
 

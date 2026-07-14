@@ -55,7 +55,17 @@ async function loadLibrary(forceRefresh) {
     state.selected = new Set();
     renderList();
   } catch (e) {
-    listEl.innerHTML = '<div class="empty-state" style="color:var(--danger)">Could not load your library.</div>';
+    // A transient failure must not wipe a list that's already on screen --
+    // e.g. the single worker thread was briefly busy with a download when the
+    // library cache had expired. Keep the current list if we have one;
+    // otherwise show a loading note and retry shortly (the backend serves a
+    // stale list while busy, so this converges without user action).
+    if (state.books.length > 0) {
+      renderList();
+    } else {
+      listEl.innerHTML = '<div class="empty-state">Loading your library…</div>';
+      setTimeout(() => loadLibrary(forceRefresh), 3000);
+    }
   }
 }
 
@@ -205,9 +215,25 @@ function renderActivity(s) {
     bar.style.width = s.total ? Math.min(100, (s.done / s.total) * 100) + '%' : '0%';
     countEl.textContent = s.total ? `${s.done} / ${s.total} sizes checked` : '';
   } else if (s.state === 'preparing') {
-    if (s.total) bar.style.width = Math.min(100, (s.done / s.total) * 100) + '%';
-    else bar.classList.add('indeterminate');
-    countEl.textContent = s.total ? `${s.done} / ${s.total} books` : `${s.done} books`;
+    // The bar reflects BYTES, not just whole books: blend the file currently
+    // downloading into the book count as a fraction, so a single-book job (or
+    // the last book of any job) visibly fills mid-transfer instead of sitting
+    // at 0% until that one file finishes.
+    const frac = (s.current_total && s.current_downloaded != null)
+      ? Math.min(1, s.current_downloaded / s.current_total)
+      : 0;
+    if (s.total) {
+      bar.style.width = Math.min(100, ((s.done + frac) / s.total) * 100) + '%';
+      countEl.textContent = `${s.done} / ${s.total} books`;
+    } else if (s.current_total) {
+      // Whole-library job: book count is unknown, so fill by the current
+      // file's byte progress -- at least the bar moves per book.
+      bar.style.width = Math.min(100, frac * 100) + '%';
+      countEl.textContent = `${s.done} books`;
+    } else {
+      bar.classList.add('indeterminate');
+      countEl.textContent = s.done ? `${s.done} books` : '';
+    }
   } else { // idle
     bar.style.width = s.result === 'done' ? '100%' : '0%';
     countEl.textContent = '';
@@ -216,7 +242,18 @@ function renderActivity(s) {
   // Current line: a book title while preparing, the backend's message
   // otherwise (which also carries the "what just happened" summary at idle).
   if (s.state === 'preparing' && s.current_title) {
-    currentEl.textContent = `Fetching: ${s.current_title}`;
+    // Live MB for the file currently downloading. current_downloaded/_total
+    // are bytes (total may be null if the server sent no Content-Length and
+    // the size was unknown) -- show "12.3 / 45.0 MB", or just "12.3 MB" when
+    // the total isn't known.
+    let line = `Fetching: ${s.current_title}`;
+    if (s.current_downloaded != null) {
+      const doneMb = s.current_downloaded / 1e6;
+      line += s.current_total
+        ? ` — ${formatSize(doneMb)} / ${formatSize(s.current_total / 1e6)}`
+        : ` — ${formatSize(doneMb)}`;
+    }
+    currentEl.textContent = line;
   } else {
     currentEl.textContent = s.message
       || (s.state === 'idle' ? 'Nothing running right now -- select some books and hit Prepare zip, or use Refresh to check for new purchases.' : '');

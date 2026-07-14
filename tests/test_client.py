@@ -244,6 +244,36 @@ def test_download_file_streams_in_chunks_without_buffering_whole_file(tmp_path):
     assert dest.read_bytes() == big
 
 
+def test_download_file_reports_progress_per_chunk(tmp_path):
+    # on_progress must be called after every 1 MiB chunk with the cumulative
+    # bytes written so far and the total from the response's Content-Length,
+    # so the UI can show a live "written / total" MB readout.
+    body = b"\xab" * (2 * 1024 * 1024 + 100)  # 3 chunks: 1 MiB, 1 MiB, 100 B
+    client = make_bare_client(lambda *a: None)
+    client._httpx_transport = httpx.MockTransport(lambda request: httpx.Response(200, content=body))
+    calls = []
+    client.download_file(1, 2, "book.epub", tmp_path / "book.epub",
+                         on_progress=lambda written, total: calls.append((written, total)))
+    assert [w for w, _ in calls] == [1024 * 1024, 2 * 1024 * 1024, len(body)]  # cumulative
+    assert all(total == len(body) for _, total in calls)  # Content-Length total on every call
+
+
+def test_download_file_reports_none_total_without_content_length(tmp_path):
+    # A streamed response with no Content-Length must still report progress,
+    # with total=None so the UI falls back to showing bytes-so-far only.
+    def handler(request):
+        resp = httpx.Response(200, content=iter([b"\x00" * 1024]))
+        resp.headers.pop("content-length", None)
+        return resp
+
+    client = make_bare_client(lambda *a: None)
+    client._httpx_transport = httpx.MockTransport(handler)
+    calls = []
+    client.download_file(1, 2, "book.epub", tmp_path / "book.epub",
+                         on_progress=lambda written, total: calls.append((written, total)))
+    assert calls and all(total is None for _, total in calls)
+
+
 def test_download_file_raises_on_failure_status(tmp_path):
     client = make_bare_client(lambda *a: None)
     client._httpx_transport = httpx.MockTransport(

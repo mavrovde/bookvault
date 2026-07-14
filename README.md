@@ -97,6 +97,14 @@ paints whatever state it reports -- every button's enabled/label state is a
 pure function of that state. The frontend owns no activity logic, no pacing,
 and no size-fetch loop of its own; those all live in `activity.py`.
 
+While a zip build runs, the snapshot also carries live per-file download
+progress -- `current_downloaded`/`current_total` bytes, fed by
+`download_file`'s `on_progress` callback as it streams each chunk. The
+progress bar fills by *bytes*, not just whole books, so a single-book
+download (or the last book of any batch) visibly advances mid-file instead
+of jumping only when a whole book finishes, and the card shows a live
+`12.3 / 45.0 MB` readout for the file currently downloading.
+
 ### Why Playwright instead of plain HTTP requests?
 
 litres.ru's login endpoint (`api.litres.ru/foundation/api/auth/login`)

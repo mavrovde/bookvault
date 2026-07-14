@@ -76,6 +76,17 @@ def get_library() -> Optional[list]:
         return None
 
 
+def get_library_stale() -> Optional[list]:
+    """Return the cached library listing regardless of TTL freshness, or None
+    if nothing was ever cached. A live re-fetch runs on the single Playwright
+    worker thread (see session.py); when that thread is busy with a long
+    activity (e.g. a large download), serving this slightly-stale list is far
+    better than blocking the request until the activity finishes."""
+    with _lock:
+        entry = _load().get("library")
+        return entry["books"] if entry else None
+
+
 def set_library(books: list) -> None:
     with _lock:
         state = _load()
