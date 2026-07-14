@@ -18,10 +18,13 @@ and unit-testable -- without a display or a GUI backend.
 """
 from __future__ import annotations
 
+import html as _html
+import os
 import socket
+import subprocess
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import uvicorn
 
@@ -36,23 +39,52 @@ WINDOW_TITLE = "BookVault"
 # A tiny self-contained splash shown the instant the window opens, then swapped
 # for the real app once the backend is serving. Returning users have a saved
 # session that the FastAPI lifespan restores by launching headless Chromium --
-# that can take 10-30s, and we don't want a blank/unresponsive window (or a
-# connection-refused page) during it.
-_SPLASH_HTML = """<!doctype html><html><head><meta charset="utf-8">
+# that can take 10-30s (and a genuine first run downloads Chromium first), and
+# we don't want a blank/unresponsive window (or a connection-refused page)
+# during it. The message line is parametrised so the worker can report progress.
+def _splash_html(message: str = "Starting up &amp; restoring your session…") -> str:
+    return f"""<!doctype html><html><head><meta charset="utf-8">
 <style>
-  html,body{height:100%;margin:0}
-  body{display:flex;flex-direction:column;align-items:center;justify-content:center;
-       font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#faf7f2;color:#5b5147}
-  .dot{width:10px;height:10px;border-radius:50%;background:#a3311f;display:inline-block;
-       animation:b 1s infinite ease-in-out both;margin:0 3px}
-  .dot:nth-child(2){animation-delay:.15s}.dot:nth-child(3){animation-delay:.3s}
-  @keyframes b{0%,80%,100%{opacity:.25}40%{opacity:1}}
-  h1{font-weight:600;margin:0 0 .4rem}p{margin:.2rem 0;font-size:.9rem;opacity:.8}
+  html,body{{height:100%;margin:0}}
+  body{{display:flex;flex-direction:column;align-items:center;justify-content:center;
+       font-family:-apple-system,Segoe UI,Roboto,sans-serif;background:#faf7f2;color:#5b5147}}
+  .dot{{width:10px;height:10px;border-radius:50%;background:#a3311f;display:inline-block;
+       animation:b 1s infinite ease-in-out both;margin:0 3px}}
+  .dot:nth-child(2){{animation-delay:.15s}}.dot:nth-child(3){{animation-delay:.3s}}
+  @keyframes b{{0%,80%,100%{{opacity:.25}}40%{{opacity:1}}}}
+  h1{{font-weight:600;margin:0 0 .4rem}}p{{margin:.2rem 0;font-size:.9rem;opacity:.8}}
 </style></head><body>
   <h1>📚 BookVault</h1>
-  <p>Starting up &amp; restoring your session…</p>
+  <p>{message}</p>
   <div><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
 </body></html>"""
+
+
+def _ensure_chromium(status: Optional[Callable[[str], None]] = None) -> None:
+    """Make sure Playwright's Chromium (needed to log in to litres.ru) is
+    installed. A no-op once it's present, so it's cheap on every launch and only
+    downloads on a genuine first run -- e.g. the first launch of a freshly
+    installed .app, per the 'fetch on first run' packaging choice.
+
+    Invokes Playwright's bundled Node driver directly rather than
+    `python -m playwright`, so this also works in a frozen/packaged app (where
+    there's no python executable to run `-m playwright`)."""
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            exe = p.chromium.executable_path
+        if exe and os.path.exists(exe):
+            return  # already installed -- nothing to do
+    except Exception:
+        pass  # couldn't resolve/launch the driver to check -- try installing below
+
+    if status:
+        status("First run: downloading the browser engine (~150&nbsp;MB, one time)…")
+    from playwright._impl._driver import compute_driver_executable, get_driver_env
+    driver = compute_driver_executable()
+    cmd = list(driver) if isinstance(driver, (list, tuple)) else [driver]
+    cmd += ["install", "chromium"]
+    subprocess.run(cmd, env=get_driver_env(), check=True)
 
 
 def _free_port() -> int:
@@ -149,7 +181,7 @@ def main() -> None:
     # up.
     window = webview.create_window(
         WINDOW_TITLE,
-        html=_SPLASH_HTML,
+        html=_splash_html(),
         width=1100,
         height=800,
         min_size=(900, 600),
@@ -161,16 +193,17 @@ def main() -> None:
     window.events.closed += lambda: setattr(server, "should_exit", True)
 
     def _load_app_when_ready() -> None:
-        # Runs on a pywebview worker thread once the GUI loop is up. Wait for the
-        # backend (its lifespan restore can take a while for a returning user),
-        # then swap the splash for the real app. Generous timeout because a
-        # session restore drives a real headless Chromium.
+        # Runs on a pywebview worker thread once the GUI loop is up. First make
+        # sure Chromium is present (first-run download, with progress on the
+        # splash), then wait for the backend and swap the splash for the real
+        # app. Generous timeout because a session restore drives Chromium.
         try:
+            _ensure_chromium(status=lambda msg: window.load_html(_splash_html(msg)))
             _wait_until_serving(server, thread, timeout=90.0)
             window.load_url(app_url)
-        except Exception as exc:  # server never came up -- show why, don't hang blank
+        except Exception as exc:  # never came up -- show why, don't hang blank
             window.load_html(f"<body style='font-family:sans-serif;padding:2rem'>"
-                             f"<h2>BookVault couldn't start its backend</h2><pre>{exc}</pre></body>")
+                             f"<h2>BookVault couldn't start</h2><pre>{_html.escape(str(exc))}</pre></body>")
 
     # Blocks on the MAIN thread with the native event loop until the window is
     # closed; `_load_app_when_ready` runs on a worker thread after the loop
