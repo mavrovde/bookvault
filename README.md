@@ -161,8 +161,25 @@ Download **[`BookVault-Setup-<version>.exe` from the latest release](https://git
 - **First launch of the installer:** it's an *unsigned* build, so Windows SmartScreen shows a blue "Windows protected your PC" dialog — click **More info → Run anyway**. (Requires the WebView2 runtime, which ships with Windows 11 and up-to-date Windows 10.)
 - **First run of the app:** BookVault downloads Chromium (~150 MB) once — the splash shows progress — cached under `%LOCALAPPDATA%\ms-playwright` (survives reinstalls). App data lives in `%LOCALAPPDATA%\BookVault`.
 
-> Linux (`.AppImage`) installers, plus Homebrew / winget / AUR, are on the way.
-> Until then, run Linux from source (below).
+### Install (Linux)
+
+Download **[`BookVault-<version>-x86_64.AppImage` from the latest release](https://github.com/mavrovde/bookvault/releases/latest)**, make it executable, and run it:
+
+```bash
+chmod +x BookVault-*-x86_64.AppImage
+./BookVault-*-x86_64.AppImage
+```
+
+- **Runtime prerequisite — WebKitGTK 4.1.** The window renders with your system's WebKitGTK, which is **not bundled** (WebKit's multiprocess helpers use compile-time absolute paths that can't live inside an AppImage). On Ubuntu 24.04+ / Debian, one line covers it:
+  ```bash
+  sudo apt-get install -y libwebkit2gtk-4.1-0 gir1.2-webkit2-4.1 gir1.2-gtk-3.0
+  ```
+  (Distros that still ship only the WebKit2GTK **4.0** ABI aren't supported — this build targets 4.1.)
+- **FUSE.** If the AppImage won't mount, `sudo apt-get install -y libfuse2t64` (or `libfuse2` on older releases), or run it with `--appimage-extract-and-run`.
+- **First run** downloads Chromium (~150 MB) once (splash shows progress); on a minimal install it also needs a few libs: `sudo apt-get install -y libnss3 libatk-bridge2.0-0 libxkbcommon0 libgbm1 libasound2`.
+- App data lives in `~/.local/share/BookVault/`; downloads go to `~/Downloads/litres-library/`.
+
+> Homebrew / winget / AUR channels are still on the way.
 
 ### Run from source (any OS)
 

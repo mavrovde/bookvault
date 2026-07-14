@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.2.0] - Linux installer (AppImage)
+
+Adds a Linux **AppImage**, completing the desktop trio (macOS / Windows / Linux).
+Built with PyInstaller + `appimagetool` on an `ubuntu-latest` runner, with a
+headless smoke test (xvfb) that boots the frozen app to prove the GTK/WebKit
+binding works, then attaches the `.AppImage` to each release.
+
+### Added
+- **Linux `.AppImage`.** `chmod +x` and run it. It bundles the app + the gi
+  bindings/typelib; **WebKitGTK 4.1 is a host runtime dependency** (WebKit's
+  multiprocess helpers use compile-time absolute paths that can't live inside an
+  AppImage) — one `apt` line covers it on Ubuntu 24.04+
+  (`libwebkit2gtk-4.1-0 gir1.2-webkit2-4.1 gir1.2-gtk-3.0`). Chromium is fetched
+  on first run; app data lives in `~/.local/share/BookVault/`.
+- CI (`.github/workflows/desktop-linux.yml`) builds + smoke-tests the AppImage on
+  `ubuntu-latest` on every tag and attaches it to the GitHub Release.
+
 ## [1.1.0] - Windows installer (Setup.exe)
 
 Adds a native **Windows** installer, built the same way as macOS: a PyInstaller

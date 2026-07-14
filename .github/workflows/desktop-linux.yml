@@ -1,0 +1,106 @@
+name: Build Linux desktop app
+
+# Build the BookVault Linux AppImage on PRs that touch the Linux packaging (build
+# + headless smoke check), on every release tag (attach to the Release), and on
+# demand. Separate from docker-publish.yml so the web/mcp publish is unaffected.
+# Chromium is fetched on first run, so the .AppImage stays small.
+#
+# runs-on: ubuntu-latest (Noble): ships WebKit2GTK 4.1; WebKitGTK stays a
+# documented HOST runtime dependency (see the README Linux section) -- the
+# AppImage bundles the gi bindings + WebKit2-4.1 typelib and binds the host lib.
+on:
+  pull_request:
+    paths:
+      - "packaging/linux/**"
+      - "packaging/entry.py"
+      - "desktop/**"
+      - ".github/workflows/desktop-linux.yml"
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # upload the .AppImage asset to the release
+
+jobs:
+  build:
+    name: Linux .AppImage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install GTK / WebKit deps (+ xvfb for the smoke test)
+        run: |
+          sudo apt-get update
+          # NB: no libfuse2 -- it has no install candidate on Noble (t64 rename),
+          # and APPIMAGE_EXTRACT_AND_RUN=1 avoids the FUSE mount entirely.
+          sudo apt-get install -y \
+            libgirepository-2.0-dev libgirepository1.0-dev gir1.2-girepository-2.0 \
+            gir1.2-gtk-3.0 gir1.2-webkit2-4.1 libwebkit2gtk-4.1-0 \
+            libcairo2-dev python3-cairo-dev pkg-config gcc python3-dev \
+            patchelf desktop-file-utils xvfb
+
+      - name: Install the desktop app + PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./core -e ./web -e ./desktop pyinstaller PyGObject pycairo "pywebview[gtk]"
+
+      - name: Sanity-check the GTK / WebKit binding
+        run: |
+          python -c "import gi; gi.require_version('Gtk','3.0'); gi.require_version('WebKit2','4.1'); from gi.repository import Gtk, WebKit2; print('gi OK')"
+
+      - name: Resolve version
+        run: |
+          # On a tag build use the release version; on PRs/dispatch GITHUB_REF_NAME
+          # is e.g. '23/merge', so force a dev default instead.
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "APP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "APP_VERSION=0.0.0-dev" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build onedir + AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"   # CI runners have no working FUSE mount
+          ARCH: x86_64                    # appimagetool requires ARCH set
+        run: packaging/linux/build-appimage.sh "$APP_VERSION"
+
+      - name: Smoke-test the frozen app (headless)
+        run: |
+          # Prove the frozen binary actually launches -- imports the bundled gi
+          # bindings, binds the host WebKitGTK, opens the GTK window, and serves.
+          # A broken gi/WebKit binding crashes at window creation, so surviving a
+          # few seconds with "Uvicorn running" and no traceback is a real signal.
+          export WEBKIT_DISABLE_DMABUF_RENDERER=1
+          ( timeout 45 xvfb-run -a packaging/linux/dist/BookVault/BookVault > smoke.log 2>&1 || true ) &
+          for i in $(seq 1 30); do grep -q "Uvicorn running on" smoke.log 2>/dev/null && break; sleep 1; done
+          sleep 4
+          echo "----- smoke.log -----"; sed -n '1,60p' smoke.log
+          pkill -f "dist/BookVault/BookVault" 2>/dev/null || true
+          grep -q "Uvicorn running on" smoke.log || { echo "!! app did not start"; exit 1; }
+          if grep -qiE "Traceback|ModuleNotFoundError|Namespace .* not available|Typelib|cannot open display|WebKit.*not available" smoke.log; then
+            echo "!! startup error"; exit 1
+          fi
+          echo "smoke OK -- frozen app booted with GTK/WebKit"
+
+      - name: Attach .AppImage to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --generate-notes 2>/dev/null || true
+          gh release upload "${GITHUB_REF_NAME}" packaging/linux/BookVault-*.AppImage --clobber
+
+      - name: Upload .AppImage as a workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: BookVault-linux-appimage
+          path: packaging/linux/BookVault-*.AppImage
+          if-no-files-found: warn
