@@ -47,7 +47,7 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements-dev.txt   # includes test dependencies
 .venv/bin/playwright install chromium
 
-cp .env.example .env   # optional -- fill in creds to skip the login form
+cp .env.example .env   # optional -- credentials here are for the MCP server only
 .venv/bin/python run.py
 ```
 
@@ -151,10 +151,12 @@ LITRES_LOGIN=you@example.com
 LITRES_PASSWORD=your-litres-password
 ```
 
-This is **optional** -- without it, you can still log in through the web
-UI's login form (or the `login_to_litres` MCP tool), and the session will
-be remembered from then on. `.env` just lets the app bootstrap a session
-automatically on startup, with no manual login step.
+These credentials are used by the **MCP server only**. The MCP server is
+headless (no login form), so it bootstraps a first session from them. The
+**web app never uses them** -- you log in through its login page, and the
+session is saved (browser cookies + your OS keychain) and reused on every
+later run; if the saved session lapses, it silently re-logs-in from the
+keychain. So for web-app-only use you can leave `.env` credentials unset.
 
 Everything else is optional too, with sensible defaults:
 

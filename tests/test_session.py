@@ -108,6 +108,73 @@ def test_restore_session_is_a_noop_if_already_restored(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# restore_session(allow_env_login=False) -- the web-app flow. The web UI never
+# bootstraps a login from .env credentials (that's MCP-only); it restores a
+# saved session or re-logs-in from the keychain, and otherwise stays logged
+# out so its login form is shown.
+# --------------------------------------------------------------------------
+
+
+def test_web_restore_ignores_env_credentials_and_stays_logged_out(monkeypatch):
+    """The whole point: even with LITRES_LOGIN/PASSWORD set, the web flow
+    must not auto-login from them -- no saved session, no keychain => the
+    login form is shown, not a silent env-credential login."""
+    monkeypatch.setenv("LITRES_LOGIN", "envuser@example.com")
+    monkeypatch.setenv("LITRES_PASSWORD", "envpass")
+    fake = client_factory(monkeypatch, session)
+
+    session.restore_session(allow_env_login=False)
+
+    assert session.current_client() is None
+    assert fake.login_calls == []  # never touched the env credentials
+
+
+def test_web_restore_still_reuses_a_saved_session(monkeypatch):
+    session.SESSION_STATE_PATH.write_text("{}")
+    credentials.save("user@example.com", "hunter2")  # display name source
+    fake = client_factory(monkeypatch, session, library=[])
+    fake._is_logged_in = True
+
+    session.restore_session(allow_env_login=False)
+
+    assert session.current_client() is fake
+    assert session.current_login() == "user@example.com"
+    assert fake.login_calls == []  # reused the saved session, no fresh login
+
+
+def test_web_restore_still_relogins_from_keyring(monkeypatch):
+    """Keeping the keychain convenience: when the cookie session has lapsed
+    but the OS keychain still holds credentials, the web app silently
+    re-logs-in -- it just never reaches for .env to do so."""
+    session.SESSION_STATE_PATH.write_text("{}")
+    credentials.save("user@example.com", "hunter2")
+    monkeypatch.setenv("LITRES_LOGIN", "envuser@example.com")
+    monkeypatch.setenv("LITRES_PASSWORD", "envpass")
+    fake = client_factory(monkeypatch, session)
+    fake._is_logged_in = False  # saved cookies no longer work
+
+    session.restore_session(allow_env_login=False)
+
+    assert fake.login_calls == [("user@example.com", "hunter2")]  # keychain, not env
+
+
+def test_web_restore_from_cookies_does_not_borrow_env_login_name(monkeypatch):
+    """A valid cookie session with no keychain entry restores fine, but its
+    display login stays None on the web flow rather than being filled in from
+    LITRES_LOGIN (which the web app must ignore entirely)."""
+    session.SESSION_STATE_PATH.write_text("{}")
+    monkeypatch.setenv("LITRES_LOGIN", "envuser@example.com")
+    fake = client_factory(monkeypatch, session, library=[])
+    fake._is_logged_in = True
+
+    session.restore_session(allow_env_login=False)
+
+    assert session.current_client() is fake
+    assert session.current_login() is None  # not borrowed from env
+    assert fake.login_calls == []
+
+
+# --------------------------------------------------------------------------
 # login / logout / shutdown
 # --------------------------------------------------------------------------
 

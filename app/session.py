@@ -65,7 +65,7 @@ def current_login() -> Optional[str]:
     return _state["login"]
 
 
-def _restore_session_impl() -> None:
+def _restore_session_impl(allow_env_login: bool = True) -> None:
     if _state["client"] is not None:
         logger.debug("Session already active, skipping restore")
         return  # already restored/logged in this process
@@ -78,9 +78,10 @@ def _restore_session_impl() -> None:
             # "remember who this is" sources (see login()/credentials.py) --
             # cookies alone don't carry a login name, so without this
             # fallback a keychain miss would restore a working session that
-            # displays no login at all.
+            # displays no login at all. Only the MCP server consults .env
+            # (allow_env_login) -- the web UI never does; see login below.
             _state["client"] = client
-            _state["login"] = saved[0] if saved else os.environ.get("LITRES_LOGIN")
+            _state["login"] = saved[0] if saved else (os.environ.get("LITRES_LOGIN") if allow_env_login else None)
             logger.info("Restored saved session for %s", _state["login"])
             return
         logger.info("Saved session cookies are no longer valid, discarding")
@@ -88,6 +89,15 @@ def _restore_session_impl() -> None:
 
     saved = credentials.load_last()
     if not saved:
+        # No saved cookie session and no keychain credentials. The web UI
+        # stops here and shows its login form (allow_env_login=False): the
+        # user logs in through the page, which then persists the session +
+        # keychain for reuse. Only the headless MCP server -- which has no
+        # interactive login form -- falls back to LITRES_LOGIN/LITRES_PASSWORD
+        # from the environment (.env) to bootstrap a first session.
+        if not allow_env_login:
+            logger.info("No saved session or keychain credentials -- staying logged out (env login is MCP-only)")
+            return
         env_login, env_password = os.environ.get("LITRES_LOGIN"), os.environ.get("LITRES_PASSWORD")
         if not (env_login and env_password):
             logger.info("No saved session or credentials found -- staying logged out")
@@ -146,11 +156,17 @@ def _shutdown_impl() -> None:
         _state["client"] = None
 
 
-def restore_session() -> None:
+def restore_session(allow_env_login: bool = True) -> None:
     """Reuse a previously saved browser session (cookies incl. the
     DataDome-style challenge cookies) first, so we don't drive a fresh
-    login on every process start."""
-    run(_restore_session_impl)
+    login on every process start.
+
+    `allow_env_login` controls the *last-resort* bootstrap when there's no
+    saved session and no keychain credentials: the headless MCP server passes
+    True (fall back to LITRES_LOGIN/LITRES_PASSWORD from .env), the web UI
+    passes False (stop and show its login form instead). A saved session or
+    keychain re-login is used by both regardless."""
+    run(_restore_session_impl, allow_env_login)
 
 
 def login(login_id: str, password: str) -> LitresClient:

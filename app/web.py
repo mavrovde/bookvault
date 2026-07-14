@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from functools import partial
 from pathlib import Path
 from typing import List, Optional
 
@@ -32,7 +33,12 @@ async def lifespan(app: FastAPI):
     # Sync Playwright refuses to run inside an asyncio loop, and FastAPI's
     # lifespan runs directly on the event loop thread -- push it to a
     # worker thread, same as Starlette does for sync route handlers.
-    await anyio.to_thread.run_sync(session.restore_session)
+    #
+    # allow_env_login=False: the web app never auto-logs-in from .env
+    # credentials -- it restores a saved session (or re-logs-in from the OS
+    # keychain), and otherwise shows its login form. LITRES_LOGIN/PASSWORD
+    # in .env are for the headless MCP server only (see session.py).
+    await anyio.to_thread.run_sync(partial(session.restore_session, allow_env_login=False))
     yield
     await anyio.to_thread.run_sync(session.shutdown)
 

@@ -41,6 +41,22 @@ def test_index_shows_logged_in_view_after_session_restore(monkeypatch):
     assert "user@example.com" in resp.text
 
 
+def test_web_app_does_not_auto_login_from_env_credentials(monkeypatch):
+    """Wiring check: the lifespan restores with allow_env_login=False, so even
+    with .env credentials present (and no saved session/keychain) the web app
+    stays logged out and shows its login form -- env creds are MCP-only."""
+    monkeypatch.setenv("LITRES_LOGIN", "envuser@example.com")
+    monkeypatch.setenv("LITRES_PASSWORD", "envpass")
+    fake = client_factory(monkeypatch, session, library=[])
+
+    with TestClient(app) as client:
+        resp = client.get("/")
+
+    assert session.current_client() is None
+    assert fake.login_calls == []  # never bootstrapped from .env
+    assert 'name="login"' in resp.text  # login form is shown instead
+
+
 def test_login_success_redirects_home(monkeypatch):
     client_factory(monkeypatch, session)
     with TestClient(app) as client:
