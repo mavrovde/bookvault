@@ -224,8 +224,6 @@ dependency-vulnerability audit on every push/PR.
 
 Tracked as [GitHub issues](https://github.com/mavrovde/litres-assistant/issues):
 
-- Whole-audiobook downloads can be ~2GB and are currently buffered in
-  memory before being written to disk.
 - Cancelling a download takes effect between books, not mid-transfer --
   Python/Playwright can't safely preempt a request that's already in
   flight, so a stuck book still has to hit its own timeout.
@@ -233,8 +231,9 @@ Tracked as [GitHub issues](https://github.com/mavrovde/litres-assistant/issues):
   confirmed against a limited sample of real library items; edge cases in
   large/varied libraries (podcasts, webtoons, DRM-restricted items) may need
   follow-up fixes.
-- The download is a standard DEFLATE `.zip` -- just double-click it (Finder /
-  Archive Utility) or use any modern tool. One caveat: macOS's built-in
-  Terminal `unzip` ignores the archive's UTF-8 flag and garbles non-Latin
-  (e.g. Cyrillic) filenames -- extract via Finder, or use
+- The download is a standard `.zip` -- just double-click it (Finder /
+  Archive Utility) or use any modern tool. Ebooks are single files; each
+  audiobook is a folder of its tracks. One caveat: macOS's built-in Terminal
+  `unzip` ignores the archive's UTF-8 flag and garbles non-Latin (e.g.
+  Cyrillic) filenames -- extract via Finder, or use
   `ditto -x -k litres-library.zip dest/`, to get the correct names.

@@ -3,8 +3,7 @@ HTTP-handling logic (pagination, error handling, header merging) exercised
 against a fake Playwright request context instead of the network."""
 from __future__ import annotations
 
-from pathlib import Path
-
+import httpx
 import pytest
 
 from litres_core.client import LitresAuthError, LitresClient
@@ -222,18 +221,38 @@ def test_is_logged_in_false_when_users_me_fails():
 # --------------------------------------------------------------------------
 
 
-def test_download_file_writes_bytes_on_success(tmp_path):
-    client = make_bare_client(lambda *a: FakeAPIResponse(status=200, body_data=b"hello world"))
+def test_download_file_streams_bytes_to_disk_on_success(tmp_path):
+    # download_file streams over httpx -- drive it offline via a MockTransport.
+    client = make_bare_client(lambda *a: None)
+    client._httpx_transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, content=b"hello world")
+    )
     dest = tmp_path / "book.epub"
     result = client.download_file(1, 2, "book.epub", dest)
     assert result == dest
     assert dest.read_bytes() == b"hello world"
 
 
-def test_download_file_raises_on_failure_status():
-    client = make_bare_client(lambda *a: FakeAPIResponse(status=403, text_data="DDoS-Guard"))
-    with pytest.raises(LitresAuthError):
-        client.download_file(1, 2, "book.epub", Path("/tmp/should-not-be-created.epub"))
+def test_download_file_streams_in_chunks_without_buffering_whole_file(tmp_path):
+    # A larger body must arrive intact even though it's read in 1 MiB chunks.
+    big = b"\xab" * (3 * 1024 * 1024 + 7)
+    client = make_bare_client(lambda *a: None)
+    client._httpx_transport = httpx.MockTransport(lambda request: httpx.Response(200, content=big))
+    dest = tmp_path / "audiobook.zip"
+    client.download_file(1, 2, "audiobook.zip", dest)
+    assert dest.stat().st_size == len(big)
+    assert dest.read_bytes() == big
+
+
+def test_download_file_raises_on_failure_status(tmp_path):
+    client = make_bare_client(lambda *a: None)
+    client._httpx_transport = httpx.MockTransport(
+        lambda request: httpx.Response(403, text="DDoS-Guard")
+    )
+    dest = tmp_path / "should-not-be-created.epub"
+    with pytest.raises(LitresAuthError, match="403"):
+        client.download_file(1, 2, "book.epub", dest)
+    assert not dest.exists()
 
 
 def test_get_merges_extra_headers_with_explicit_headers():

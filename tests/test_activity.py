@@ -250,25 +250,31 @@ def test_prepare_populates_the_cache_after_a_live_file_fetch():
     assert cache.get_files(1) == TEXT_FILES
 
 
-def test_prepare_zip_deflates_so_nested_archive_signatures_do_not_break_extractors():
-    """Regression: the zip members are epubs / zip_with_mp3 audiobooks --
-    themselves zip files. Built with ZIP_STORED, each member's raw
-    end-of-central-directory marker (PK\\x05\\x06) landed verbatim in the outer
-    archive, so a scanning parser (macOS Archive Utility) saw several EOCD
-    markers and rejected the whole file as an "unsupported format". DEFLATE
-    masks them: the outer archive must carry exactly one EOCD signature and
-    its members must be compressed, not stored."""
-    client = _make_client(_book(1, "Nested-zip book", TEXT_FILES))
+def _write_zip(dest, entries):
+    """Write a real (STORED) zip file to `dest`, like litres serves for an
+    epub or a zip_with_mp3 audiobook -- so its bytes carry a nested
+    end-of-central-directory signature."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_STORED) as z:
+        for name, data in entries:
+            z.writestr(name, data)
 
-    def download_a_nested_zip(art_id, release_file_id, filename, dest, subscr=False):
-        # Stand in for an epub/audiobook-zip: its bytes contain both a local
-        # header and an end-of-central-directory signature, like a real zip.
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(b"PK\x03\x04nested book payload PK\x05\x06" + b"\x00" * 18)
+
+def test_prepare_deflates_an_ebook_zip_so_extractors_do_not_break():
+    """Regression: members that are themselves zips (epub, fb2.zip, ...) had
+    their raw end-of-central-directory marker (PK\\x05\\x06) land verbatim in the
+    outer archive under ZIP_STORED, so macOS Archive Utility saw several and
+    rejected the file as "unsupported format". A non-audio zip member is kept
+    as one file but DEFLATEd, which masks the nested signatures -- the outer
+    archive must carry exactly one EOCD and the member must be compressed."""
+    client = _make_client(_book(1, "An Ebook", TEXT_FILES))
+
+    def download_epub(art_id, release_file_id, filename, dest, subscr=False):
+        _write_zip(dest, [("mimetype", b"application/epub+zip"), ("body.xhtml", b"<html/>")])
         client.download_calls.append(art_id)
         return dest
 
-    client.download_file = download_a_nested_zip
+    client.download_file = download_epub
     activity.prepare(client)
     result = wait_until_idle()
     assert result["result"] == "done"
@@ -276,8 +282,36 @@ def test_prepare_zip_deflates_so_nested_archive_signatures_do_not_break_extracto
     raw = pathlib.Path(result["zip_path"]).read_bytes()
     assert raw.count(b"PK\x05\x06") == 1  # only the outer archive's own EOCD survives
     with zipfile.ZipFile(result["zip_path"]) as zf:
-        assert zf.namelist()
+        assert zf.namelist() == ["An Ebook.epub"]
         assert all(info.compress_type == zipfile.ZIP_DEFLATED for info in zf.infolist())
+
+
+def test_prepare_unpacks_an_audiobook_zip_into_stored_tracks():
+    """An audiobook (art_type == 1) arrives as a zip_with_mp3 bundle. Rather
+    than re-compressing ~gigabytes of already-compressed audio, unpack it and
+    add each track STORED under a per-book folder -- fast, and with no nested
+    zip signature to confuse Archive Utility."""
+    client = _make_client(({"id": 1, "title": "An Audiobook", "art_type": 1}, TEXT_FILES))
+
+    def download_zip_with_mp3(art_id, release_file_id, filename, dest, subscr=False):
+        _write_zip(dest, [
+            ("01 - intro.mp3", b"\xff\xfb" + b"chapter-one-audio" * 50),
+            ("02 - outro.mp3", b"\xff\xfb" + b"chapter-two-audio" * 50),
+        ])
+        client.download_calls.append(art_id)
+        return dest
+
+    client.download_file = download_zip_with_mp3
+    activity.prepare(client)
+    result = wait_until_idle()
+    assert result["result"] == "done"
+
+    with zipfile.ZipFile(result["zip_path"]) as zf:
+        # tracks live under a per-book folder, stored -- not the nested .zip
+        assert zf.namelist() == ["An Audiobook/01 - intro.mp3", "An Audiobook/02 - outro.mp3"]
+        assert all(info.compress_type == zipfile.ZIP_STORED for info in zf.infolist())
+    raw = pathlib.Path(result["zip_path"]).read_bytes()
+    assert raw.count(b"PK\x05\x06") == 1  # no leftover nested audiobook-zip EOCD
 
 
 # ==========================================================================

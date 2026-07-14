@@ -35,11 +35,12 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import tempfile
 import threading
 import time
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 from litres_core import cache, session
@@ -333,6 +334,43 @@ def _iter_books(client: LitresClient):
     return list(client.iter_library())
 
 
+def _add_to_zip(zf: zipfile.ZipFile, dest: Path, safe_title: str, is_audio: bool) -> None:
+    """Add one downloaded book to the archive so macOS Archive Utility can open
+    the result, without re-compressing gigabytes of already-compressed audio.
+
+    Archive Utility locates the central directory by scanning for the
+    end-of-central-directory signature (PK\\x05\\x06); if a member is itself a
+    zip stored uncompressed, that signature appears raw inside the outer
+    archive and Archive Utility, seeing several, rejects the file as an
+    "unsupported format" (`unzip`/`ditto`, which read the real directory, are
+    fine). Three cases:
+
+    - Audiobook bundle (zip_with_mp3 -- a zip of mp3s): unpack it and add each
+      track STORED under a per-book folder. No re-compression, and no nested
+      zip signature to confuse the parser.
+    - Any other member that is *itself* a zip (epub, fb2.zip, fb3, ...): keep
+      it as one file but DEFLATE it, which rewrites the bytes so the nested
+      signatures no longer appear raw. These are small, so it's cheap.
+    - Everything else (m4b, mp3, pdf, txt, mobi): add STORED -- it has no
+      nested zip signature, so storing it is both safe and free.
+    """
+    member_is_zip = zipfile.is_zipfile(dest)
+    if is_audio and member_is_zip:
+        with zipfile.ZipFile(dest) as inner:
+            for info in inner.infolist():
+                if info.is_dir():
+                    continue
+                entry = zipfile.ZipInfo(f"{safe_title}/{PurePosixPath(info.filename).name}")
+                entry.compress_type = zipfile.ZIP_STORED
+                with inner.open(info) as src, zf.open(entry, "w") as out:
+                    shutil.copyfileobj(src, out, 1024 * 1024)
+        return
+    if member_is_zip:
+        zf.write(dest, arcname=dest.name, compress_type=zipfile.ZIP_DEFLATED, compresslevel=1)
+    else:
+        zf.write(dest, arcname=dest.name, compress_type=zipfile.ZIP_STORED)
+
+
 def _run_prepare(
     client: LitresClient,
     art_ids: Optional[set],
@@ -342,18 +380,10 @@ def _run_prepare(
     workdir = Path(tempfile.mkdtemp(prefix="litres-"))
     zip_path = workdir / "litres-library.zip"
     try:
-        # DEFLATE at the lowest level (not STORED). The members are epubs and
-        # zip_with_mp3 audiobooks -- themselves zip files. Stored uncompressed,
-        # each member's raw zip signatures (including its own
-        # end-of-central-directory marker, PK\x05\x06) appear verbatim inside
-        # the outer archive, so a scanning parser sees several EOCD markers and
-        # can't tell which is the real one: macOS Archive Utility then refuses
-        # the whole file with "Unsupported format" (the CLI `unzip`/`ditto`,
-        # which read the true central directory, are unaffected). Any real
-        # DEFLATE level rewrites the member bytes so those nested signatures no
-        # longer appear raw -- level 1 is enough and stays cheap on the
-        # already-compressed content (no meaningful size change).
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=1) as zf:
+        # Default STORED; _add_to_zip picks the right per-member scheme (see
+        # its docstring). The goal is an archive macOS Archive Utility can open
+        # without re-compressing gigabytes of already-compressed audio.
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as zf:
             cancelled = False
             for art in _iter_books(client):
                 if _cancel_event.is_set():
@@ -382,12 +412,15 @@ def _run_prepare(
 
                     ext = client.file_extension(best)
                     size_mb = round(best.get("size", 0) / 1e6, 1)
+                    is_audio = art.get("is_audio")
+                    if is_audio is None:  # raw art dict vs cached web-shape book
+                        is_audio = art.get("art_type") == 1
                     safe_title = "".join(c for c in title if c.isalnum() or c in " ._-")[:150]
                     dest = workdir / f"{safe_title}.{ext}"
                     started_at = time.monotonic()
                     client.download_file(art_id, best["id"], dest.name, dest)
                     elapsed = time.monotonic() - started_at
-                    zf.write(dest, arcname=dest.name)
+                    _add_to_zip(zf, dest, safe_title, is_audio)
                     dest.unlink()
                     logger.info(
                         "Downloaded %r (art %s): %s, %.1f MB in %.1fs",

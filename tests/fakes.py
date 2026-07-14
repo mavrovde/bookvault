@@ -50,6 +50,11 @@ class FakeContext:
     def __init__(self, handler):
         self.request = FakeRequestContext(handler)
 
+    def cookies(self):
+        # download_file reads the browser context's cookies to hand to its
+        # httpx client -- no cookies needed for the offline (MockTransport) path.
+        return []
+
 
 def make_bare_client(handler, extra_headers=None) -> LitresClient:
     """A real LitresClient with Playwright never started -- `.context` is a
@@ -58,6 +63,8 @@ def make_bare_client(handler, extra_headers=None) -> LitresClient:
     client = LitresClient.__new__(LitresClient)
     client.context = FakeContext(handler)
     client._extra_headers = extra_headers if extra_headers is not None else {"app-id": "115"}
+    # download_file streams via httpx; tests set this to an httpx.MockTransport.
+    client._httpx_transport = None
     return client
 
 

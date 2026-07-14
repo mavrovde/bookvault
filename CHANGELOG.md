@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.7.2] - Stream downloads to disk; smart per-member zip packing
+
+### Fixed
+- Downloads no longer buffer the whole file in memory. `download_file` now
+  streams the response to disk in 1 MiB chunks (over httpx, reusing the
+  browser session's cookies -- incl. the DataDome anti-bot cookies -- and
+  captured app-level headers, so the authentication/anti-bot profile is
+  unchanged). A ~2 GB audiobook used to mean ~2 GB resident and the machine
+  swapping ("system very slow during download"); peak memory is now roughly
+  constant regardless of file size.
+
+### Changed
+- The download zip is packed per member so macOS Archive Utility opens it
+  without re-compressing gigabytes of already-compressed audio (which the
+  0.7.1 "DEFLATE everything" fix did, at ~0% size gain and ~2 min CPU per
+  audiobook):
+  - Audiobook bundles (`zip_with_mp3`) are unpacked and their tracks added
+    STORED under a per-book folder -- fast, and no nested-zip
+    end-of-central-directory to confuse the parser.
+  - Members that are themselves zips (epub, fb2.zip, fb3, ...) are DEFLATEd
+    as single files to mask their nested signatures (they're small, so
+    cheap).
+  - Everything else (m4b, mp3, pdf, txt, mobi) is STORED -- safe and free.
+
 ## [0.7.1] - Fix "unsupported format" when opening the downloaded zip
 
 ### Fixed

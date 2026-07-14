@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 from playwright.sync_api import BrowserContext, sync_playwright
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,9 @@ class LitresClient:
         state = str(storage_state_path) if storage_state_path and storage_state_path.exists() else None
         self.context: BrowserContext = self._browser.new_context(storage_state=state)
         self._extra_headers: dict = {}
+        # Injected by tests to drive download_file's httpx client offline; None
+        # means the real network transport.
+        self._httpx_transport = None
 
     def close(self) -> None:
         self.context.close()
@@ -281,13 +285,33 @@ class LitresClient:
     ) -> Path:
         segment = "download_book_subscr" if subscr else "download_book"
         url = f"{DOWNLOAD_BASE}/{segment}/{art_id}/{release_file_id}/{filename}"
-        logger.debug("GET %s (timeout=%dms)", url, DOWNLOAD_TIMEOUT_MS)
-        resp = self._get(url, timeout=DOWNLOAD_TIMEOUT_MS)
-        if not resp.ok:
-            logger.warning("Download request failed for art %s: HTTP %s", art_id, resp.status)
-            raise LitresAuthError(f"Download failed for art {art_id} ({resp.status}): {resp.text()[:300]}")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        body = resp.body()
-        dest.write_bytes(body)
-        logger.debug("Wrote %d bytes to %s", len(body), dest)
+        # Stream the response straight to disk in fixed-size chunks rather than
+        # buffering the whole file in memory. Whole-audiobook bundles can be
+        # ~2GB; Playwright's request client only exposes a full-body read
+        # (resp.body()), which meant ~2GB resident per download and the machine
+        # swapping. We reuse the browser context's cookies (incl. the DataDome
+        # __ddg* anti-bot cookies) and the captured app-level headers, so this
+        # carries the same authentication/anti-bot profile as the rest of the
+        # client -- Playwright's request client is itself a separate HTTP client
+        # from the browser, so nothing about the bot fingerprint changes here.
+        cookies = {c["name"]: c["value"] for c in self.context.cookies()}
+        timeout = httpx.Timeout(DOWNLOAD_TIMEOUT_MS / 1000)
+        logger.debug("Streaming GET %s (timeout=%dms)", url, DOWNLOAD_TIMEOUT_MS)
+        with httpx.Client(
+            transport=self._httpx_transport, follow_redirects=True, timeout=timeout, cookies=cookies
+        ) as http:
+            with http.stream("GET", url, headers=self._extra_headers) as resp:
+                if resp.status_code != 200:
+                    snippet = resp.read()[:300].decode("utf-8", "replace")
+                    logger.warning("Download request failed for art %s: HTTP %s", art_id, resp.status_code)
+                    raise LitresAuthError(
+                        f"Download failed for art {art_id} ({resp.status_code}): {snippet}"
+                    )
+                written = 0
+                with open(dest, "wb") as f:
+                    for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
+                        f.write(chunk)
+                        written += len(chunk)
+        logger.debug("Streamed %d bytes to %s", written, dest)
         return dest
