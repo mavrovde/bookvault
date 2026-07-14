@@ -27,8 +27,9 @@
 > endorsed by, or sponsored by ООО «ЛитРес» (LLC "LitRes"). "LitRes", "ЛитРес", and "litres.ru" are trademarks
 > of their owner, used here only to describe compatibility. See [Trademarks](#trademarks) and [`TRADEMARKS.md`](TRADEMARKS.md).
 
-It comes in two flavours that share the same login/session code:
+It comes in **three flavours** that share the same backend and login/session code:
 
+- 🖼️ **A native desktop app** (macOS / Windows / Linux) — the web app in a real window, no browser or terminal. [Download for macOS](https://github.com/mavrovde/bookvault/releases/latest).
 - 🖥️ **A local web app** — browse your library, tick the books you want, choose a format, and download.
 - 🔌 **An MCP server** — so Claude (or any MCP client) can list your library and download titles as tools.
 
@@ -39,6 +40,7 @@ It comes in two flavours that share the same login/session code:
 - [Features](#-features)
 - [Quick start](#-quick-start)
 - [Using the web app](#-using-the-web-app)
+- [Desktop app (macOS / Windows / Linux)](#-desktop-app-macos--windows--linux)
 - [Using it from Claude (MCP)](#-using-it-from-claude-mcp)
 - [Running in Docker](#-running-in-docker)
 - [Configuration](#-configuration)
@@ -62,6 +64,7 @@ It comes in two flavours that share the same login/session code:
 - **🛡️ Anti-bot resilient** — matches the browser's TLS fingerprint on downloads and retries transient DDoS-Guard blocks automatically (details [below](#-how-it-works)).
 - **⚡ Smart caching** — your library and file listings are cached on disk, so reloads and restarts stay fast and gentle on litres.ru.
 - **🔒 Local &amp; private** — your password lives in your OS keychain (or nowhere, in Docker); nothing is sent anywhere but litres.ru.
+- **🖼️ Native desktop app** — the same app in a real window on macOS, Windows, and Linux (no browser tab, no terminal); it starts and stops its own backend. See [Desktop app](#-desktop-app-macos--windows--linux).
 - **🐳 Docker-ready** — two published images and a one-command `docker compose up`.
 
 ---
@@ -381,7 +384,8 @@ Each subproject has its own `pyproject.toml` and dependencies: installing `bookv
 ## 🧪 Development &amp; tests
 
 ```bash
-# editable installs of all three subprojects + dev tooling (pytest, ruff)
+# editable installs of the core/web/mcp subprojects + dev tooling (pytest, ruff)
+# (add -e ./desktop to work on the desktop app -- it also runs its tests)
 .venv/bin/pip install -e ./core -e ./web -e ./mcp -e ".[dev]"
 .venv/bin/python -m pytest
 ```
@@ -420,7 +424,7 @@ You are responsible for using this tool in line with litres.ru's Terms of Servic
 - 🔑 Your password is stored in your **OS keychain** (`keyring`), never in a plaintext file — and in Docker it isn't stored at all (session-only).
 - 🍪 Your browser **session cookies** are cached in a local JSON file so you don't re-login every run. It's gitignored — **treat it like being logged in; don't share it.**
 - 🚫 `.env`, `.venv/`, and the session/cache files are all gitignored.
-- 🏠 Both entry points are **single-user and local-only by design** — bound to `127.0.0.1` (or published only to it in Docker). There's no multi-user support, and none is planned: this is intentionally *not* built to hold other people's credentials.
+- 🏠 All three front-ends (web, desktop, MCP) are **single-user and local-only by design** — bound to `127.0.0.1` (or published only to it in Docker; the desktop app serves on a private localhost port inside its own process). There's no multi-user support, and none is planned: this is intentionally *not* built to hold other people's credentials.
 
 Found a security issue? See [`SECURITY.md`](SECURITY.md).
 

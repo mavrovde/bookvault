@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bookvault-workspace"
-version = "1.0.0"
+version = "1.0.1"
 description = "Dev/test tooling for the BookVault monorepo (core + web + mcp)."
 requires-python = ">=3.11"
 

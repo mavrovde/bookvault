@@ -17,9 +17,16 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_sub
 _ROOT = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 pathex = [os.path.join(_ROOT, p) for p in ("core", "web", "desktop")]
 
+# The frozen entry point is the cross-platform launcher shared with the Windows
+# and Linux builds: packaging/entry.py (one level up from this spec). It pins a
+# per-user data dir and, crucially, PLAYWRIGHT_BROWSERS_PATH to the standard
+# writable cache (a frozen app otherwise resolves Chromium inside its read-only
+# bundle and can't launch it).
+_ENTRY = os.path.join(SPECPATH, "..", "entry.py")
+
 # Version stamped into the bundle; the tag-driven CI build passes the release
 # version, local builds default to this.
-_VERSION = os.environ.get("BOOKVAULT_VERSION", "1.0.0")
+_VERSION = os.environ.get("BOOKVAULT_VERSION", "1.0.1")
 
 datas = []
 binaries = []
@@ -45,7 +52,7 @@ for pkg in ("bookvault_core", "bookvault_web", "bookvault_desktop"):
     hiddenimports += collect_submodules(pkg)
 
 a = Analysis(
-    ["entry.py"],
+    [_ENTRY],
     pathex=pathex,
     binaries=binaries,
     datas=datas,

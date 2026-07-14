@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.0.1] - Fix: the packaged macOS app couldn't launch its browser
+
+The downloadable macOS app failed at login with an "Internal server error".
+Inside a frozen `.app`, Playwright resolved Chromium to a path *inside* the
+read-only bundle and could neither install nor launch it, so every login died at
+`chromium.launch()`. Fixed by pinning the browser cache (and the app's data dir)
+to the standard writable per-OS locations.
+
+### Fixed
+- **Desktop app login on the packaged macOS build.** `chromium.launch()` failed
+  with `Executable doesn't exist at …/BookVault.app/…/.local-browsers/…` because
+  a frozen Playwright defaults its browsers path relative to the (read-only)
+  bundle. The launcher now sets `PLAYWRIGHT_BROWSERS_PATH` to the standard
+  `~/Library/Caches/ms-playwright` cache — writable, persistent, and shared with
+  any normal Playwright install on the machine.
+
+### Changed
+- The frozen entry point moved to a single cross-platform `packaging/entry.py`
+  (per-user data dir + browsers path chosen by OS), shared by all packaged
+  builds.
+
 ## [1.0.0] - BookVault 1.0: now a native desktop app, too
 
 BookVault reaches 1.0 with a third way to run it: a **native desktop app** for

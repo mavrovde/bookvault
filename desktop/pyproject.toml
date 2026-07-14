@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bookvault-desktop"
-version = "1.0.0"
+version = "1.0.1"
 description = "Desktop wrapper around the BookVault local web app (embeds it in a native window via pywebview)."
 requires-python = ">=3.11"
 dependencies = [
