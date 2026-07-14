@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.10.1] - Multi-arch Docker images
+
+### Fixed
+- **The published Docker images are now multi-arch (`linux/amd64` +
+  `linux/arm64`).** 0.10.0 built amd64 only, so `docker pull` / `docker compose
+  up` failed on Apple Silicon (arm64) machines with "no matching manifest for
+  linux/arm64". The publish workflow now sets up QEMU and builds both.
+
+### Changed
+- Bumped the Docker publish workflow's actions to their Node 24 versions
+  (`docker/build-push-action@v7`, `login-action@v4`, `metadata-action@v6`,
+  `setup-buildx-action@v4`, plus `setup-qemu-action@v4`), clearing the
+  "Node.js 20 is deprecated" warnings.
+
 ## [0.10.0] - Docker images for the web app and MCP server
 
 Both entry points now ship as container images, published to the GitHub
