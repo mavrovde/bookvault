@@ -85,6 +85,12 @@ def _restore_session_impl(allow_env_login: bool = True) -> None:
             # (allow_env_login) -- the web UI never does; see login below.
             _state["client"] = client
             _state["login"] = saved[0] if saved else (os.environ.get("LITRES_LOGIN") if allow_env_login else None)
+            # Cookies carry no login name. When neither the keychain nor .env
+            # supplies one (e.g. Docker: no keychain, web ignores .env), recover
+            # the real account identity from the live session so the UI shows
+            # the email/username instead of a generic "Signed in".
+            if not _state["login"]:
+                _state["login"] = client.account_login()
             logger.info("Restored saved session for %s", _state["login"])
             return
         logger.info("Saved session cookies are no longer valid, discarding")

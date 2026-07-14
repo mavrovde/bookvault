@@ -423,3 +423,50 @@ def test_download_file_serves_the_completed_zip(monkeypatch):
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "application/zip"
     assert resp.content  # non-empty zip bytes
+
+
+def test_results_and_download_survive_the_reload_size_check_over_http(monkeypatch):
+    """End-to-end over the real routes: after a build, the automatic on-load
+    size-check must not wipe the results view or the download link -- so a user
+    who reloads to inspect failures still finds them (and can still download)."""
+    client_factory(
+        monkeypatch,
+        session,
+        library=[
+            {"id": 1, "title": "Good", "art_type": 0, "persons": [], "cover_url": None},
+            {"id": 2, "title": "Bad", "art_type": 0, "persons": [], "cover_url": None},
+        ],
+        files_by_id={
+            1: [{"id": 100, "extension": "epub", "is_additional": False, "size": 8}],
+            2: [{"id": 200, "extension": "epub", "is_additional": False, "size": 8}],
+        },
+    )
+    with TestClient(app) as client:
+        client.post("/login", data={"login": "u@example.com", "password": "pw"})
+        # book 2 fails -> one success, one error in the results
+        session.current_client().fail_downloads = {2}
+        client.post("/activity/prepare", json={"art_ids": [1, 2]})
+        _wait_until_idle()
+
+        # the size-check that fires on the next page load
+        client.post("/activity/check", json={"selected": [], "live": False})
+        _wait_until_idle()
+
+        snap = client.get("/activity").json()
+
+    # live log was reset by the check, but the durable results + zip survive
+    assert snap["log"] == []
+    statuses = sorted(e["status"] for e in snap["results"])
+    assert statuses == ["done", "error"]
+    assert [e["title"] for e in snap["results"] if e["status"] == "error"] == ["Bad"]
+    assert snap["zip_path"]  # download link still available after reload
+
+
+def test_activity_route_embeds_prefs_end_to_end(monkeypatch):
+    """A browser only polls /activity; it must carry the shared selection +
+    formats so any browser hydrates the same view."""
+    client_factory(monkeypatch, session, library=[])
+    with TestClient(app) as client:
+        client.post("/prefs", json={"selected": [3, 1], "ebook_format": "epub"})
+        snap = client.get("/activity").json()
+    assert snap["prefs"] == {"selected": [3, 1], "ebook_format": "epub", "audiobook_format": None}

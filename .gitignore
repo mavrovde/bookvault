@@ -2,6 +2,7 @@
 .env
 .litres_session.json
 .litres_cache.json
+.litres_state.json
 
 # Python runtime / build artifacts
 .venv/

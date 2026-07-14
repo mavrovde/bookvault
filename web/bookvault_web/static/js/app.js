@@ -48,11 +48,12 @@ async function loadLibrary(forceRefresh) {
     const data = await resp.json();
     if (!data.ok) throw new Error(data.error || 'failed to load');
     state.books = data.books;
-    // Nothing pre-selected: selecting everything by default made it easy
-    // to kick off a full-library download by accident, and made every page
-    // load look like "select all, then immediately query every book" --
-    // exactly the repeated/bulk request pattern anti-bot checks flag.
-    state.selected = new Set();
+    // Keep any current selection that still exists in the (re)loaded list --
+    // a Refresh must not drop the user's ticks. The authoritative selection is
+    // hydrated from the server via applyPrefs (on load and on each poll); here
+    // we just avoid clobbering it. Restrict to ids present in the new list.
+    const available = new Set(state.books.map(b => b.id));
+    state.selected = new Set([...state.selected].filter(id => available.has(id)));
     renderList();
   } catch (e) {
     // A transient failure must not wipe a list that's already on screen --
@@ -132,6 +133,7 @@ function renderList() {
       if (cb.checked) { state.selected.add(id); } else { state.selected.delete(id); }
       cb.closest('.book-card').classList.toggle('selected', cb.checked);
       updateSelectedCount();
+      pushSelection();
     });
   });
   updateSelectedCount();
@@ -194,7 +196,14 @@ const RESULT_BADGE = {
   error: ['Error', 'badge-error'],
 };
 
+// Which result rows to show in the log: 'all' | 'done' | 'skipped' | 'error'.
+// Persists across polls so the filter sticks while a build streams in. The
+// last snapshot is kept so a filter-pill click can re-render without a poll.
+let logFilter = 'all';
+let lastSnapshot = null;
+
 function renderActivity(s) {
+  lastSnapshot = s;
   const badge = document.getElementById('progress-badge');
   const [label, cls] = s.state === 'idle'
     ? (RESULT_BADGE[s.result] || ['Idle', 'badge-idle'])
@@ -259,9 +268,38 @@ function renderActivity(s) {
       || (s.state === 'idle' ? 'Nothing running right now -- select some books and hit Prepare zip, or use Refresh to check for new purchases.' : '');
   }
 
-  // Per-book log (preparing / its result only).
+  // Per-book log, with a status summary + filter so a couple of failures don't
+  // get lost among hundreds of successes (the whole point of the results view).
+  // Prefer the live log while a build streams in; once idle (a size-check on
+  // reload empties `log`), fall back to `results` -- the durable copy of the
+  // last build -- so the failed/skipped rows survive for later analysis.
+  const log = (s.log && s.log.length) ? s.log : (s.results || []);
+  const counts = { done: 0, skipped: 0, error: 0 };
+  for (const item of log) counts[item.status] = (counts[item.status] || 0) + 1;
+
+  // Summary pills: counts per status, click to filter. Only the buckets that
+  // actually occurred are shown (plus "All"); a failed/skipped pill only
+  // appears when there's something to see.
+  const summaryEl = document.getElementById('log-summary');
+  if (log.length === 0) {
+    summaryEl.style.display = 'none';
+    if (logFilter !== 'all') logFilter = 'all';
+  } else {
+    const pills = [['all', `All ${log.length}`, true]];
+    if (counts.done) pills.push(['done', `✓ ${counts.done}`, true]);
+    if (counts.skipped) pills.push(['skipped', `! ${counts.skipped} skipped`, true]);
+    if (counts.error) pills.push(['error', `✗ ${counts.error} failed`, true]);
+    // If the active filter's bucket emptied out, fall back to All.
+    if (logFilter !== 'all' && !counts[logFilter]) logFilter = 'all';
+    summaryEl.style.display = '';
+    summaryEl.innerHTML = pills.map(([key, text]) =>
+      `<button type="button" class="pill${key === logFilter ? ' active' : ''}${key === 'error' ? ' pill-error' : ''}" data-log-filter="${key}">${escapeHtml(text)}</button>`
+    ).join('');
+  }
+
   const logEl = document.getElementById('progress-log');
-  logEl.innerHTML = (s.log || []).map(item => {
+  const shown = logFilter === 'all' ? log : log.filter(item => item.status === logFilter);
+  logEl.innerHTML = shown.map(item => {
     if (item.status === 'skipped') {
       return `<li class="skipped"><span class="icon">!</span><span class="title">${escapeHtml(item.title)}</span><span class="detail">${escapeHtml(item.reason || 'Skipped -- no file available')}</span></li>`;
     }
@@ -270,13 +308,17 @@ function renderActivity(s) {
     }
     return `<li class="done"><span class="icon">✓</span><span class="title">${escapeHtml(item.title)}</span><span class="detail">${item.ext}, ${item.size_mb} MB</span></li>`;
   }).join('');
-  logEl.scrollTop = logEl.scrollHeight;
+  // Auto-scroll to follow the newest row only while unfiltered and streaming;
+  // when filtered (i.e. inspecting failures) leave the scroll where the user is.
+  if (logFilter === 'all') logEl.scrollTop = logEl.scrollHeight;
 
-  // Only a finished zip build sets `zip_path` (any new activity clears it),
-  // so this is what distinguishes "a zip is ready to save" from a size sweep
-  // that also ends at result==="done" with a non-zero count.
+  // A built, non-empty zip is exposed via `zip_path` and kept across later
+  // size-checks/refreshes (see activity.py), so the download link survives a
+  // page reload -- it's only cleared when a new build starts. The backend sets
+  // zip_path only when the archive holds at least one book, and /download/file
+  // re-checks the file still exists, so `zip_path` alone is the right signal.
   document.getElementById('download-link').style.display =
-    s.zip_path && s.done > 0 && (s.result === 'done' || s.result === 'cancelled') ? 'inline-block' : 'none';
+    s.zip_path ? 'inline-block' : 'none';
   document.getElementById('progress-error').textContent = s.error || '';
 }
 
@@ -305,6 +347,7 @@ async function poll() {
     await loadLibrary(false);
   }
 
+  applyPrefs(s.prefs);  // keep every browser's ticks/formats in sync while busy
   applySizes(s.sizes);
   renderActivity(s);
   updateButtons();
@@ -366,13 +409,23 @@ document.getElementById('sort-by').addEventListener('change', (e) => {
   renderList();
 });
 
+// Filter the results log by status (All / done / skipped / failed).
+document.getElementById('log-summary').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-log-filter]');
+  if (!btn) return;
+  logFilter = btn.dataset.logFilter;
+  if (lastSnapshot) renderActivity(lastSnapshot);
+});
+
 document.getElementById('select-all').addEventListener('click', () => {
   visibleBooks().forEach(b => state.selected.add(b.id));
   renderList();
+  pushSelection();
 });
 document.getElementById('select-none').addEventListener('click', () => {
   visibleBooks().forEach(b => state.selected.delete(b.id));
   renderList();
+  pushSelection();
 });
 
 document.getElementById('start-download').addEventListener('click', async () => {
@@ -402,7 +455,61 @@ document.getElementById('cancel-download').addEventListener('click', () => {
   startPolling();
 });
 
+// --- Shared UI state (selection + format prefs) lives on the SERVER now, not
+// in the browser -- see prefs.py. It's folded into the /activity poll, so every
+// browser/tab converges on the same ticked books, the same format choices, and
+// the same progress. We hydrate from the server (on load and on each poll) and
+// push changes back as they happen. User-initiated selection changes push
+// explicitly (checkbox / select-all / select-none); a value echoed back from
+// the server via applyPrefs does NOT re-push, so browsers don't fight. ---
+
+// Re-apply server-held prefs to this browser's UI. Only re-renders the list
+// when the selection actually changed, so polling once a second stays cheap.
+function applyPrefs(p) {
+  if (!p) return;
+  for (const [id, val] of [['ebook-format', p.ebook_format], ['audiobook-format', p.audiobook_format]]) {
+    const el = document.getElementById(id);
+    if (el && val && [...el.options].some((o) => o.value === val)) el.value = val;
+  }
+  // Don't reconcile the selection while a local change is still on its way to
+  // the server -- otherwise a poll landing in that window would momentarily
+  // undo the user's just-made tick. The pending push is the newer truth.
+  if (selectionPushPending) return;
+  const available = new Set(state.books.map((b) => b.id));
+  const next = new Set((p.selected || []).map(Number).filter((id) => available.has(id)));
+  const changed = next.size !== state.selected.size || [...next].some((id) => !state.selected.has(id));
+  state.selected = next;
+  if (changed) renderList(); else updateSelectedCount();
+}
+
+// Debounced push of the current selection (a select-all is one request; rapid
+// clicks coalesce). Format changes push immediately via pushFormat.
+let selectionPushTimer = null;
+let selectionPushPending = false;
+function pushSelection() {
+  clearTimeout(selectionPushTimer);
+  selectionPushPending = true;
+  selectionPushTimer = setTimeout(() => {
+    fetch('/prefs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selected: [...state.selected] }),
+    }).catch(() => { /* transient -- the next change retries */ })
+      .finally(() => { selectionPushPending = false; });
+  }, 150);
+}
+function pushFormat(field, value) {
+  fetch('/prefs', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ [field]: value }),
+  }).catch(() => {});
+}
+function initFormatPrefs() {
+  document.getElementById('ebook-format').addEventListener('change', (e) => pushFormat('ebook_format', e.target.value));
+  document.getElementById('audiobook-format').addEventListener('change', (e) => pushFormat('audiobook_format', e.target.value));
+}
+
 (async function init() {
+  initFormatPrefs();
   await loadLibrary();
   let s;
   try {
@@ -411,6 +518,7 @@ document.getElementById('cancel-download').addEventListener('click', () => {
     s = { state: 'idle', result: null, sizes: {}, log: [] };
   }
   currentState = s.state;
+  applyPrefs(s.prefs);  // hydrate ticks + formats from the server (any browser)
   applySizes(s.sizes);
   renderActivity(s);
   updateButtons();

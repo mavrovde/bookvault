@@ -22,7 +22,8 @@ ENV LITRES_APP_HOST=0.0.0.0 \
     LITRES_RELOAD=0 \
     LITRES_LOG_LEVEL=INFO \
     LITRES_SESSION_FILE=/data/.litres_session.json \
-    LITRES_CACHE_FILE=/data/.litres_cache.json
+    LITRES_CACHE_FILE=/data/.litres_cache.json \
+    LITRES_STATE_FILE=/data/.litres_state.json
 
 RUN mkdir -p /data
 VOLUME ["/data"]

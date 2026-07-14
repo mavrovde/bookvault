@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.12.0] - Shared state across browsers, a results view, and your name in the header
+
+The web app's selection and format choices now live on the **server**, so every
+browser, tab, and device pointed at the app shows the same ticked books, the
+same formats, and the same live progress. The header shows your account
+email/name instead of a generic "Signed in", and a new results view makes a
+failed download easy to find among hundreds of successes.
+
+### Added
+- **Server-side shared UI state.** Which books are selected and your preferred
+  ebook/audiobook formats now live on the backend (`GET` / `POST /prefs`, and
+  folded into the `/activity` poll every browser already makes) instead of each
+  browser's `localStorage`/`sessionStorage`. Open the app in a second browser
+  mid-download and it shows the same selection and progress. Persisted to
+  `LITRES_STATE_FILE` (defaults onto the Docker `/data` volume), so it also
+  survives a restart.
+- **Account identity in the header.** A cookie-only session (e.g. in Docker,
+  where there's no OS keychain to remember the login name) now recovers your
+  email/login from litres.ru's `/users/me`, so the header shows who you are
+  rather than a generic "Signed in".
+- **Results view with a status filter.** After a build, a summary shows
+  `All N · ✓ done · ! skipped · ✗ failed` as clickable pills -- one click
+  filters the log to just the failures, so a single rights-limited title no
+  longer hides among hundreds of successes.
+- **End-to-end / smoke tests.** An offline e2e suite (real server boot + full
+  login → build → download flow + the MCP tool flow) plus an opt-in
+  `pytest -m live` suite that smoke-tests a running instance.
+
+### Fixed
+- **The results and the download link survive a page reload.** The cache-only
+  size-check that runs on every page load used to wipe the finished build's
+  per-book results *and* its zip download link. Both are now kept until the
+  next build starts, so you can reload to inspect failures and still download
+  the zip.
+- A build where every selected title failed no longer offers an empty zip.
+
+### Changed
+- New `LITRES_STATE_FILE` setting (default `.litres_state.json`; `/data/...`
+  in Docker) holds the shared UI state; it's git-ignored like the session and
+  cache files.
+
 ## [0.11.1] - Faster release builds (cached Docker layers)
 
 ### Changed

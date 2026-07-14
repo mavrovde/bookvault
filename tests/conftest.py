@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from bookvault_core import cache, client, credentials, session
-from bookvault_web import activity
+from bookvault_web import activity, prefs
 from tests.fakes import FakeKeyring
 
 
@@ -28,6 +28,7 @@ def isolated_module_state(tmp_path, monkeypatch):
     monkeypatch.delenv("LITRES_PASSWORD", raising=False)
     monkeypatch.setattr(session, "SESSION_STATE_PATH", tmp_path / ".litres_session.json")
     monkeypatch.setattr(cache, "CACHE_PATH", tmp_path / ".litres_cache.json")
+    monkeypatch.setattr(prefs, "STATE_PATH", tmp_path / ".litres_state.json")
     # No real pacing sleep between size fetches in tests -- the sweep's
     # behaviour is what's under test, not litres.ru-friendliness timing.
     monkeypatch.setattr(activity, "PACE_SECONDS", 0)
@@ -49,11 +50,13 @@ def isolated_module_state(tmp_path, monkeypatch):
             done=0,
             total=None,
             log=[],
+            results=[],
             error=None,
             sizes={},
             zip_path=None,
         )
         cache._state = None
+        prefs._state = None
 
     _reset()
     yield

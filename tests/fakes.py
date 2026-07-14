@@ -79,6 +79,10 @@ class FakeLitresClient:
     def __init__(self, library=None, files_by_id=None, fail_downloads=None):
         self.library = library if library is not None else []
         self.files_by_id = files_by_id or {}
+        # What account_login() returns -- the identity recovered from the live
+        # session (/users/me). None by default: a cookie-only restore with no
+        # keychain/env name then legitimately has nothing to display.
+        self.account_identity = None
         # art_ids whose download_file() should raise, simulating a stalled
         # transfer / DDoS-Guard block / any other per-book failure.
         self.fail_downloads = set(fail_downloads or ())
@@ -97,6 +101,9 @@ class FakeLitresClient:
 
     def is_logged_in(self):
         return self._is_logged_in
+
+    def account_login(self):
+        return self.account_identity
 
     def save_state(self, path):
         # Mirror the real LitresClient.save_state's observable effect (a

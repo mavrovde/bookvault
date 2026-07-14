@@ -613,3 +613,129 @@ def test_friendly_error_recognizes_dropped_connection():
 
 def test_friendly_error_falls_back_to_raw_text_for_unrecognized_errors():
     assert "something truly unexpected" in activity._friendly_error(RuntimeError("something truly unexpected"))
+
+
+# ==========================================================================
+# Durable results view -- the failed/skipped rows must outlive a reload
+# ==========================================================================
+
+
+def test_results_survive_the_size_check_that_runs_on_the_next_page_load():
+    """A finished build's per-book outcomes are kept in `results`, so the
+    failed/skipped rows the user wants to inspect don't vanish when the
+    automatic cache-only size-check fires on the next page load."""
+    client = _make_client(_book(1, "Will fail", TEXT_FILES), _book(2, "OK", TEXT_FILES))
+    client.fail_downloads = {1}
+    activity.prepare(client)
+    done = wait_until_idle()
+    assert [e["status"] for e in done["results"]] == ["error", "done"]
+
+    # the size-check that every idle page load triggers
+    activity.check_sizes(client, selected=[], live=False)
+    after = wait_until_idle()
+
+    assert after["log"] == []  # the live log was reset by the check ...
+    # ... but the durable results (and the failure) are still there
+    assert [e["title"] for e in after["results"] if e["status"] == "error"] == ["Will fail"]
+
+
+def test_a_new_build_replaces_the_previous_results():
+    client = _make_client(_book(1, "Will fail", TEXT_FILES), _book(2, "OK", TEXT_FILES))
+    client.fail_downloads = {1}
+    activity.prepare(client)
+    wait_until_idle()
+
+    client.fail_downloads = set()  # second build succeeds for both
+    activity.prepare(client)
+    after = wait_until_idle()
+    assert len(after["results"]) == 2
+    assert all(e["status"] == "done" for e in after["results"])
+
+
+def test_zip_download_link_survives_the_size_check_on_reload():
+    """A built zip stays downloadable after the next page load's size-check --
+    the link must not vanish on reload."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    activity.prepare(client)
+    built = wait_until_idle()
+    assert built["zip_path"]  # a real zip was produced
+
+    activity.check_sizes(client, selected=[], live=False)
+    after = wait_until_idle()
+    assert after["zip_path"] == built["zip_path"]  # still offered, same file
+
+
+def test_a_build_where_everything_failed_offers_no_empty_zip():
+    client = _make_client(_book(1, "Will fail", TEXT_FILES))
+    client.fail_downloads = {1}
+    activity.prepare(client)
+    result = wait_until_idle()
+    assert result["done"] == 0
+    assert result["zip_path"] is None  # nothing to download -- no empty archive
+
+
+def test_results_and_zip_survive_a_refresh_too():
+    """Not just the size-check: a library Refresh must also leave a finished
+    build's results + download link intact."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    activity.prepare(client)
+    built = wait_until_idle()
+    assert built["zip_path"] and len(built["results"]) == 1
+
+    activity.refresh(client, selected=[])
+    after = wait_until_idle()
+    assert after["zip_path"] == built["zip_path"]
+    assert len(after["results"]) == 1
+
+
+def test_a_new_build_immediately_clears_the_previous_zip_and_results():
+    """Starting a new build must drop the old zip/results at once (not show a
+    stale download link while the new one is still running)."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    activity.prepare(client)
+    wait_until_idle()
+    assert activity.snapshot()["zip_path"]
+
+    # a second build that blocks so we can observe the mid-run state
+    gate = threading.Event()
+    client2 = _make_client(_book(2, "Book Two", TEXT_FILES))
+    real = client2.download_file
+
+    def blocking_download(*a, **kw):
+        gate.wait(2)
+        return real(*a, **kw)
+
+    client2.download_file = blocking_download
+    activity.prepare(client2)
+    try:
+        mid = activity.snapshot()
+        assert mid["zip_path"] is None      # old zip dropped immediately
+        assert mid["results"] == []         # old results dropped immediately
+    finally:
+        gate.set()
+    wait_until_idle()
+
+
+def test_cancelled_build_keeps_finished_books_as_a_partial_zip_and_results():
+    """Stop after some books already finished: those are a valid partial zip,
+    and their results (plus the durable copy) survive a later reload."""
+    client = _make_client(_book(1, "Finished", TEXT_FILES), _book(2, "Interrupted", TEXT_FILES))
+    real_download = client.download_file
+
+    def finish_one_then_cancel(art_id, *a, **kw):
+        if art_id == 2:
+            activity.cancel()  # Stop pressed before book 2
+            raise DownloadCancelled("stopped before book 2")
+        return real_download(art_id, *a, **kw)
+
+    client.download_file = finish_one_then_cancel
+    activity.prepare(client)
+    result = wait_until_idle()
+    assert result["result"] == "cancelled"
+    assert result["done"] == 1
+    assert result["zip_path"]  # the one finished book is downloadable
+
+    activity.check_sizes(client, selected=[], live=False)
+    after = wait_until_idle()
+    assert [e["title"] for e in after["results"] if e["status"] == "done"] == ["Finished"]
+    assert after["zip_path"]  # partial zip still offered after the reload

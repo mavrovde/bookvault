@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from bookvault_core import cache, session
 from bookvault_core.client import AUDIOBOOK_FILE_TYPES, EBOOK_EXTENSIONS, LitresAuthError
 
-from . import activity
+from . import activity, prefs
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,10 @@ def index(request: Request):
             "error": None,
             "ebook_formats": EBOOK_EXTENSIONS,
             "audiobook_formats": AUDIOBOOK_FILE_TYPES,
+            # Server-side format prefs, so the initial HTML already shows the
+            # saved choices (no flash before app.js hydrates the rest).
+            "ebook_format": prefs.snapshot()["ebook_format"],
+            "audiobook_format": prefs.snapshot()["audiobook_format"],
         },
     )
 
@@ -176,9 +180,35 @@ class SweepRequest(BaseModel):
     live: bool = True
 
 
+class PrefsUpdate(BaseModel):
+    # All optional: a caller pushes just the field(s) that changed (the
+    # selection, or one format) without clobbering the others.
+    selected: Optional[List[int]] = None
+    ebook_format: Optional[str] = None
+    audiobook_format: Optional[str] = None
+
+
 @app.get("/activity")
 def get_activity():
-    return activity.snapshot()
+    # Fold the shared UI state (selection + formats) into the poll response the
+    # frontend already fetches, so every open browser converges on the same
+    # ticked books and format choices -- not just the same progress.
+    return {**activity.snapshot(), "prefs": prefs.snapshot()}
+
+
+@app.get("/prefs")
+def get_prefs():
+    return {"ok": True, **prefs.snapshot()}
+
+
+@app.post("/prefs")
+def set_prefs(req: PrefsUpdate):
+    updated = prefs.update(
+        selected=req.selected,
+        ebook_format=req.ebook_format,
+        audiobook_format=req.audiobook_format,
+    )
+    return {"ok": True, **updated}
 
 
 @app.post("/activity/refresh")

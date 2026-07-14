@@ -218,6 +218,57 @@ def test_is_logged_in_false_when_users_me_fails():
 
 
 # --------------------------------------------------------------------------
+# account_login -- recover a display identity from /users/me (cookie-only
+# restores carry no login name; this is what the UI shows instead of "Signed in")
+# --------------------------------------------------------------------------
+
+
+def _me_response(data):
+    return FakeAPIResponse(status=200, json_data={"payload": {"data": data}})
+
+
+def test_account_login_prefers_the_profile_email():
+    client = make_bare_client(
+        lambda *a: _me_response({"login": "nick", "profile": {"email": "me@example.com", "nickname": "nick"}})
+    )
+    assert client.account_login() == "me@example.com"
+
+
+def test_account_login_falls_back_to_login_when_no_email():
+    client = make_bare_client(lambda *a: _me_response({"login": "bookworm", "profile": {"nickname": "bw"}}))
+    assert client.account_login() == "bookworm"
+
+
+def test_account_login_falls_back_to_nickname_when_no_email_or_login():
+    client = make_bare_client(lambda *a: _me_response({"profile": {"nickname": "bw"}}))
+    assert client.account_login() == "bw"
+
+
+def test_account_login_is_none_when_no_identity_fields_present():
+    client = make_bare_client(lambda *a: _me_response({"profile": {}}))
+    assert client.account_login() is None
+
+
+def test_account_login_is_none_when_payload_missing():
+    client = make_bare_client(lambda *a: FakeAPIResponse(status=200, json_data={}))
+    assert client.account_login() is None
+
+
+def test_account_login_is_none_on_http_error():
+    client = make_bare_client(lambda *a: FakeAPIResponse(status=403, text_data="forbidden"))
+    assert client.account_login() is None
+
+
+def test_account_login_is_none_when_body_is_not_json():
+    class NotJson(FakeAPIResponse):
+        def json(self):
+            raise ValueError("challenge page, not JSON")
+
+    client = make_bare_client(lambda *a: NotJson(status=200))
+    assert client.account_login() is None
+
+
+# --------------------------------------------------------------------------
 # download_file
 # --------------------------------------------------------------------------
 

@@ -159,6 +159,36 @@ def test_web_restore_still_relogins_from_keyring(monkeypatch):
     assert fake.login_calls == [("user@example.com", "hunter2")]  # keychain, not env
 
 
+def test_restore_session_recovers_login_from_account_when_no_name_known(monkeypatch):
+    """A cookie-only restore with no keychain entry and no env login (the Docker
+    case) recovers the real account identity from /users/me, so the UI shows the
+    email instead of a generic "Signed in" -- not the env name, not None."""
+    session.SESSION_STATE_PATH.write_text("{}")
+    fake = client_factory(monkeypatch, session, library=[])
+    fake._is_logged_in = True
+    fake.account_identity = "account@example.com"  # what /users/me yields
+
+    session.restore_session(allow_env_login=False)
+
+    assert session.current_client() is fake
+    assert session.current_login() == "account@example.com"
+    assert fake.login_calls == []  # reused the saved session, no fresh login
+
+
+def test_restore_session_prefers_keychain_name_over_account_lookup(monkeypatch):
+    """When the keychain already knows the login, that wins -- no need to fall
+    back to the /users/me lookup."""
+    session.SESSION_STATE_PATH.write_text("{}")
+    credentials.save("typed@example.com", "hunter2")
+    fake = client_factory(monkeypatch, session, library=[])
+    fake._is_logged_in = True
+    fake.account_identity = "other@web.de"  # would be used only as a fallback
+
+    session.restore_session()
+
+    assert session.current_login() == "typed@example.com"
+
+
 def test_web_restore_from_cookies_does_not_borrow_env_login_name(monkeypatch):
     """A valid cookie session with no keychain entry restores fine, but its
     display login stays None on the web flow rather than being filled in from

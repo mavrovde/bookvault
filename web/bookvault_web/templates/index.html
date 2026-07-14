@@ -26,7 +26,7 @@
             <span aria-hidden="true">📖</span>
             <select id="ebook-format">
               {% for fmt in ebook_formats %}
-                <option value="{{ fmt }}">{{ fmt }}</option>
+                <option value="{{ fmt }}" {% if fmt == ebook_format %}selected{% endif %}>{{ fmt }}</option>
               {% endfor %}
             </select>
           </label>
@@ -34,7 +34,7 @@
             <span aria-hidden="true">🎧</span>
             <select id="audiobook-format">
               {% for fmt in audiobook_formats %}
-                <option value="{{ fmt }}">{{ fmt }}</option>
+                <option value="{{ fmt }}" {% if fmt == audiobook_format %}selected{% endif %}>{{ fmt }}</option>
               {% endfor %}
             </select>
           </label>
@@ -64,6 +64,7 @@
         <p id="progress-count" class="muted" style="font-size:0.85rem;margin:0"></p>
         <p id="progress-current" class="muted">Nothing running right now -- select some books and hit Prepare zip, or use Refresh to check for new purchases.</p>
         <p id="progress-error" style="color:var(--danger)"></p>
+        <div class="filter-pills log-summary" id="log-summary" style="display:none"></div>
         <ul id="progress-log"></ul>
         <div class="progress-actions">
           <a id="download-link" href="/download/file" style="display:none">

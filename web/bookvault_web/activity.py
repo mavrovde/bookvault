@@ -78,7 +78,11 @@ _state = {
     "current_total": None,       # total bytes of the current file when known (PREPARING only)
     "done": 0,              # progress counter (CHECKING: sizes resolved; PREPARING: books zipped)
     "total": None,          # progress denominator when known
-    "log": [],              # per-book results (PREPARING only): {"title","status",...}
+    "log": [],              # per-book results of the RUNNING prepare: {"title","status",...}
+    "results": [],          # durable copy of the last finished prepare's log, so the
+                            # results view (and its failed/skipped filter) survives the
+                            # size-check that fires on the next page load. Only a NEW
+                            # prepare replaces it -- _begin deliberately leaves it alone.
     "error": None,          # raw-ish error line for the UI when result == "error"
     "sizes": {},            # {art_id: size_mb|None} resolved during a sweep, for the UI to paint rows
     "zip_path": None,       # path to the built zip, for the /download/file route
@@ -89,7 +93,12 @@ def snapshot() -> dict:
     """A safe copy of the current state for the UI to render. The `log` and
     `sizes` collections are copied so a caller can't mutate the live ones."""
     with _lock:
-        return {**_state, "log": list(_state["log"]), "sizes": dict(_state["sizes"])}
+        return {
+            **_state,
+            "log": list(_state["log"]),
+            "results": list(_state["results"]),
+            "sizes": dict(_state["sizes"]),
+        }
 
 
 def _update(**changes) -> None:
@@ -165,8 +174,10 @@ def _begin(state: str, *, total=None, message="") -> bool:
             log=[],
             error=None,
             sizes={},
-            zip_path=None,
         )
+    # Note: `zip_path` and `results` are intentionally NOT reset here, so a
+    # finished build's download link and results view survive the size-check
+    # that fires on the next page load. Only a new prepare() replaces them.
     _cancel_event.clear()
     return True
 
@@ -209,6 +220,10 @@ def prepare(
     total = len(art_ids) if art_ids is not None else None
     if not _begin(PREPARING, total=total):
         return False
+    # A new build supersedes the previous results view AND the previous zip
+    # download link (_begin leaves both untouched so they survive size-checks,
+    # so clear them explicitly here for the fresh build).
+    _update(results=[], zip_path=None)
     logger.info(
         "Starting zip build: %s, ebook_format=%s, audiobook_format=%s",
         f"{len(art_ids)} selected book(s)" if art_ids is not None else "entire library",
@@ -497,8 +512,15 @@ def _run_prepare(
                 current_title=None,
                 current_downloaded=None,
                 current_total=None,
-                zip_path=str(zip_path),
+                # Offer the zip only if it actually holds something; a build
+                # where every book failed/was skipped produces an empty archive
+                # not worth downloading. Durable (see _begin) so the link
+                # survives a reload's size-check.
+                zip_path=str(zip_path) if done > 0 else None,
                 message="Stopped." if cancelled else "",
+                # Preserve this build's per-book outcomes so the results view /
+                # failed filter survives the next page load's size-check.
+                results=list(_state["log"]),
             )
         logger.info(
             "Zip build %s: %d/%d book(s) succeeded, zip=%s",
@@ -510,6 +532,7 @@ def _run_prepare(
         _update(
             state=IDLE, result="error", error=_friendly_error(exc),
             current_title=None, current_downloaded=None, current_total=None, message="",
+            results=list(_state["log"]),  # keep whatever finished before the crash
         )
 
 

@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bookvault-workspace"
-version = "0.11.1"
+version = "0.12.0"
 description = "Dev/test tooling for the BookVault monorepo (core + web + mcp)."
 requires-python = ">=3.11"
 
@@ -32,6 +32,13 @@ asyncio_mode = "auto"
 # Repo root on the path so `tests.fakes` imports; the three packages come from
 # their editable installs (pip install -e ./core ./web ./mcp).
 pythonpath = ["."]
+# `live` tests (tests/test_smoke_live.py) hit a really-running server + real
+# litres.ru, so they can't run offline/in CI. Deselect them by default; run
+# them on purpose with `pytest -m live` (a CLI -m overrides this one).
+addopts = "-m 'not live'"
+markers = [
+    "live: end-to-end smoke test against a running server (opt-in via -m live)",
+]
 
 [tool.coverage.run]
 source = ["bookvault_core", "bookvault_web", "bookvault_mcp"]

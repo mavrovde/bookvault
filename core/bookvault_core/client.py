@@ -326,6 +326,23 @@ class LitresClient:
         resp = self._get(f"{API_BASE}/users/me")
         return resp.ok
 
+    def account_login(self) -> Optional[str]:
+        """A human-readable identity for the logged-in account -- the account
+        email, falling back to the litres login/nickname -- read from
+        `/users/me`. Session cookies don't carry a login name, so a cookie-only
+        restore (e.g. in Docker, with no keychain) otherwise has nothing to show
+        but a generic "Signed in"; this recovers the real name. Best-effort:
+        returns None if the call fails or the fields are absent."""
+        try:
+            resp = self._get(f"{API_BASE}/users/me")
+            if not resp.ok:
+                return None
+            data = (resp.json().get("payload") or {}).get("data") or {}
+        except Exception:  # network/JSON hiccup -- never break restore over a label
+            return None
+        profile = data.get("profile") or {}
+        return profile.get("email") or data.get("login") or profile.get("nickname") or None
+
     def _recapture_headers(self, timeout_ms: int = 20000) -> bool:
         """A client restored from `storage_state_path` has valid session
         cookies but no app-level headers -- those aren't persisted (see

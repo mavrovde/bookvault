@@ -156,6 +156,11 @@ button:active { transform: scale(0.97); }
 }
 .pill:hover { background: var(--surface-hover); }
 .pill.active { background: var(--accent-soft); border-color: #cfa79a; color: var(--accent); }
+/* Results-log status filter: a "✗ N failed" pill reads in the danger colour so
+   failures stand out among hundreds of successes; active state deepens it. */
+.log-summary { margin: 0.1rem 0 0.6rem; flex-wrap: wrap; }
+.pill.pill-error { color: var(--danger); border-color: var(--danger-soft); }
+.pill.pill-error.active { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
 
 /* -- Bookshelf grid -- */
 #book-list {
