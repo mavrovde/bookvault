@@ -1,5 +1,5 @@
 // The frontend is a thin renderer. It owns no activity/progress logic: the
-// backend runs a single state machine (see app/activity.py) with states
+// backend runs a single state machine (see litres_web/activity.py) with states
 // idle | refreshing | checking | preparing | stopping and a terminal
 // `result` (done | cancelled | error). This file just:
 //   1. dispatches user actions to the backend (refresh / prepare / cancel),
@@ -358,7 +358,7 @@ document.getElementById('cancel-download').addEventListener('click', () => {
   if (currentState !== 'checking' && currentState !== 'preparing') return;
   // Optimistically show "Stopping…" so the click feels responsive even
   // though cancellation only takes effect between books/size fetches (see
-  // app/activity.py); the next poll confirms the real state.
+  // litres_web/activity.py); the next poll confirms the real state.
   currentState = 'stopping';
   updateButtons();
   fetch('/activity/cancel', { method: 'POST' });

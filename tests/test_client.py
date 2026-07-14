@@ -1,4 +1,4 @@
-"""Tests for app/client.py: the pure format-picking logic, and the
+"""Tests for litres_core/client.py: the pure format-picking logic, and the
 HTTP-handling logic (pagination, error handling, header merging) exercised
 against a fake Playwright request context instead of the network."""
 from __future__ import annotations
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from app.client import LitresAuthError, LitresClient
+from litres_core.client import LitresAuthError, LitresClient
 from tests.fakes import FakeAPIResponse, make_bare_client
 
 # --------------------------------------------------------------------------

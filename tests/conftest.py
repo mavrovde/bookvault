@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from app import activity, cache, credentials, session
+from litres_core import cache, credentials, session
+from litres_web import activity
 from tests.fakes import FakeKeyring
 
 

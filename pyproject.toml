@@ -1,0 +1,37 @@
+# Workspace root: dev tooling and shared test/lint configuration for the three
+# subprojects (core/, web/, mcp/). Each subproject has its own pyproject.toml
+# with its own runtime dependencies -- see the README for the install flow.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "litres-assistant-workspace"
+version = "0.7.0"
+description = "Dev/test tooling for the LitRes Assistant monorepo (core + web + mcp)."
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-cov==7.1.0",
+    "httpx==0.28.1",
+    "ruff==0.15.21",
+    "pip-audit==2.9.0",
+]
+
+[tool.setuptools]
+# This root project ships no importable package -- it exists only to carry the
+# shared dev tooling and the test/lint config below.
+py-modules = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Repo root on the path so `tests.fakes` imports; the three packages come from
+# their editable installs (pip install -e ./core ./web ./mcp).
+pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["litres_core", "litres_web", "litres_mcp"]

@@ -1,4 +1,4 @@
-"""Tests for app/mcp_server.py. Tool functions are plain async callables
+"""Tests for litres_mcp/server.py. Tool functions are plain async callables
 even after @mcp.tool() (FastMCP registers them without wrapping), so they
 can be awaited directly -- no need to spin up a real MCP stdio client for
 unit-level coverage."""
@@ -8,8 +8,9 @@ import inspect
 
 import pytest
 
-from app import credentials, mcp_server, session
-from app.client import LitresAuthError
+from litres_core import credentials, session
+from litres_mcp import server as mcp_server
+from litres_core.client import LitresAuthError
 from tests.fakes import client_factory
 
 

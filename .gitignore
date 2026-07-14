@@ -1,8 +1,22 @@
+# Secrets and local per-user state -- never commit these.
 .env
+.litres_session.json
+.litres_cache.json
+
+# Python runtime / build artifacts
 .venv/
 __pycache__/
 *.pyc
-.litres_session.json
-.litres_cache.json
-.claude/settings.local.json
+*.egg
+*.egg-info/
+build/
+dist/
+
+# Tooling caches and coverage output
+.pytest_cache/
+.ruff_cache/
 .coverage
+htmlcov/
+
+# Claude Code local (machine-specific) settings
+.claude/settings.local.json

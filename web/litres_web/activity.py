@@ -42,8 +42,8 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-from . import cache, session
-from .client import LitresClient
+from litres_core import cache, session
+from litres_core.client import LitresClient
 
 logger = logging.getLogger(__name__)
 

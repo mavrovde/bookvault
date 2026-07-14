@@ -1,9 +1,9 @@
-"""Tests for app/credentials.py against the fake in-memory keyring (see
+"""Tests for litres_core/credentials.py against the fake in-memory keyring (see
 conftest.py's autouse fake_keyring fixture -- the real OS keychain is never
 touched by this suite)."""
 from __future__ import annotations
 
-from app import credentials
+from litres_core import credentials
 
 
 def test_save_then_load_last_roundtrips():

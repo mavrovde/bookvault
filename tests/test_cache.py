@@ -1,9 +1,9 @@
-"""Tests for app/cache.py: TTL expiry, disk persistence across the
+"""Tests for litres_core/cache.py: TTL expiry, disk persistence across the
 in-memory singleton being dropped, and clear(). CACHE_PATH is redirected to
 a tmp_path by the autouse isolated_module_state fixture in conftest.py."""
 from __future__ import annotations
 
-from app import cache
+from litres_core import cache
 
 
 def test_get_library_is_none_when_nothing_cached():

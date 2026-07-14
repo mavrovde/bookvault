@@ -29,7 +29,9 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-CACHE_PATH = Path(os.environ.get("LITRES_CACHE_FILE", str(Path(__file__).parent.parent / ".litres_cache.json")))
+# Relative to the current working directory by default (repo root when
+# launched from there); set LITRES_CACHE_FILE to an absolute path to pin it.
+CACHE_PATH = Path(os.environ.get("LITRES_CACHE_FILE", ".litres_cache.json"))
 
 # The library listing changes whenever the user buys/removes something, so
 # it's refreshed fairly eagerly (and can always be forced via the UI's

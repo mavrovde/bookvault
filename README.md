@@ -23,12 +23,12 @@ It comes in two forms that share the same login/session logic:
 2. Open a terminal in this folder and run:
    ```
    python3 -m venv .venv
-   .venv/bin/pip install -r requirements.txt
+   .venv/bin/pip install -e ./core -e ./web
    .venv/bin/playwright install chromium
    ```
 3. Start it:
    ```
-   .venv/bin/python run.py
+   .venv/bin/litres-web
    ```
 4. Open **http://127.0.0.1:8420** in your browser, log in with your
    litres.ru account, select the books you want, and click "Download."
@@ -44,31 +44,42 @@ to log in again next time.
 git clone https://github.com/mavrovde/litres-assistant.git
 cd litres-assistant
 python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt   # includes test dependencies
+# editable installs of the subprojects + shared dev tooling (pytest, ruff)
+.venv/bin/pip install -e ./core -e ./web -e ./mcp -e ".[dev]"
 .venv/bin/playwright install chromium
 
 cp .env.example .env   # optional -- credentials here are for the MCP server only
-.venv/bin/python run.py
+.venv/bin/litres-web
 ```
 
-The app binds to `127.0.0.1` only (see `run.py`) -- it's a personal,
-single-user tool, not a multi-user service.
+The app binds to `127.0.0.1` only (see `web/litres_web/run.py`) -- it's a
+personal, single-user tool, not a multi-user service.
 
 ### Project layout
 
 ```
-app/
-  client.py       LitresClient -- Playwright-driven login + library/file/download API calls
-  session.py      shared login/session-restore logic + the single dedicated Playwright thread
-  credentials.py  password storage via the OS keychain (the `keyring` package)
-  activity.py     the one backend state machine: refresh / size-sweep / zip-build / cancel
-  cache.py        disk-backed cache for the library listing and per-book file listings
-  web.py          FastAPI app: library browser, format defaults, activity control + status
-  mcp_server.py   MCP server exposing the same functionality as tools
-  templates/      the web app's HTML; static/ its CSS + JS (no build step, no framework)
-run.py            starts the web app (uvicorn)
-tests/            pytest suite -- fully mocked, no real Playwright/network involved
+core/                   litres-core -- shared library (own pyproject.toml)
+  litres_core/
+    client.py     LitresClient -- Playwright-driven login + library/file/download calls
+    session.py    login/session-restore logic + the single dedicated Playwright thread
+    credentials.py  password storage via the OS keychain (the `keyring` package)
+    cache.py      disk-backed cache for the library listing and per-book file listings
+web/                    litres-web -- the web app (depends on litres-core)
+  litres_web/
+    app.py        FastAPI app: library browser, format defaults, activity control + status
+    activity.py   the one backend state machine: refresh / size-sweep / zip-build / cancel
+    run.py        starts uvicorn; installed as the `litres-web` command
+    templates/    the web app's HTML; static/ its CSS + JS (no build step, no framework)
+mcp/                    litres-mcp -- the MCP server (depends on litres-core)
+  litres_mcp/server.py  MCP tools; installed as the `litres-mcp` command
+  README.md       MCP-specific setup (Claude Desktop config, env vars)
+pyproject.toml          workspace root: shared dev tooling + pytest/ruff config
+tests/                  pytest suite -- fully mocked, no real Playwright/network involved
 ```
+
+Each subproject has its own `pyproject.toml` and runtime dependencies:
+installing `litres-web` doesn't pull in the MCP SDK, and installing
+`litres-mcp` doesn't pull in FastAPI/uvicorn. Both depend on `litres-core`.
 
 ### One state machine, on the backend
 
@@ -110,7 +121,7 @@ see that module's docstring for the details.
 ### Running the MCP server
 
 ```bash
-.venv/bin/python -m app.mcp_server
+.venv/bin/litres-mcp        # or: .venv/bin/python -m litres_mcp.server
 ```
 
 It communicates over stdio, so normally you don't run it directly --
@@ -120,8 +131,7 @@ instead point an MCP client at it. For example, in Claude Desktop's config:
 {
   "mcpServers": {
     "litres-assistant": {
-      "command": "/path/to/litres-assistant/.venv/bin/python",
-      "args": ["-m", "app.mcp_server"],
+      "command": "/path/to/litres-assistant/.venv/bin/litres-mcp",
       "cwd": "/path/to/litres-assistant"
     }
   }
@@ -131,6 +141,7 @@ instead point an MCP client at it. For example, in Claude Desktop's config:
 Available tools: `login_status`, `login_to_litres(login, password)`,
 `list_library(limit)`, `download_book(art_id)`. Downloaded books are saved
 to the directory configured by `LITRES_DOWNLOAD_DIR` (see **Configuration**).
+See `mcp/README.md` for MCP-specific setup and configuration.
 
 This repo also ships a separate, unrelated `.mcp.json` at its root: a
 **GitHub** MCP server config (using the hosted `api.githubcopilot.com/mcp/`
@@ -180,15 +191,16 @@ where your credentials/session actually live.
 ## Running the tests
 
 ```bash
-.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pip install -e ./core -e ./web -e ./mcp -e ".[dev]"
 .venv/bin/python -m pytest
 ```
 
 The whole suite runs offline in under a second: `LitresClient` is either
 bypassed entirely (pure logic like format-picking) or replaced with a fake
 that mimics its interface (see `tests/fakes.py`) -- no real Playwright
-browser or network call happens during tests. A GitHub Actions workflow
-(`.github/workflows/tests.yml`) runs the suite on every push/PR.
+browser or network call happens during tests. The GitHub Actions workflow
+`.github/workflows/lint-test-audit.yml` runs ruff, the test matrix, and a
+dependency-vulnerability audit on every push/PR.
 
 ---
 

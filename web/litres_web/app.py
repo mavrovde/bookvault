@@ -20,8 +20,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from . import activity, cache, session
-from .client import AUDIOBOOK_FILE_TYPES, EBOOK_EXTENSIONS, LitresAuthError
+from litres_core import cache, session
+from litres_core.client import AUDIOBOOK_FILE_TYPES, EBOOK_EXTENSIONS, LitresAuthError
+
+from . import activity
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +116,7 @@ def get_book_size(art_id: int):
     # fetching every book's file size upfront would mean one extra API call
     # per book (this backend has a single dedicated worker thread -- see
     # session.py -- so that's fully sequential). The bulk equivalent is the
-    # CHECKING activity (app/activity.py), which sweeps sizes in the
+    # CHECKING activity (litres_web/activity.py), which sweeps sizes in the
     # background; this route stays for one-off/programmatic lookups.
     client = session.current_client()
     if client is None:
@@ -137,7 +139,7 @@ def get_book_size(art_id: int):
 
 
 # --------------------------------------------------------------------------
-# Activity: the single backend state machine (see app/activity.py). The UI
+# Activity: the single backend state machine (see litres_web/activity.py). The UI
 # starts an activity via one of the POST routes below and then polls
 # GET /activity to render whatever state it reports -- it owns no
 # activity/progress logic of its own.

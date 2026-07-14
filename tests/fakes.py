@@ -6,7 +6,7 @@ offline fakes.
 """
 from __future__ import annotations
 
-from app.client import LitresAuthError, LitresClient
+from litres_core.client import LitresAuthError, LitresClient
 
 
 class FakeAPIResponse:

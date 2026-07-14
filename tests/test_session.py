@@ -1,4 +1,4 @@
-"""Tests for app/session.py: restore/login/logout precedence and
+"""Tests for litres_core/session.py: restore/login/logout precedence and
 fallbacks, and the dedicated-thread execution model (run/submit/run_async)
 that everything else relies on for Playwright thread-affinity."""
 from __future__ import annotations
@@ -7,7 +7,8 @@ import threading
 
 import pytest
 
-from app import cache, credentials, session
+from litres_core import cache, credentials, session
+from litres_core.client import LitresAuthError
 from tests.fakes import FakeLitresClient, client_factory
 
 # --------------------------------------------------------------------------
@@ -202,8 +203,6 @@ def test_login_closes_the_previous_client_before_replacing_it(monkeypatch):
 
 
 def test_login_failure_raises_and_closes_the_failed_client(monkeypatch):
-    from app.client import LitresAuthError
-
     fake = client_factory(monkeypatch, session)
     fake.fail_login = True
 

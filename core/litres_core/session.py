@@ -24,9 +24,12 @@ from .client import LitresAuthError, LitresClient
 
 logger = logging.getLogger(__name__)
 
-SESSION_STATE_PATH = Path(
-    os.environ.get("LITRES_SESSION_FILE", str(Path(__file__).parent.parent / ".litres_session.json"))
-)
+# Defaults to `.litres_session.json` in the current working directory (the
+# repo root when launched via `litres-web` / `litres-mcp` from there), or set
+# LITRES_SESSION_FILE to an absolute path to pin it elsewhere. Kept relative
+# rather than package-relative so this shared core makes no assumption about
+# where either subproject is installed.
+SESSION_STATE_PATH = Path(os.environ.get("LITRES_SESSION_FILE", ".litres_session.json"))
 
 _state = {"client": None, "login": None}
 # max_workers is intentionally fixed at 1, not configurable: Playwright's

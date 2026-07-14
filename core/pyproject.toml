@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "litres-core"
+version = "0.7.0"
+description = "Shared core for LitRes Assistant: Playwright-driven litres.ru client, dedicated-thread session management, OS-keychain credentials, and a disk cache."
+requires-python = ">=3.11"
+dependencies = [
+    "playwright==1.61.0",
+    "keyring==25.7.0",
+]
+
+[tool.setuptools]
+packages = ["litres_core"]

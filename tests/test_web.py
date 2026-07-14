@@ -1,4 +1,4 @@
-"""Tests for the FastAPI routes in app/web.py, using FastAPI's TestClient
+"""Tests for the FastAPI routes in litres_web/app.py, using FastAPI's TestClient
 (which drives the real lifespan startup/shutdown) against a monkeypatched
 LitresClient -- no real Playwright/network involved."""
 from __future__ import annotations
@@ -7,8 +7,9 @@ import time
 
 from fastapi.testclient import TestClient
 
-from app import activity, credentials, session
-from app.web import app
+from litres_core import credentials, session
+from litres_web import activity
+from litres_web.app import app
 from tests.fakes import client_factory
 
 

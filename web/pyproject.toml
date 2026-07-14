@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "litres-web"
+version = "0.7.0"
+description = "Local, single-user web app to browse and back up your litres.ru library."
+requires-python = ">=3.11"
+dependencies = [
+    "litres-core",
+    "fastapi==0.139.0",
+    "uvicorn==0.51.0",
+    "jinja2==3.1.6",
+    "python-multipart==0.0.32",
+    "python-dotenv==1.2.2",
+    "anyio==4.14.2",
+    "pydantic==2.13.4",
+]
+
+[project.scripts]
+litres-web = "litres_web.run:main"
+
+[tool.setuptools]
+packages = ["litres_web"]
+
+[tool.setuptools.package-data]
+litres_web = ["templates/*", "static/css/*", "static/js/*"]

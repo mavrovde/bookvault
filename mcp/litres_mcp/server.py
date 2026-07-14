@@ -2,7 +2,7 @@
 Claude Desktop), reusing the same session/login logic as the web UI.
 
 Run standalone over stdio:
-    .venv/bin/python -m app.mcp_server
+    .venv/bin/litres-mcp        # or: python -m litres_mcp.server
 
 Threading note: `session.restore_session`/`login`/`logout` already submit
 their work to session.py's single dedicated Playwright thread internally
@@ -25,8 +25,8 @@ import anyio
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-from . import session
-from .client import LitresAuthError
+from litres_core import session
+from litres_core.client import LitresAuthError
 
 load_dotenv()
 
@@ -111,7 +111,7 @@ async def download_book(art_id: int) -> dict:
     return await session.run_async(_sync)
 
 
-if __name__ == "__main__":
+def main() -> None:
     # Logs go to stderr, not stdout -- stdout is the MCP stdio transport
     # itself, and any stray log line there would corrupt the protocol stream.
     logging.basicConfig(
@@ -119,3 +119,7 @@ if __name__ == "__main__":
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
     )
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

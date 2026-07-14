@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.7.0] - Split into subprojects; env credentials are MCP-only
+
+### Changed
+- Restructured the single `app/` package into three subprojects, each with
+  its own `pyproject.toml` and runtime dependencies:
+  - `core/` (`litres-core`) -- the shared library: `client.py`,
+    `session.py`, `credentials.py`, `cache.py`.
+  - `web/` (`litres-web`) -- the web app: `app.py` (was `web.py`),
+    `activity.py`, `run.py`, `templates/`, `static/`. Entry point:
+    `litres-web`.
+  - `mcp/` (`litres-mcp`) -- the MCP server: `server.py` (was
+    `mcp_server.py`) + its own `README.md`. Entry point: `litres-mcp`.
+  Installing the web app no longer pulls in the MCP SDK, and installing the
+  MCP server no longer pulls in FastAPI/uvicorn; both depend on
+  `litres-core`. Dev tooling and the pytest/ruff config live in a workspace
+  root `pyproject.toml` (the flat `requirements*.txt` and `pytest.ini` are
+  gone).
+- The web app no longer auto-logs-in from `.env` credentials. It restores a
+  saved session or re-logs-in from the OS keychain, and otherwise shows its
+  login form for interactive login (which persists the session + keychain
+  for reuse). `LITRES_LOGIN`/`LITRES_PASSWORD` are now consumed only by the
+  headless MCP server (`session.restore_session(allow_env_login=...)`).
+- Renamed the CI workflow to `.github/workflows/lint-test-audit.yml` and
+  updated it for the new packaging (editable installs of the subprojects,
+  environment-scoped `pip-audit`).
+- Session/cache files (`.litres_session.json`, `.litres_cache.json`) now
+  default to the current working directory (repo root when launched via the
+  `litres-web`/`litres-mcp` commands from there); still overridable via
+  `LITRES_SESSION_FILE`/`LITRES_CACHE_FILE`.
+
 ## [0.6.0] - Move the activity state machine to the backend
 
 ### Changed
