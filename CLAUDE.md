@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 BookVault backs up a user's **own** purchased litres.ru library (books + audiobooks) entirely from their machine. It ships as three front-ends over one shared backend:
 
-- **web** (`bookvault-web`) — a local, single-user FastAPI app at `127.0.0.1:8420`.
+- **web** (`bookvault-web`) — a local, single-user FastAPI app at `127.0.0.1:8420` (port via `LITRES_APP_PORT`).
 - **mcp** (`bookvault-mcp`) — an MCP server exposing the library as tools.
 - **desktop** (`bookvault-desktop`) — a pywebview native window that **embeds the web app verbatim**.
 
@@ -27,7 +27,9 @@ BookVault backs up a user's **own** purchased litres.ru library (books + audiobo
 .venv/bin/bookvault-desktop    # run the desktop app (needs -e ./desktop + pywebview)
 
 docker compose up -d --build   # web + mcp in containers, published to 127.0.0.1 only
-packaging/macos/build.sh       # build the macOS .app + .dmg (PyInstaller)
+packaging/macos/build.sh          # build the macOS .app + .dmg (PyInstaller)
+packaging/linux/build-appimage.sh # build the Linux .AppImage (PyInstaller + appimagetool)
+# Windows Setup.exe is built in CI (PyInstaller onedir + Inno Setup, packaging/windows/BookVault.iss)
 ```
 
 Live tests (`tests/test_smoke_live.py`, marker `live`) are **deselected by default** via `addopts = -m "not live"`; run them with `-m live` against a started app (`BOOKVAULT_BASE_URL` overrides the target).
@@ -60,10 +62,17 @@ core/bookvault_core/   client.py (login/API/download) · session.py (worker thre
 web/bookvault_web/     app.py (FastAPI) · activity.py (state machine) · prefs.py (shared UI state) · run.py · templates/ static/
 mcp/bookvault_mcp/     server.py (MCP tools)
 desktop/bookvault_desktop/  app.py (pywebview launcher; embeds bookvault_web)
-packaging/macos/       PyInstaller spec + build.sh for the .app/.dmg
+packaging/             entry.py (shared frozen-app entry: per-OS data dir + PLAYWRIGHT_BROWSERS_PATH)
+                       macos/ (.app/.dmg) · windows/ (Setup.exe via Inno Setup) · linux/ (.AppImage)
 tests/                 pytest suite (offline) + tests/test_smoke_live.py (opt-in -m live)
 ```
 
 ## Releasing
 
-Versions are bumped **in lockstep** across all `pyproject.toml` files. A pushed `v*` tag triggers `.github/workflows/docker-publish.yml`, which builds and publishes the multi-arch `ghcr.io/mavrovde/bookvault/{web,mcp}` images. `.github/workflows/lint-test-audit.yml` runs ruff + the pytest matrix (3.11–3.13) + a dependency audit on every push/PR. The macOS desktop `.dmg` is built and attached to the GitHub Release separately (unsigned dev build; Chromium is fetched on first run).
+Versions are bumped **in lockstep** across all five `pyproject.toml` files (root + core/web/mcp/desktop); current release is **v1.2.0**. A pushed `v*` tag triggers `.github/workflows/docker-publish.yml`, which builds and publishes the multi-arch `ghcr.io/mavrovde/bookvault/{web,mcp}` images. `.github/workflows/lint-test-audit.yml` runs ruff + the pytest matrix (3.11–3.13) + a dependency audit on every push/PR.
+
+The three desktop installers each build in their own workflow on a matching runner and attach the artifact to the GitHub Release (all unsigned dev builds; Chromium is fetched on first run via `packaging/entry.py`):
+
+- **macOS** `.app`/`.dmg` — `desktop-macos.yml` (`packaging/macos/build.sh`).
+- **Windows** `Setup.exe` — `desktop-windows.yml` (PyInstaller onedir + Inno Setup, `packaging/windows/BookVault.iss`). Needs the WebView2 runtime.
+- **Linux** `.AppImage` — `desktop-linux.yml` (`packaging/linux/build-appimage.sh`, headless xvfb smoke test). WebKitGTK 4.1 is a **host** runtime dependency (can't be bundled).
