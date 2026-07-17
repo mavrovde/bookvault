@@ -30,10 +30,12 @@ function updateButtons() {
   cancelBtn.textContent = currentState === 'stopping' ? 'Stopping…' : 'Stop';
 }
 
+// Escapes quotes too (unlike the innerHTML round-trip trick), because the
+// output is interpolated into attribute values (title="...") -- an unescaped
+// quote in a book title or an error snippet would break out of the attribute.
+const ESCAPE_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 function escapeHtml(s) {
-  const div = document.createElement('div');
-  div.textContent = s == null ? '' : String(s);
-  return div.innerHTML;
+  return (s == null ? '' : String(s)).replace(/[&<>"']/g, (c) => ESCAPE_MAP[c]);
 }
 
 function formatSize(mb) {

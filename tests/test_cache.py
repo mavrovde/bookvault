@@ -87,3 +87,14 @@ def test_corrupt_cache_file_is_ignored_not_fatal(monkeypatch):
     cache._state = None
 
     assert cache.get_library() is None  # must not raise
+
+
+def test_save_is_atomic_and_leaves_no_tmp_file_behind():
+    """Saves go through write-to-tmp + os.replace, so a crash mid-write can't
+    truncate the real file; afterwards the tmp must be gone and the real file
+    must parse."""
+    import json
+
+    cache.set_library([{"id": 1, "title": "A"}])
+    assert not cache.CACHE_PATH.with_name(cache.CACHE_PATH.name + ".tmp").exists()
+    assert json.loads(cache.CACHE_PATH.read_text())["library"]["books"] == [{"id": 1, "title": "A"}]

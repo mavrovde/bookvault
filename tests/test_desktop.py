@@ -65,3 +65,31 @@ def test_server_serves_the_logged_out_app_and_shuts_down():
         server.should_exit = True
         thread.join(timeout=10)
     assert not thread.is_alive()
+
+
+def test_wait_until_serving_fails_fast_when_the_server_thread_died():
+    """A dead server thread (port bind failure, lifespan crash) must produce
+    an immediate, clear error -- not a silent spin until the full timeout."""
+    import time
+
+    server = desktop.build_server(desktop._free_port())  # never started
+    dead = threading.Thread(target=lambda: None)
+    dead.start()
+    dead.join()
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="exited before it began"):
+        desktop._wait_until_serving(server, thread=dead, timeout=10.0)
+    assert time.monotonic() - started < 1.0  # failed fast, not after 10s
+
+
+def test_wait_until_serving_times_out_when_never_started():
+    server = desktop.build_server(desktop._free_port())  # never started
+    with pytest.raises(RuntimeError, match="failed to start within timeout"):
+        desktop._wait_until_serving(server, timeout=0.15)
+
+
+def test_splash_html_embeds_the_status_message():
+    html = desktop._splash_html("Downloading the browser engine…")
+    assert "Downloading the browser engine…" in html
+    assert "BookVault" in html

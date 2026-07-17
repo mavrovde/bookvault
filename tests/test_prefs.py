@@ -134,3 +134,11 @@ def test_post_prefs_with_empty_body_is_a_noop():
     with TestClient(app) as client:
         resp = client.post("/prefs", json={})
     assert resp.json() == {"ok": True, "selected": [1], "ebook_format": "epub", "audiobook_format": None}
+
+
+def test_save_is_atomic_and_leaves_no_tmp_file_behind():
+    import json
+
+    prefs.update(selected=[1, 2])
+    assert not prefs.STATE_PATH.with_name(prefs.STATE_PATH.name + ".tmp").exists()
+    assert json.loads(prefs.STATE_PATH.read_text())["selected"] == [1, 2]

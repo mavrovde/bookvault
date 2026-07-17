@@ -470,3 +470,17 @@ def test_activity_route_embeds_prefs_end_to_end(monkeypatch):
         client.post("/prefs", json={"selected": [3, 1], "ebook_format": "epub"})
         snap = client.get("/activity").json()
     assert snap["prefs"] == {"selected": [3, 1], "ebook_format": "epub", "audiobook_format": None}
+
+
+def test_login_backend_crash_shows_clean_error_not_500(monkeypatch):
+    """A Playwright-level failure during login (captcha, changed login form)
+    must render the login page with an actionable banner -- not a raw 500."""
+    fake = client_factory(monkeypatch, session)
+    fake.login_exception = RuntimeError("Page.wait_for_selector: Timeout 15000ms exceeded")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/login", data={"login": "user@example.com", "password": "hunter2"}, follow_redirects=False
+        )
+    assert resp.status_code == 401
+    assert "did not complete" in resp.text  # the friendly wrapped message
+    assert fake.closed is True  # no orphaned Chromium behind the error page

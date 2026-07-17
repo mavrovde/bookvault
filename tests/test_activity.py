@@ -739,3 +739,134 @@ def test_cancelled_build_keeps_finished_books_as_a_partial_zip_and_results():
     after = wait_until_idle()
     assert [e["title"] for e in after["results"] if e["status"] == "done"] == ["Finished"]
     assert after["zip_path"]  # partial zip still offered after the reload
+
+
+# ==========================================================================
+# Zip hygiene: member naming and workdir lifecycle
+# ==========================================================================
+
+
+def test_same_titled_books_get_distinct_zip_entries():
+    """Two books that sanitize to the same title must not overwrite each
+    other on extraction -- the second gets an ' (art_id)' suffix."""
+    client = _make_client(
+        _book(1, "War and Peace", TEXT_FILES),
+        _book(2, "War and Peace", TEXT_FILES),
+    )
+    activity.prepare(client)
+    snap = wait_until_idle()
+    with zipfile.ZipFile(snap["zip_path"]) as zf:
+        names = sorted(zf.namelist())
+    assert names == ["War and Peace (2).epub", "War and Peace.epub"]
+
+
+def test_unsanitizable_title_falls_back_to_art_id():
+    """A title of pure punctuation sanitizes to nothing -- the entry must be
+    named after the art id, not '.epub'."""
+    client = _make_client(_book(77, "???!!!", TEXT_FILES))
+    activity.prepare(client)
+    snap = wait_until_idle()
+    with zipfile.ZipFile(snap["zip_path"]) as zf:
+        assert zf.namelist() == ["77.epub"]
+
+
+def test_a_new_prepare_removes_the_previous_builds_workdir():
+    """Every build gets its own mkdtemp; once superseded, the old zip
+    (potentially many GB) must be deleted, not leaked until reboot."""
+    client = _make_client(_book(1, "Book A", TEXT_FILES))
+    activity.prepare(client)
+    old_zip = pathlib.Path(wait_until_idle()["zip_path"])
+    assert old_zip.exists()
+
+    activity.prepare(client)
+    snap = wait_until_idle()
+
+    assert not old_zip.parent.exists()  # previous workdir cleaned up
+    assert pathlib.Path(snap["zip_path"]).exists()  # new build unaffected
+
+
+def test_a_build_with_no_successes_leaves_no_workdir_behind(monkeypatch):
+    """A build where every book failed offers no zip (existing behavior) --
+    and must also remove its now-useless workdir."""
+    import tempfile as tempfile_mod
+
+    made = []
+    real_mkdtemp = tempfile_mod.mkdtemp
+
+    def recording_mkdtemp(*args, **kwargs):
+        path = real_mkdtemp(*args, **kwargs)
+        made.append(path)
+        return path
+
+    monkeypatch.setattr(activity.tempfile, "mkdtemp", recording_mkdtemp)
+    client = _make_client(_book(1, "Book A", TEXT_FILES))
+    client.fail_downloads = {1}
+    activity.prepare(client)
+    snap = wait_until_idle()
+
+    assert snap["zip_path"] is None
+    assert made and not pathlib.Path(made[0]).exists()
+
+
+def test_a_crashed_build_removes_its_workdir(monkeypatch):
+    import tempfile as tempfile_mod
+
+    made = []
+    real_mkdtemp = tempfile_mod.mkdtemp
+
+    def recording_mkdtemp(*args, **kwargs):
+        path = real_mkdtemp(*args, **kwargs)
+        made.append(path)
+        return path
+
+    monkeypatch.setattr(activity.tempfile, "mkdtemp", recording_mkdtemp)
+    client = _make_client(_book(1, "Book A", TEXT_FILES))
+    monkeypatch.setattr(activity, "_iter_books", lambda c: (_ for _ in ()).throw(RuntimeError("boom")))
+    activity.prepare(client)
+    snap = wait_until_idle()
+
+    assert snap["result"] == "error"
+    assert made and not pathlib.Path(made[0]).exists()
+
+
+# ==========================================================================
+# Remaining state-machine edges
+# ==========================================================================
+
+
+def test_check_sweep_crash_surfaces_error_and_returns_idle(monkeypatch):
+    """A crash while reading the cached library must land back at IDLE with
+    result=error -- not wedge the machine in CHECKING forever."""
+    monkeypatch.setattr(cache, "get_library", lambda: (_ for _ in ()).throw(RuntimeError("disk gone")))
+    client = _make_client(_book(1, "Book A", TEXT_FILES))
+    assert activity.check_sizes(client) is True
+    snap = wait_until_idle()
+    assert snap["result"] == "error"
+    assert snap["error"]  # a friendly message is surfaced
+
+
+def test_refresh_cancelled_during_reload_stops_before_the_sweep(monkeypatch):
+    """cancel() only accepts CHECKING/PREPARING, but the cancel event may
+    already be set when the reload finishes -- the refresh must then stop
+    cleanly instead of rolling into the size sweep."""
+    def build_and_cancel(client):
+        activity._cancel_event.set()
+        return [{"id": 1, "title": "Book A", "is_audio": False}]
+
+    monkeypatch.setattr(activity, "build_books", build_and_cancel)
+    client = _make_client(_book(1, "Book A", TEXT_FILES))
+    activity.refresh(client)
+    snap = wait_until_idle()
+    assert snap["result"] == "cancelled"
+    assert snap["sizes"] == {}  # the sweep never ran
+
+
+def test_friendly_error_maps_common_statuses():
+    cases = {
+        "Download failed for art 5 (403): Forbidden": "won't serve this title",
+        "Download failed for art 5 (429): slow down": "Rate-limited",
+        "Library fetch failed (401): PermissionMissing": "expired",
+        "Timeout 300000ms exceeded": "timed out",
+    }
+    for raw, expected in cases.items():
+        assert expected in activity._friendly_error(Exception(raw)), raw

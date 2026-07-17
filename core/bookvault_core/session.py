@@ -74,27 +74,43 @@ def _restore_session_impl(allow_env_login: bool = True) -> None:
         return  # already restored/logged in this process
 
     if SESSION_STATE_PATH.exists():
-        client = LitresClient(storage_state_path=SESSION_STATE_PATH)
-        if client.is_logged_in():
-            saved = credentials.load_last()
-            # The keychain entry and the .env login are two independent
-            # "remember who this is" sources (see login()/credentials.py) --
-            # cookies alone don't carry a login name, so without this
-            # fallback a keychain miss would restore a working session that
-            # displays no login at all. Only the MCP server consults .env
-            # (allow_env_login) -- the web UI never does; see login below.
-            _state["client"] = client
-            _state["login"] = saved[0] if saved else (os.environ.get("LITRES_LOGIN") if allow_env_login else None)
-            # Cookies carry no login name. When neither the keychain nor .env
-            # supplies one (e.g. Docker: no keychain, web ignores .env), recover
-            # the real account identity from the live session so the UI shows
-            # the email/username instead of a generic "Signed in".
-            if not _state["login"]:
-                _state["login"] = client.account_login()
-            logger.info("Restored saved session for %s", _state["login"])
+        # Restore is best-effort by contract: it runs unattended (app/desktop
+        # startup), so *any* failure here -- litres.ru unreachable, a Playwright
+        # hiccup -- must degrade to "logged out" rather than crash the boot.
+        client = None
+        try:
+            client = LitresClient(storage_state_path=SESSION_STATE_PATH)
+            if client.is_logged_in():
+                saved = credentials.load_last()
+                # The keychain entry and the .env login are two independent
+                # "remember who this is" sources (see login()/credentials.py) --
+                # cookies alone don't carry a login name, so without this
+                # fallback a keychain miss would restore a working session that
+                # displays no login at all. Only the MCP server consults .env
+                # (allow_env_login) -- the web UI never does; see login below.
+                _state["client"] = client
+                _state["login"] = saved[0] if saved else (os.environ.get("LITRES_LOGIN") if allow_env_login else None)
+                # Cookies carry no login name. When neither the keychain nor .env
+                # supplies one (e.g. Docker: no keychain, web ignores .env), recover
+                # the real account identity from the live session so the UI shows
+                # the email/username instead of a generic "Signed in".
+                if not _state["login"]:
+                    _state["login"] = client.account_login()
+                logger.info("Restored saved session for %s", _state["login"])
+                return
+            logger.info("Saved session cookies are no longer valid, discarding")
+            client.close()
+        except Exception as exc:
+            # Do NOT delete the session file -- the cookies may be perfectly
+            # fine once the network is back; only a *validated* rejection
+            # above discards them.
+            logger.warning("Could not validate the saved session (%s) -- staying logged out", exc)
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
             return
-        logger.info("Saved session cookies are no longer valid, discarding")
-        client.close()
 
     saved = credentials.load_last()
     if not saved:
@@ -117,9 +133,16 @@ def _restore_session_impl(allow_env_login: bool = True) -> None:
     client = LitresClient()
     try:
         client.login(login_id, password)
-    except LitresAuthError:
-        logger.warning("Automatic login for %s failed", login_id)
-        client.close()
+    except Exception as exc:
+        # Same best-effort contract as above: an unattended re-login must
+        # never crash startup -- and whatever went wrong (bad credentials,
+        # a Playwright timeout on a changed login page, no network), the
+        # browser it was driving must not be left running.
+        logger.warning("Automatic login for %s failed: %s", login_id, exc)
+        try:
+            client.close()
+        except Exception:
+            pass
         return
     client.save_state(SESSION_STATE_PATH)
     _state["client"], _state["login"] = client, login_id
@@ -130,10 +153,23 @@ def _login_impl(login_id: str, password: str) -> LitresClient:
     client = LitresClient()
     try:
         client.login(login_id, password)
-    except LitresAuthError:
-        logger.warning("Login failed for %s", login_id)
-        client.close()
-        raise
+    except Exception as exc:
+        # Whatever went wrong, the Chromium this client was driving must not
+        # be orphaned. Non-auth errors (a Playwright timeout when litres.ru
+        # shows a captcha or changes its login form) are re-raised AS auth
+        # errors so the web login route renders them as a clean banner
+        # instead of a raw 500.
+        logger.warning("Login failed for %s: %s", login_id, exc)
+        try:
+            client.close()
+        except Exception:
+            pass
+        if isinstance(exc, LitresAuthError):
+            raise
+        raise LitresAuthError(
+            "Login did not complete -- litres.ru's login page may have shown a "
+            "captcha or changed. Wait a moment and try again."
+        ) from exc
     if _state["client"] is not None:
         _state["client"].close()
     client.save_state(SESSION_STATE_PATH)

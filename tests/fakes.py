@@ -6,6 +6,8 @@ offline fakes.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from bookvault_core.client import LitresAuthError, LitresClient
 
 
@@ -58,6 +60,12 @@ class FakeContext:
         # httpx client -- no cookies needed for the offline (MockTransport) path.
         return []
 
+    def storage_state(self, path=None):
+        # Mirror Playwright's observable effect: writing the state file.
+        if path:
+            Path(path).write_text("{}")
+        return {}
+
 
 def make_bare_client(handler, extra_headers=None) -> LitresClient:
     """A real LitresClient with Playwright never started -- `.context` is a
@@ -87,6 +95,12 @@ class FakeLitresClient:
         # transfer / DDoS-Guard block / any other per-book failure.
         self.fail_downloads = set(fail_downloads or ())
         self.fail_login = False
+        # Set to an exception instance to make login()/is_logged_in() raise it
+        # -- simulates a NON-auth failure (a Playwright timeout on a changed
+        # login page, litres.ru unreachable) as opposed to fail_login's clean
+        # LitresAuthError.
+        self.login_exception = None
+        self.is_logged_in_exception = None
         self._is_logged_in = True
         self.closed = False
         self.storage_state_path = None
@@ -96,10 +110,14 @@ class FakeLitresClient:
 
     def login(self, login, password):
         self.login_calls.append((login, password))
+        if self.login_exception is not None:
+            raise self.login_exception
         if self.fail_login:
             raise LitresAuthError("Login failed (401): Incorrect user data")
 
     def is_logged_in(self):
+        if self.is_logged_in_exception is not None:
+            raise self.is_logged_in_exception
         return self._is_logged_in
 
     def account_login(self):
@@ -121,10 +139,11 @@ class FakeLitresClient:
     def get_files(self, art_id, should_cancel=None):
         return self.files_by_id.get(art_id, [])
 
-    def pick_best_file(self, files, preferred_ext=None, preferred_file_type=None):
-        # Delegate to the real implementation (it doesn't use `self`) so
-        # tests exercise production logic, not a reimplementation of it.
-        return LitresClient.pick_best_file(self, files, preferred_ext, preferred_file_type)
+    @staticmethod
+    def pick_best_file(files, preferred_ext=None, preferred_file_type=None):
+        # Delegate to the real implementation so tests exercise production
+        # logic, not a reimplementation of it.
+        return LitresClient.pick_best_file(files, preferred_ext, preferred_file_type)
 
     @staticmethod
     def file_extension(file_entry):

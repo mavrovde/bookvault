@@ -332,3 +332,54 @@ async def test_run_async_propagates_exceptions():
 
     with pytest.raises(ValueError, match="boom"):
         await session.run_async(boom)
+
+
+# --------------------------------------------------------------------------
+# Resource safety / boot resilience: unexpected (non-auth) failures must
+# never leak a Chromium client or crash an unattended restore.
+# --------------------------------------------------------------------------
+
+
+def test_login_with_unexpected_error_closes_client_and_raises_auth_error(monkeypatch):
+    """A NON-auth failure inside client.login (e.g. a Playwright timeout when
+    litres.ru shows a captcha) must still close the browser it was driving,
+    and surface as a LitresAuthError so the web route renders a clean banner
+    instead of a raw 500."""
+    fake = client_factory(monkeypatch, session)
+    fake.login_exception = RuntimeError("Page.wait_for_selector: Timeout 15000ms exceeded")
+
+    with pytest.raises(LitresAuthError, match="did not complete"):
+        session.login("user@example.com", "hunter2")
+
+    assert fake.closed is True
+    assert session.current_client() is None
+
+
+def test_restore_session_survives_a_crashing_session_validation(monkeypatch):
+    """Startup restore is best-effort: litres.ru being unreachable while
+    validating saved cookies must leave the app logged out -- NOT crash the
+    lifespan (which would take the whole web/desktop boot down with it)."""
+    session.SESSION_STATE_PATH.write_text("{}")  # a saved session exists
+    fake = client_factory(monkeypatch, session)
+    fake.is_logged_in_exception = ConnectionError("net::ERR_INTERNET_DISCONNECTED")
+
+    session.restore_session()  # must not raise
+
+    assert session.current_client() is None
+    assert fake.closed is True
+    # The cookies were never *validated* as bad -- keep the file so the next
+    # start (with the network back) can still restore without a fresh login.
+    assert session.SESSION_STATE_PATH.exists()
+
+
+def test_restore_session_survives_an_unexpected_auto_login_error(monkeypatch):
+    """Same contract for the keychain auto-login fallback: a non-auth crash
+    mid-login stays logged out and closes the client instead of raising."""
+    credentials.save("user@example.com", "hunter2")
+    fake = client_factory(monkeypatch, session)
+    fake.login_exception = RuntimeError("browser closed unexpectedly")
+
+    session.restore_session()  # must not raise
+
+    assert session.current_client() is None
+    assert fake.closed is True

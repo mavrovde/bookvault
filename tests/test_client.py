@@ -16,7 +16,7 @@ from tests.fakes import FakeAPIResponse, make_bare_client
 
 
 def test_pick_best_file_no_files_returns_none():
-    assert LitresClient.pick_best_file(None, []) is None
+    assert LitresClient.pick_best_file([]) is None
 
 
 def test_pick_best_file_prefers_epub_by_default():
@@ -25,7 +25,7 @@ def test_pick_best_file_prefers_epub_by_default():
         {"id": 2, "extension": "epub", "is_additional": False},
         {"id": 3, "extension": "fb2.zip", "is_additional": False},
     ]
-    best = LitresClient.pick_best_file(None, files)
+    best = LitresClient.pick_best_file(files)
     assert best["id"] == 2
 
 
@@ -34,7 +34,7 @@ def test_pick_best_file_respects_preferred_ext_when_available():
         {"id": 1, "extension": "epub", "is_additional": False},
         {"id": 2, "extension": "a4.pdf", "is_additional": False},
     ]
-    best = LitresClient.pick_best_file(None, files, preferred_ext="a4.pdf")
+    best = LitresClient.pick_best_file(files, preferred_ext="a4.pdf")
     assert best["id"] == 2
 
 
@@ -45,7 +45,7 @@ def test_pick_best_file_falls_back_when_preferred_ext_unavailable():
     ]
     # preferred "mobi.prc" isn't available for this book -- falls back to
     # the built-in order, which picks epub.
-    best = LitresClient.pick_best_file(None, files, preferred_ext="mobi.prc")
+    best = LitresClient.pick_best_file(files, preferred_ext="mobi.prc")
     assert best["id"] == 1
 
 
@@ -57,7 +57,7 @@ def test_pick_best_file_audiobook_prefers_whole_bundle_over_chapters():
         {"id": 4, "file_type": "zip_with_mp3", "is_additional": False},
         {"id": 5, "file_type": "mobile_version_mp4", "is_additional": False},
     ]
-    best = LitresClient.pick_best_file(None, files)
+    best = LitresClient.pick_best_file(files)
     assert best["id"] == 4  # zip_with_mp3 beats mobile_version_mp4 in PREFERRED_FILE_TYPES order
 
 
@@ -66,7 +66,7 @@ def test_pick_best_file_respects_preferred_file_type():
         {"id": 4, "file_type": "zip_with_mp3", "is_additional": False},
         {"id": 5, "file_type": "mobile_version_mp4", "is_additional": False},
     ]
-    best = LitresClient.pick_best_file(None, files, preferred_file_type="mobile_version_mp4")
+    best = LitresClient.pick_best_file(files, preferred_file_type="mobile_version_mp4")
     assert best["id"] == 5
 
 
@@ -75,19 +75,19 @@ def test_pick_best_file_excludes_additional_samples():
         {"id": 1, "extension": "epub", "is_additional": True},
         {"id": 2, "extension": "txt", "is_additional": False},
     ]
-    best = LitresClient.pick_best_file(None, files)
+    best = LitresClient.pick_best_file(files)
     assert best["id"] == 2  # the non-additional txt wins even though epub ranks higher
 
 
 def test_pick_best_file_falls_back_to_additional_if_thats_all_there_is():
     files = [{"id": 1, "extension": "epub", "is_additional": True}]
-    best = LitresClient.pick_best_file(None, files)
+    best = LitresClient.pick_best_file(files)
     assert best["id"] == 1
 
 
 def test_pick_best_file_falls_back_to_first_candidate_when_format_unrecognized():
     files = [{"id": 1, "extension": None, "file_type": "some_new_format", "is_additional": False}]
-    best = LitresClient.pick_best_file(None, files)
+    best = LitresClient.pick_best_file(files)
     assert best["id"] == 1
 
 
@@ -494,3 +494,195 @@ def test_download_does_not_fall_back_on_an_anti_bot_block(tmp_path):
         client.download_file(1, 2, "book.zip", tmp_path / "book.zip")
     assert all("download_book/" in p for p in seen)  # never touched the subscr endpoint
     assert not any("download_book_subscr" in p for p in seen)
+
+
+# --------------------------------------------------------------------------
+# Resource teardown -- close()/__init__ must never orphan the browser stack.
+# --------------------------------------------------------------------------
+
+
+def test_close_tears_down_all_layers_even_when_context_close_fails():
+    """If context.close() raises, the browser and the Playwright driver
+    process must STILL be shut down -- otherwise a single failed close
+    orphans a headless Chromium."""
+    from types import SimpleNamespace
+
+    calls = []
+
+    class BoomContext:
+        def close(self):
+            raise RuntimeError("context close failed")
+
+    client = LitresClient.__new__(LitresClient)
+    client.context = BoomContext()
+    client._browser = SimpleNamespace(close=lambda: calls.append("browser"))
+    client._pw = SimpleNamespace(stop=lambda: calls.append("pw"))
+
+    with pytest.raises(RuntimeError, match="context close failed"):
+        client.close()
+    assert calls == ["browser", "pw"]  # both lower layers still torn down
+
+
+def test_constructor_stops_the_driver_when_chromium_launch_fails(monkeypatch):
+    """Chromium not installed (a fresh machine before `playwright install`)
+    raises from launch(); the already-started Playwright driver process must
+    not be leaked behind that error."""
+    from types import SimpleNamespace
+
+    def failing_launch(headless=None):
+        raise RuntimeError("Executable doesn't exist at .../chrome")
+
+    fake_pw = SimpleNamespace(chromium=SimpleNamespace(launch=failing_launch), stopped=False)
+    fake_pw.stop = lambda: setattr(fake_pw, "stopped", True)
+    monkeypatch.setattr(client_mod, "sync_playwright", lambda: SimpleNamespace(start=lambda: fake_pw))
+
+    with pytest.raises(RuntimeError, match="doesn't exist"):
+        LitresClient()
+    assert fake_pw.stopped is True
+
+
+def test_save_state_restricts_the_session_file_to_owner_only(tmp_path):
+    """The cookie file IS the logged-in session -- it must not be
+    group/world-readable."""
+    client = make_bare_client(lambda *a: None)
+    path = tmp_path / "state" / ".litres_session.json"
+    client.save_state(path)
+    assert path.exists()
+    assert (path.stat().st_mode & 0o777) == 0o600
+
+
+def test_download_discards_partial_file_when_transfer_dies_midway(tmp_path):
+    """A transfer that fails after some bytes were streamed (stall, reset)
+    must not leave a truncated file behind -- nothing will ever finish it,
+    and in a zip build it would silently rot in the workdir."""
+
+    def broken_body():
+        yield b"\x00" * (1024 * 1024)
+        raise RuntimeError("connection reset mid-stream")
+
+    client = make_bare_client(lambda *a: None)
+    client._httpx_transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, content=broken_body())
+    )
+    dest = tmp_path / "book.epub"
+    with pytest.raises(Exception, match="mid-stream"):
+        client.download_file(1, 2, "book.epub", dest)
+    assert not dest.exists()  # the partial write was discarded
+
+
+# --------------------------------------------------------------------------
+# login() -- driven against a scripted fake page (no Playwright, no network).
+# --------------------------------------------------------------------------
+
+
+class FakeLoginPage:
+    """Scripts the login-page flow the client drives: registers the request
+    listener, 'fires' the SPA's /users/me call on the final submit click (or
+    never, when request_headers is None), and reports the login POST status."""
+
+    def __init__(self, request_headers=None, login_status=200):
+        self._cb = None
+        self._headers = request_headers
+        self._status = login_status
+        self.closed = False
+        self.reloaded = False
+
+    def on(self, event, cb):
+        self._cb = cb
+
+    def remove_listener(self, event, cb):
+        self._cb = None
+
+    def goto(self, url, wait_until=None, timeout=None):
+        pass
+
+    def fill(self, selector, value):
+        pass
+
+    def wait_for_selector(self, selector, timeout=None):
+        pass
+
+    def wait_for_load_state(self, state, timeout=None):
+        pass
+
+    def reload(self, wait_until=None, timeout=None):
+        self.reloaded = True
+
+    def close(self):
+        self.closed = True
+
+    def click(self, selector):
+        from types import SimpleNamespace
+
+        if self._cb is not None and self._headers is not None:
+            self._cb(SimpleNamespace(
+                method="GET",
+                url="https://api.litres.ru/foundation/api/users/me",
+                headers=dict(self._headers),
+            ))
+
+    def expect_response(self, predicate, timeout=None):
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        @contextmanager
+        def ctx():
+            yield SimpleNamespace(value=SimpleNamespace(status=self._status, text=lambda: "resp"))
+
+        return ctx()
+
+
+def test_login_captures_app_headers_and_drops_transport_ones():
+    sniffed = {"app-id": "115", "session-id": "abc", "Cookie": "secret", "Host": "api.litres.ru"}
+    page = FakeLoginPage(request_headers=sniffed)
+    client = make_bare_client(lambda *a: None, extra_headers={})
+    client.context.new_page = lambda: page
+
+    client.login("user@example.com", "hunter2")
+
+    # App-level headers kept; transport-managed ones (cookie/host) dropped.
+    assert client._extra_headers == {"app-id": "115", "session-id": "abc"}
+    assert page.closed is True
+
+
+def test_login_raises_when_the_login_post_fails():
+    page = FakeLoginPage(request_headers={"app-id": "115"}, login_status=401)
+    client = make_bare_client(lambda *a: None, extra_headers={})
+    client.context.new_page = lambda: page
+
+    with pytest.raises(LitresAuthError, match="401"):
+        client.login("user@example.com", "wrong")
+    assert page.closed is True
+
+
+def test_login_raises_when_no_app_headers_can_be_captured(monkeypatch):
+    """A login whose header sniff (and recapture fallback) comes up empty is
+    a broken session wearing a green badge -- every later API call would 403
+    with PermissionMissing. It must fail loudly instead."""
+    page = FakeLoginPage(request_headers=None)  # the SPA never fires /users/me
+    client = make_bare_client(lambda *a: None, extra_headers={})
+    client.context.new_page = lambda: page
+    monkeypatch.setattr(client, "_recapture_headers", lambda: False)
+
+    with pytest.raises(LitresAuthError, match="headers could not be captured"):
+        client.login("user@example.com", "hunter2")
+    assert page.reloaded is True  # it did try the reload fallback first
+    assert page.closed is True
+
+
+# --------------------------------------------------------------------------
+# _sleep_interruptible -- backoff pauses must yield to Stop.
+# --------------------------------------------------------------------------
+
+
+def test_sleep_interruptible_stops_early_on_cancel():
+    import time
+
+    started = time.monotonic()
+    finished = client_mod._sleep_interruptible(30.0, should_cancel=lambda: True)
+    assert finished is False  # reported the interruption
+    assert time.monotonic() - started < 1.0  # and did NOT sit out the 30s
+
+
+def test_sleep_interruptible_sleeps_fully_without_cancel_hook():
+    assert client_mod._sleep_interruptible(0.01, should_cancel=None) is True

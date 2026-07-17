@@ -238,22 +238,46 @@ class LitresClient:
 
     def __init__(self, storage_state_path: Optional[Path] = None):
         self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(headless=HEADLESS)
-        state = str(storage_state_path) if storage_state_path and storage_state_path.exists() else None
-        self.context: BrowserContext = self._browser.new_context(storage_state=state)
+        try:
+            self._browser = self._pw.chromium.launch(headless=HEADLESS)
+        except Exception:
+            # e.g. Chromium not installed yet -- don't leak the started
+            # Playwright driver process behind the raised error.
+            self._pw.stop()
+            raise
+        try:
+            state = str(storage_state_path) if storage_state_path and storage_state_path.exists() else None
+            self.context: BrowserContext = self._browser.new_context(storage_state=state)
+        except Exception:
+            # e.g. a corrupt storage-state file -- unwind the half-built stack.
+            self._browser.close()
+            self._pw.stop()
+            raise
         self._extra_headers: dict = {}
         # Injected by tests to drive download_file's httpx client offline; None
         # means the real network transport.
         self._httpx_transport = None
 
     def close(self) -> None:
-        self.context.close()
-        self._browser.close()
-        self._pw.stop()
+        # Chained finallys: even if closing one layer raises, the layers under
+        # it (and above all the Playwright driver process) still get torn down
+        # -- otherwise a single failed context.close() orphans Chromium.
+        try:
+            self.context.close()
+        finally:
+            try:
+                self._browser.close()
+            finally:
+                self._pw.stop()
 
     def save_state(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.context.storage_state(path=str(path))
+        # The cookie file IS the logged-in session -- keep it owner-only.
+        try:
+            path.chmod(0o600)
+        except OSError:  # pragma: no cover - e.g. exotic filesystems
+            pass
 
     def _get(self, url: str, **kwargs):
         headers = {**self._extra_headers, **kwargs.pop("headers", {})}
@@ -421,10 +445,19 @@ class LitresClient:
                 except Exception:
                     pass
             self._extra_headers = {k: v for k, v in captured.items() if k.lower() not in _DROP_HEADERS}
-            logger.info("Login succeeded for %s (%d app-level headers captured)", login, len(self._extra_headers))
         finally:
             page.remove_listener("request", on_request)
             page.close()
+        if not self._extra_headers and not self._recapture_headers():
+            # Without the app-level headers every subsequent API call 403s
+            # with "PermissionMissing" -- a "successful" login in this state
+            # is a broken session wearing a green badge. Fail it clearly
+            # instead (the cookies ARE valid, so a retry usually captures).
+            raise LitresAuthError(
+                "Logged in, but litres.ru's app-level API headers could not be "
+                "captured -- please try again."
+            )
+        logger.info("Login succeeded for %s (%d app-level headers captured)", login, len(self._extra_headers))
 
     def iter_library(self, limit: int = 100) -> Iterator[dict]:
         """Yield every art (book/audiobook/...) the user owns."""
@@ -472,8 +505,8 @@ class LitresClient:
         logger.debug("Art %s: %d file(s) across %d group(s)", art_id, len(flat), len(groups))
         return flat
 
+    @staticmethod
     def pick_best_file(
-        self,
         files: list,
         preferred_ext: Optional[str] = None,
         preferred_file_type: Optional[str] = None,
@@ -590,6 +623,13 @@ class LitresClient:
         except DownloadCancelled:
             dest.unlink(missing_ok=True)  # discard the partial file
             logger.info("Cancelled download of art %s mid-transfer (%d bytes discarded)", art_id, written)
+            raise
+        except Exception:
+            # A transfer that died partway (stall/timeout, connection reset,
+            # a block raised mid-retry) leaves a truncated file that nothing
+            # will ever finish or use -- discard it rather than leaking it
+            # into the workdir.
+            dest.unlink(missing_ok=True)
             raise
         logger.debug("Streamed %d bytes to %s", written, dest)
         return dest

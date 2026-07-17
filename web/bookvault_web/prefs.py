@@ -52,7 +52,11 @@ def _load() -> dict:
 
 def _save() -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(_state))
+    # Write-then-rename so a crash mid-write can't leave a truncated JSON
+    # file behind (os.replace is atomic on POSIX and Windows).
+    tmp = STATE_PATH.with_name(STATE_PATH.name + ".tmp")
+    tmp.write_text(json.dumps(_state))
+    os.replace(tmp, STATE_PATH)
 
 
 def snapshot() -> dict:
@@ -72,7 +76,6 @@ def update(
     selected: Optional[list] = None,
     ebook_format: Optional[str] = None,
     audiobook_format: Optional[str] = None,
-    _clear_formats: bool = False,
 ) -> dict:
     """Partial update: only the fields passed (non-None) are changed, so a
     caller can push just the selection, or just one format, without clobbering

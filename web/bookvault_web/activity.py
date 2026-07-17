@@ -135,7 +135,7 @@ def build_books(client: LitresClient) -> list:
 def size_of_files(files: list) -> Optional[float]:
     """MB of the best downloadable file in a listing, or None if there's no
     downloadable file at all."""
-    best = LitresClient.pick_best_file(None, files)
+    best = LitresClient.pick_best_file(files)
     size = best.get("size") if best else None
     return round(size / 1e6, 1) if size else None
 
@@ -223,7 +223,14 @@ def prepare(
     # A new build supersedes the previous results view AND the previous zip
     # download link (_begin leaves both untouched so they survive size-checks,
     # so clear them explicitly here for the fresh build).
-    _update(results=[], zip_path=None)
+    with _lock:
+        previous_zip = _state["zip_path"]
+        _state.update(results=[], zip_path=None)
+    # Each build gets its own mkdtemp workdir; once superseded, the previous
+    # build's zip (potentially many GB) is unreachable -- delete its whole
+    # workdir rather than leaking it until the OS cleans the temp dir.
+    if previous_zip:
+        shutil.rmtree(Path(previous_zip).parent, ignore_errors=True)
     logger.info(
         "Starting zip build: %s, ebook_format=%s, audiobook_format=%s",
         f"{len(art_ids)} selected book(s)" if art_ids is not None else "entire library",
@@ -258,8 +265,9 @@ def _pending_size_ids(books: list, selected: Optional[list]) -> list:
     box doesn't mean waiting behind a whole library's worth of others."""
     ids = [b["id"] for b in books]
     if selected:
-        chosen = [i for i in selected if i in ids]
-        rest = [i for i in ids if i not in set(selected)]
+        id_set, selected_set = set(ids), set(selected)
+        chosen = [i for i in selected if i in id_set]
+        rest = [i for i in ids if i not in selected_set]
         return chosen + rest
     return ids
 
@@ -417,6 +425,11 @@ def _run_prepare(
 ) -> None:
     workdir = Path(tempfile.mkdtemp(prefix="litres-"))
     zip_path = workdir / "litres-library.zip"
+    # Archive member names already used (lowercased -- macOS/Windows extract
+    # onto case-insensitive filesystems), so two books that sanitize to the
+    # same title get distinct entries instead of silently overwriting each
+    # other on extraction.
+    used_names: set = set()
     try:
         # Default STORED; _add_to_zip picks the right per-member scheme (see
         # its docstring). The goal is an archive macOS Archive Utility can open
@@ -454,6 +467,15 @@ def _run_prepare(
                     if is_audio is None:  # raw art dict vs cached web-shape book
                         is_audio = art.get("art_type") == 1
                     safe_title = "".join(c for c in title if c.isalnum() or c in " ._-")[:150]
+                    # A title of pure punctuation/emoji sanitizes to nothing --
+                    # fall back to the id rather than writing ".epub". Then
+                    # de-collide: same-titled books (or same title after
+                    # sanitizing) must not overwrite each other in the archive.
+                    if not safe_title.strip():
+                        safe_title = str(art_id)
+                    if safe_title.lower() in used_names:
+                        safe_title = f"{safe_title} ({art_id})"
+                    used_names.add(safe_title.lower())
                     dest = workdir / f"{safe_title}.{ext}"
                     # Seed the total from the known file size so the MB readout
                     # shows "0 / N MB" the instant the transfer starts; the
@@ -522,6 +544,10 @@ def _run_prepare(
                 # failed filter survives the next page load's size-check.
                 results=list(_state["log"]),
             )
+        if done == 0:
+            # Nothing to offer -- don't leave the empty archive's workdir
+            # behind (the offered-zip case is cleaned by the NEXT prepare).
+            shutil.rmtree(workdir, ignore_errors=True)
         logger.info(
             "Zip build %s: %d/%d book(s) succeeded, zip=%s",
             "cancelled" if cancelled else "finished",
@@ -534,6 +560,9 @@ def _run_prepare(
             current_title=None, current_downloaded=None, current_total=None, message="",
             results=list(_state["log"]),  # keep whatever finished before the crash
         )
+        # A crashed build never offers its zip (zip_path stays None), so its
+        # workdir -- with the unfinished archive and any leftovers -- is garbage.
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def _friendly_error(exc: Exception) -> str:

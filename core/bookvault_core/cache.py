@@ -63,7 +63,11 @@ def _load() -> dict:
 
 def _save() -> None:
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CACHE_PATH.write_text(json.dumps(_state))
+    # Write-then-rename so a crash mid-write can't leave a truncated JSON
+    # file behind (os.replace is atomic on POSIX and Windows).
+    tmp = CACHE_PATH.with_name(CACHE_PATH.name + ".tmp")
+    tmp.write_text(json.dumps(_state))
+    os.replace(tmp, CACHE_PATH)
 
 
 def get_library() -> Optional[list]:
