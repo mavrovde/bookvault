@@ -75,7 +75,7 @@ jobs:
 
       - name: Upload Setup.exe as a workflow artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: BookVault-windows-setup
           path: packaging/windows/dist/BookVault-Setup-*.exe

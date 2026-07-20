@@ -42,7 +42,7 @@ jobs:
         run: gh release upload "${GITHUB_REF_NAME}" packaging/macos/dist/BookVault-*.dmg --clobber
 
       - name: Upload .dmg as a workflow artifact (also for manual runs)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: BookVault-macos-dmg
           path: packaging/macos/dist/BookVault-*.dmg
