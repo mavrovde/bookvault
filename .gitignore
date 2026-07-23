@@ -19,9 +19,17 @@ dist/
 .coverage
 htmlcov/
 
-# Claude Code local (machine-specific) settings
-.claude/settings.local.json
-
 # Desktop build artifacts (PyInstaller / installers)
 packaging/*/build/
 packaging/*/dist/
+
+# IDE and editor directories
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+
+# Bob (AI assistant) config and scratch directories
+.claude/
+.bob/
