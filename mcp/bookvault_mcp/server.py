@@ -23,7 +23,7 @@ from pathlib import Path
 
 import anyio
 from bookvault_core import session
-from bookvault_core.client import LitresAuthError
+from bookvault_core.client import LitresAuthError, LitresClient
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
@@ -76,14 +76,20 @@ async def login_to_litres(login: str, password: str) -> dict:
 
 @mcp.tool()
 async def list_library(limit: int = 50) -> list:
-    """List up to `limit` items from the logged-in user's purchased litres.ru library."""
+    """List up to `limit` purchased litres.ru items with full library metadata.
+
+    Each item is shaped by `LitresClient.normalize_library_item` and includes
+    id/title/authors/narrators/series/cover/url/is_audio/purchased_at/dates/
+    language/rating/DRM flags and related fields available on the library
+    listing endpoint (not detail-only fields like ISBN or HTML annotation).
+    """
     await _ensure_logged_in()
     client = session.current_client()
 
     def _sync():
         items = []
         for art in client.iter_library(limit=limit):
-            items.append({"id": art.get("id"), "title": art.get("title")})
+            items.append(LitresClient.normalize_library_item(art))
             if len(items) >= limit:
                 break
         return items
