@@ -115,18 +115,22 @@ def _update(**changes) -> None:
 
 def build_books(client: LitresClient) -> list:
     """Turn the raw litres.ru library listing into the flat book shape the
-    web UI renders (id/title/authors/is_audio/cover_url)."""
+    web UI renders (id/title/authors/is_audio/cover_url).
+
+    Built on `LitresClient.normalize_library_item` so web and MCP share one
+    metadata mapping; the UI keeps its slim card fields, while MCP returns
+    the full normalized dict.
+    """
     books = []
     for art in client.iter_library():
-        authors = [p.get("full_name") for p in (art.get("persons") or []) if p.get("role") == "author"]
-        cover_url = art.get("cover_url")
+        meta = LitresClient.normalize_library_item(art)
         books.append(
             {
-                "id": art.get("id"),
-                "title": art.get("title") or str(art.get("id")),
-                "authors": ", ".join(a for a in authors if a),
-                "is_audio": art.get("art_type") == 1,
-                "cover_url": f"https://static.litres.ru{cover_url}" if cover_url else None,
+                "id": meta["id"],
+                "title": meta["title"],
+                "authors": meta["authors_str"],
+                "is_audio": meta["is_audio"],
+                "cover_url": meta["cover_url"],
             }
         )
     return books

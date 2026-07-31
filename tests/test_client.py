@@ -686,3 +686,96 @@ def test_sleep_interruptible_stops_early_on_cancel():
 
 def test_sleep_interruptible_sleeps_fully_without_cancel_hook():
     assert client_mod._sleep_interruptible(0.01, should_cancel=None) is True
+
+
+# --------------------------------------------------------------------------
+# normalize_library_item -- pure metadata shaping from a library-list art.
+# --------------------------------------------------------------------------
+
+
+def test_normalize_library_item_full_shape():
+    art = {
+        "id": 42,
+        "uuid": "u-42",
+        "title": "The Book",
+        "subtitle": "A tale",
+        "art_type": 1,
+        "language_code": "ru",
+        "min_age": 16,
+        "cover_url": "/pub/c/cover/42.jpg",
+        "cover_width": 100,
+        "cover_height": 200,
+        "url": "/audiobook/author/the-book-42/",
+        "purchased_at": "2026-01-01T00:00:00",
+        "date_written_at": "2025-01-01",
+        "available_from": "2025-06-01T00:00:00",
+        "last_released_at": "2025-06-02T00:00:00",
+        "last_updated_at": "2025-06-03T00:00:00",
+        "symbols_count": 12345,
+        "is_drm": False,
+        "is_adult_content": False,
+        "is_free": False,
+        "is_archived": False,
+        "persons": [
+            {"id": 1, "full_name": "Author A", "role": "author", "url": "/author/a/"},
+            {"id": 2, "full_name": "Reader R", "role": "reader", "url": "/author/r/"},
+            {"id": 3, "full_name": "Editor E", "role": "editor"},
+        ],
+        "series": [
+            {
+                "id": 9,
+                "name": "The Saga",
+                "url": "/series/saga-9/",
+                "art_order": 3,
+                "unique_arts_count": 10,
+            }
+        ],
+        "labels": {"is_bestseller": True, "is_new": False, "is_sales_hit": True, "is_litres_exclusive": False},
+        "rating": {"rated_avg": 4.5, "rated_total_count": 12},
+        "prices": {
+            "final_price": 99.0,
+            "full_price": 199.0,
+            "currency": "RUB",
+            "discount_percent": 50,
+        },
+        "synchronized_arts": [{"id": 100}],
+        "alternative_versions": [{"id": 100, "art_type": 0, "link_type": "SYNCED"}],
+        "read_percent": 10,
+        "my_art_status": 1,
+        "release_file_id": 555,
+    }
+    meta = LitresClient.normalize_library_item(art)
+    assert meta["id"] == 42
+    assert meta["uuid"] == "u-42"
+    assert meta["title"] == "The Book"
+    assert meta["subtitle"] == "A tale"
+    assert meta["is_audio"] is True
+    assert meta["authors"] == ["Author A"]
+    assert meta["narrators"] == ["Reader R"]
+    assert meta["authors_str"] == "Author A"
+    assert meta["narrators_str"] == "Reader R"
+    assert meta["cover_url"] == "https://static.litres.ru/pub/c/cover/42.jpg"
+    assert meta["url"] == "https://www.litres.ru/audiobook/author/the-book-42/"
+    assert meta["series"]["name"] == "The Saga"
+    assert meta["series"]["art_order"] == 3
+    assert meta["series"]["arts_count"] == 10
+    assert meta["rating_avg"] == 4.5
+    assert meta["rating_count"] == 12
+    assert meta["prices"]["final_price"] == 99.0
+    assert meta["labels"]["is_bestseller"] is True
+    assert meta["synchronized_art_ids"] == [100]
+    assert meta["alternative_versions"][0]["id"] == 100
+    # Non-author/reader persons are still listed under persons.
+    assert {p["role"] for p in meta["persons"]} == {"author", "reader", "editor"}
+
+
+def test_normalize_library_item_handles_sparse_art():
+    meta = LitresClient.normalize_library_item({"id": 7, "title": None, "art_type": 0})
+    assert meta["id"] == 7
+    assert meta["title"] == "7"
+    assert meta["is_audio"] is False
+    assert meta["authors"] == []
+    assert meta["series"] is None
+    assert meta["cover_url"] is None
+    assert meta["url"] is None
+    assert meta["prices"] is None
