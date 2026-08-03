@@ -115,6 +115,76 @@ async def test_download_book_success(monkeypatch, tmp_path):
     assert result["path"] == str(tmp_path / "litres-library" / "1.epub")
     assert (tmp_path / "litres-library" / "1.epub").read_bytes() == b"FAKEDATA"
     assert result["size_bytes"] == len(b"FAKEDATA")
+    assert result["layout"] == "flat"
+
+
+async def test_download_book_into_library_dir(monkeypatch, tmp_path):
+    lib = tmp_path / "abs-lib"
+    monkeypatch.setenv("LITRES_LIBRARY_DIR", str(lib))
+    credentials.save("user@example.com", "hunter2")
+    client_factory(
+        monkeypatch,
+        session,
+        library=[
+            {
+                "id": 1,
+                "title": "Book One",
+                "art_type": 1,
+                "persons": [{"full_name": "Author A", "role": "author"}],
+                "last_released_at": "2024-01-01",
+            }
+        ],
+        files_by_id={
+            1: [
+                {
+                    "id": 100,
+                    "extension": "m4b",
+                    "file_type": "mobile_version_mp4",
+                    "is_additional": False,
+                    "size": 8,
+                }
+            ]
+        },
+    )
+
+    result = await mcp_server.download_book(1)
+
+    assert result["ok"] is True
+    assert result["layout"] == "library"
+    assert (lib / "Author A" / "Book One" / "metadata.json").exists()
+
+
+async def test_sync_library_now(monkeypatch, tmp_path):
+    lib = tmp_path / "abs-lib"
+    monkeypatch.setenv("LITRES_LIBRARY_DIR", str(lib))
+    credentials.save("user@example.com", "hunter2")
+    client_factory(
+        monkeypatch,
+        session,
+        library=[
+            {
+                "id": 1,
+                "title": "Book One",
+                "art_type": 1,
+                "persons": [{"full_name": "Author A", "role": "author"}],
+                "last_released_at": "2024-01-01",
+            }
+        ],
+        files_by_id={
+            1: [
+                {
+                    "id": 100,
+                    "extension": "m4b",
+                    "file_type": "mobile_version_mp4",
+                    "is_additional": False,
+                    "size": 8,
+                }
+            ]
+        },
+    )
+    result = await mcp_server.sync_library_now(audio_only=True)
+    assert result["ok"] is True
+    assert result["done"] == 1
 
 
 async def test_download_book_with_no_downloadable_file(monkeypatch, tmp_path):

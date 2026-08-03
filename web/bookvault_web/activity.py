@@ -14,14 +14,16 @@ module makes that implicit constraint the explicit contract:
     IDLE -> REFRESHING  -> (CHECKING) -> IDLE     (reload the library list)
     IDLE -> CHECKING                  -> IDLE     (paced per-book size sweep)
     IDLE -> PREPARING                 -> IDLE     (build the download zip)
-    CHECKING/PREPARING -> STOPPING    -> IDLE     (cancel the current activity)
+    IDLE -> SYNCING                   -> IDLE     (on-disk ABS library sync)
+    CHECKING/PREPARING/SYNCING -> STOPPING -> IDLE (cancel the current activity)
 
-Only one activity may be in flight; `refresh`/`check_sizes`/`prepare` all
-no-op (return False) if the state isn't IDLE. When an activity finishes it
-returns to IDLE and records the outcome in `result` (done | cancelled |
-error) plus a human `message`, so the UI can show "what just happened"
-while sitting idle. The frontend polls `snapshot()` and renders whatever
-state it reports -- it owns no activity logic of its own.
+Only one activity may be in flight; `refresh`/`check_sizes`/`prepare`/
+`start_sync` all no-op (return False) if the state isn't IDLE. When an
+activity finishes it returns to IDLE and records the outcome in `result`
+(done | cancelled | error) plus a human `message`, so the UI can show
+"what just happened" while sitting idle. The frontend polls `snapshot()`
+and renders whatever state it reports -- it owns no activity logic of its
+own.
 
 Cancellation is cooperative. Between books/size fetches the loop checks the
 cancel event, and *within* a download `client.download_file` polls it
@@ -50,6 +52,8 @@ from bookvault_core.client import (
     LitresBlocked,
     LitresClient,
 )
+from bookvault_core.library_fs import library_root_from_env
+from bookvault_core.library_sync import sync_library
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +65,7 @@ IDLE = "idle"
 REFRESHING = "refreshing"
 CHECKING = "checking"
 PREPARING = "preparing"
+SYNCING = "syncing"
 STOPPING = "stopping"
 
 # Gap between *live* (uncached) per-book size fetches during a sweep. A
@@ -267,12 +272,122 @@ def prepare(
     return True
 
 
+def start_sync(
+    client: LitresClient,
+    *,
+    audio_only: bool = True,
+    preferred_ext: Optional[str] = None,
+    preferred_file_type: Optional[str] = None,
+    art_ids: Optional[set] = None,
+) -> bool:
+    """Sync purchased titles into LITRES_LIBRARY_DIR (SYNCING).
+
+    Returns False if library dir is unset or another activity is running.
+    """
+    root = library_root_from_env()
+    if root is None:
+        logger.info("start_sync ignored -- LITRES_LIBRARY_DIR is not set")
+        return False
+    if not _begin(SYNCING, message="Syncing library to disk…"):
+        return False
+    logger.info(
+        "Starting on-disk library sync into %s (audio_only=%s)",
+        root,
+        audio_only,
+    )
+    session.submit(
+        _run_sync,
+        client,
+        root,
+        audio_only,
+        preferred_ext,
+        preferred_file_type,
+        art_ids,
+    )
+    return True
+
+
+def _run_sync(
+    client: LitresClient,
+    root,
+    audio_only: bool,
+    preferred_ext: Optional[str],
+    preferred_file_type: Optional[str],
+    art_ids: Optional[set],
+) -> None:
+    try:
+        def on_progress(title, done, total):
+            _update(
+                current_title=title or None,
+                done=done,
+                total=total if total else None,
+                message=f"Syncing “{title}”…" if title else "Finishing library sync…",
+            )
+
+        summary = sync_library(
+            client,
+            root,
+            audio_only=audio_only,
+            preferred_ext=preferred_ext,
+            preferred_file_type=preferred_file_type,
+            should_cancel=_cancel_event.is_set,
+            on_progress=on_progress,
+            art_ids=art_ids,
+        )
+        cancelled = bool(summary.get("cancelled")) or _cancel_event.is_set()
+        done = summary.get("done", 0)
+        skipped = summary.get("skipped", 0)
+        failed = summary.get("failed", 0)
+        if cancelled:
+            message = (
+                f"Stopped library sync — saved {done}, skipped {skipped}, "
+                f"failed {failed}."
+            )
+        else:
+            message = (
+                f"Library sync finished — saved {done}, skipped {skipped}, "
+                f"failed {failed}."
+            )
+        with _lock:
+            _state.update(
+                state=IDLE,
+                result="cancelled" if cancelled else "done",
+                message=message,
+                current_title=None,
+                current_downloaded=None,
+                current_total=None,
+                log=list(summary.get("log") or []),
+                results=list(summary.get("log") or []),
+                done=done,
+                total=summary.get("total"),
+            )
+        logger.info(
+            "Library sync %s: done=%s skipped=%s failed=%s root=%s",
+            "cancelled" if cancelled else "finished",
+            done,
+            skipped,
+            failed,
+            root,
+        )
+    except Exception as exc:
+        logger.exception("Library sync crashed")
+        _update(
+            state=IDLE,
+            result="error",
+            error=_friendly_error(exc),
+            current_title=None,
+            current_downloaded=None,
+            current_total=None,
+            message="",
+        )
+
+
 def cancel() -> bool:
     """Ask the running activity to stop before its next book/size fetch.
-    Only CHECKING and PREPARING are cancellable. Returns False if there's
+    CHECKING, PREPARING, and SYNCING are cancellable. Returns False if there's
     nothing stoppable in progress."""
     with _lock:
-        if _state["state"] not in (CHECKING, PREPARING):
+        if _state["state"] not in (CHECKING, PREPARING, SYNCING):
             return False
         _state["state"] = STOPPING
     logger.info("Cancellation requested")

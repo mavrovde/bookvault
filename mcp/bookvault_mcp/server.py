@@ -24,6 +24,8 @@ from pathlib import Path
 import anyio
 from bookvault_core import session
 from bookvault_core.client import LitresAuthError, LitresClient
+from bookvault_core.library_fs import library_root_from_env
+from bookvault_core.library_sync import sync_library, sync_one
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
@@ -104,12 +106,47 @@ async def list_library(limit: int = 50) -> list:
 
 @mcp.tool()
 async def download_book(art_id: int) -> dict:
-    """Download one purchased book/audiobook by its art id to a local
-    folder (~/Downloads/litres-library), returning the saved file path."""
+    """Download one purchased book/audiobook by its art id.
+
+    When LITRES_LIBRARY_DIR is set, installs into the ABS-compatible
+    Author/Title library (with metadata.json). Otherwise saves a flat file
+    under LITRES_DOWNLOAD_DIR (default ~/Downloads/litres-library).
+    """
     await _ensure_logged_in()
     client = session.current_client()
+    library_root = library_root_from_env()
 
     def _sync():
+        if library_root is not None:
+            # Prefer a full list row when present; otherwise a minimal stub.
+            art = None
+            for item in client.iter_library(limit=100_000):
+                if item.get("id") == art_id:
+                    art = item
+                    break
+            if art is None:
+                try:
+                    art = client.get_art(art_id)
+                except Exception as exc:
+                    return {"ok": False, "error": str(exc)}
+            row = sync_one(client, library_root, art)
+            if row.get("status") == "done":
+                return {
+                    "ok": True,
+                    "path": row.get("path"),
+                    "status": "done",
+                    "layout": "library",
+                }
+            if row.get("status") == "skipped":
+                return {
+                    "ok": True,
+                    "path": row.get("path"),
+                    "status": "skipped",
+                    "reason": row.get("reason"),
+                    "layout": "library",
+                }
+            return {"ok": False, "error": row.get("error") or row.get("reason") or "download failed"}
+
         files = client.get_files(art_id)
         best = client.pick_best_file(files)
         if best is None:
@@ -118,7 +155,29 @@ async def download_book(art_id: int) -> dict:
         DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
         dest = DOWNLOAD_DIR / f"{art_id}.{ext}"
         client.download_file(art_id, best["id"], dest.name, dest)
-        return {"ok": True, "path": str(dest), "size_bytes": dest.stat().st_size}
+        return {"ok": True, "path": str(dest), "size_bytes": dest.stat().st_size, "layout": "flat"}
+
+    return await session.run_async(_sync)
+
+
+@mcp.tool()
+async def sync_library_now(audio_only: bool = True) -> dict:
+    """Sync purchased titles into LITRES_LIBRARY_DIR (ABS Author/Title layout).
+
+    Requires LITRES_LIBRARY_DIR. Returns counts and a per-title log.
+    """
+    root = library_root_from_env()
+    if root is None:
+        return {
+            "ok": False,
+            "error": "LITRES_LIBRARY_DIR is not set — configure an on-disk library path first.",
+        }
+    await _ensure_logged_in()
+    client = session.current_client()
+
+    def _sync():
+        summary = sync_library(client, root, audio_only=audio_only)
+        return {"ok": True, **summary}
 
     return await session.run_async(_sync)
 

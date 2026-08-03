@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -54,6 +55,8 @@ except Exception:  # noqa: BLE001  # pragma: no cover - exercised only where cur
     _CURL_CFFI_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+_HTML_RE = re.compile(r"<[^>]+>")
 
 # These are facts about litres.ru itself, not settings -- not configurable.
 API_BASE = "https://api.litres.ru/foundation/api"
@@ -492,6 +495,7 @@ class LitresClient:
             # jitter the gap so the cadence doesn't look mechanically scripted.
             time.sleep(random.uniform(0.3, 0.7))
 
+<<<<<<< HEAD
 
     @staticmethod
     def _absolute(url, base: str):
@@ -546,10 +550,76 @@ class LitresClient:
 
         art_type = art.get("art_type")
         rating = art.get("rating") or {}
+=======
+    @staticmethod
+    def normalize_library_item(art: dict) -> dict:
+        """Shape one raw `/users/me/arts` item into stable library metadata.
+
+        Used by the on-disk library sync and any surface that wants full
+        list-shaped fields (authors, narrators, series, dates, DRM flags).
+        Detail-only fields (ISBN, HTML annotation, genres) live on
+        `normalize_art_details` after `get_art`.
+        """
+        persons_in = art.get("persons") or []
+        authors: list[str] = []
+        narrators: list[str] = []
+        persons: list[dict] = []
+        for person in persons_in:
+            name = person.get("full_name") or ""
+            role = person.get("role") or ""
+            if name:
+                persons.append(
+                    {
+                        "id": person.get("id"),
+                        "full_name": name,
+                        "role": role,
+                        "url": person.get("url"),
+                    }
+                )
+            if role == "author" and name:
+                authors.append(name)
+            elif role == "reader" and name:
+                narrators.append(name)
+
+        series_list = []
+        for s in art.get("series") or []:
+            if not isinstance(s, dict):
+                continue
+            name = s.get("name")
+            if not name:
+                continue
+            series_list.append(
+                {
+                    "id": s.get("id"),
+                    "name": name,
+                    "url": s.get("url"),
+                    "art_order": s.get("art_order"),
+                    "arts_count": s.get("arts_count") or s.get("unique_arts_count"),
+                }
+            )
+        primary_series = series_list[0] if series_list else None
+
+        cover = art.get("cover_url")
+        if cover and not str(cover).startswith(("http://", "https://")):
+            cover = f"https://static.litres.ru{cover}"
+
+        rel_url = art.get("url") or ""
+        if rel_url and not str(rel_url).startswith(("http://", "https://")):
+            page_url = f"https://www.litres.ru{rel_url}"
+        else:
+            page_url = rel_url or None
+
+        art_type = art.get("art_type")
+        rating = art.get("rating") or {}
+        prices = art.get("prices") or {}
+        labels = art.get("labels") or {}
+        title = art.get("title") or (str(art.get("id")) if art.get("id") is not None else "")
+>>>>>>> 02c161c (feat: auto-sync purchased library to ABS on-disk layout)
 
         return {
             "id": art.get("id"),
             "uuid": art.get("uuid"),
+<<<<<<< HEAD
             "title": LitresClient.title_or_id(art),
             "subtitle": art.get("subtitle") or "",
             "authors": LitresClient.person_names(art, "author"),
@@ -572,6 +642,135 @@ class LitresClient:
             "rating_avg": rating.get("rated_avg"),
         }
 
+=======
+            "title": title,
+            "subtitle": art.get("subtitle") or "",
+            "url": page_url,
+            "cover_url": cover or None,
+            "art_type": art_type,
+            "is_audio": art_type == 1,
+            "language_code": art.get("language_code"),
+            "min_age": art.get("min_age"),
+            "authors": authors,
+            "authors_str": ", ".join(authors),
+            "narrators": narrators,
+            "narrators_str": ", ".join(narrators),
+            "persons": persons,
+            "series": primary_series,
+            "series_list": series_list,
+            "purchased_at": art.get("purchased_at"),
+            "date_written_at": art.get("date_written_at"),
+            "available_from": art.get("available_from"),
+            "last_released_at": art.get("last_released_at"),
+            "last_updated_at": art.get("last_updated_at"),
+            "is_drm": bool(art.get("is_drm")),
+            "is_adult_content": bool(art.get("is_adult_content")),
+            "is_free": bool(art.get("is_free")),
+            "is_archived": bool(art.get("is_archived")),
+            "labels": {
+                "is_bestseller": bool(labels.get("is_bestseller")),
+                "is_new": bool(labels.get("is_new")),
+                "is_sales_hit": bool(labels.get("is_sales_hit")),
+                "is_litres_exclusive": bool(labels.get("is_litres_exclusive")),
+            },
+            "rating_avg": rating.get("rated_avg"),
+            "rating_count": rating.get("rated_total_count"),
+            "prices": {
+                "final_price": prices.get("final_price"),
+                "full_price": prices.get("full_price"),
+                "currency": prices.get("currency"),
+                "discount_percent": prices.get("discount_percent"),
+            }
+            if prices
+            else None,
+            "read_percent": art.get("read_percent"),
+            "my_art_status": art.get("my_art_status"),
+            "release_file_id": art.get("release_file_id"),
+        }
+
+    @staticmethod
+    def normalize_art_details(art: dict, files: Optional[list] = None) -> dict:
+        """Library-shaped metadata plus detail-only fields and optional files."""
+        meta = LitresClient.normalize_library_item(art)
+
+        html = art.get("html_annotation") or art.get("annotation") or ""
+        description = _HTML_RE.sub("", html).strip() if html else ""
+
+        genres: list[str] = []
+        for genre in art.get("genres") or []:
+            if isinstance(genre, dict):
+                name = genre.get("name")
+                if name:
+                    genres.append(str(name))
+            elif genre:
+                genres.append(str(genre))
+
+        tags: list[str] = []
+        for tag in art.get("tags") or []:
+            if isinstance(tag, dict):
+                name = tag.get("name")
+                if name:
+                    tags.append(str(name))
+            elif tag:
+                tags.append(str(tag))
+
+        meta.update(
+            {
+                "isbn": art.get("isbn") or None,
+                "publication_date": art.get("publication_date") or art.get("date_written_at"),
+                "description": description or None,
+                "genres": genres,
+                "tags": tags,
+            }
+        )
+
+        if files is not None:
+            file_rows = []
+            for f in files:
+                size = f.get("size")
+                file_rows.append(
+                    {
+                        "id": f.get("id"),
+                        "filename": f.get("filename"),
+                        "extension": f.get("extension") or LitresClient.file_extension(f),
+                        "file_type": f.get("file_type"),
+                        "mime": f.get("mime"),
+                        "size": size,
+                        "size_mb": round(size / 1e6, 2) if size else None,
+                        "is_additional": bool(f.get("is_additional")),
+                    }
+                )
+            best = LitresClient.pick_best_file(files)
+            best_summary = None
+            if best is not None:
+                bsize = best.get("size")
+                best_summary = {
+                    "id": best.get("id"),
+                    "filename": best.get("filename"),
+                    "extension": LitresClient.file_extension(best),
+                    "file_type": best.get("file_type"),
+                    "size": bsize,
+                    "size_mb": round(bsize / 1e6, 2) if bsize else None,
+                }
+            meta["files"] = file_rows
+            meta["best_file"] = best_summary
+
+        return meta
+
+    def get_art(self, art_id, should_cancel=None) -> dict:
+        """Fetch one art's detail payload from `GET .../arts/{id}`."""
+        resp = self._get_retrying(f"{API_BASE}/arts/{art_id}", should_cancel=should_cancel)
+        if not resp.ok:
+            logger.warning("Art detail fetch failed for %s: HTTP %s", art_id, resp.status)
+            raise LitresAuthError(
+                f"Could not fetch art {art_id} ({resp.status}): {resp.text()[:300]}"
+            )
+        data = (resp.json().get("payload") or {}).get("data")
+        if not data:
+            raise LitresAuthError(f"Could not fetch art {art_id}: empty payload")
+        return data
+
+>>>>>>> 02c161c (feat: auto-sync purchased library to ABS on-disk layout)
     def get_files(self, art_id, should_cancel=None) -> list:
         """Flat list of {id, extension, file_type, mime, size, is_additional} for one art."""
         resp = self._get_retrying(f"{API_BASE}/arts/{art_id}/files/grouped", should_cancel=should_cancel)

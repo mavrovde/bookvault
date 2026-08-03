@@ -86,6 +86,7 @@
           <h2>📚 Your bookshelf</h2>
           <div class="toolbar-right">
             <button type="button" class="btn-primary" id="refresh-library">↻ Refresh</button>
+            <button type="button" class="btn-primary" id="sync-library" {% if not library_sync_enabled %}style="display:none"{% endif %} title="{% if library_dir %}Sync purchased titles into {{ library_dir }}{% else %}Set LITRES_LIBRARY_DIR to enable{% endif %}">⬇ Sync library</button>
             <button type="button" class="btn-primary" id="cancel-download" disabled>Stop</button>
             <button type="button" class="btn-primary" id="start-download" disabled>📦 Prepare zip</button>
           </div>

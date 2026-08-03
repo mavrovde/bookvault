@@ -32,6 +32,7 @@ It comes in **three flavours** that share the same backend and login/session cod
 - 🖼️ **A native desktop app** (macOS / Windows / Linux) — the web app in a real window, no browser or terminal. [Download for macOS](https://github.com/mavrovde/bookvault/releases/latest).
 - 🖥️ **A local web app** — browse your library, tick the books you want, choose a format, and download.
 - 🔌 **An MCP server** — so Claude (or any MCP client) can list your library and download titles as tools.
+- 📁 **On-disk library sync** — optional `LITRES_LIBRARY_DIR` writes an Audiobookshelf-friendly `Author/Title/metadata.json` tree (same shape as litres-downloader), via **Sync library** or background autosync.
 
 ---
 
@@ -216,8 +217,14 @@ The MCP server exposes your library to any MCP client (e.g. Claude Desktop) as t
 |---|---|
 | `login_status()` | Whether there's an active session |
 | `login_to_litres(login, password)` | Log in and persist the session |
+<<<<<<< HEAD
 | `list_library(limit)` | List your purchased titles with metadata (authors, narrators, series, dates, DRM flag) |
 | `download_book(art_id)` | Download one title to `LITRES_DOWNLOAD_DIR` |
+=======
+| `list_library(limit)` | List your purchased titles (full metadata) |
+| `download_book(art_id)` | Download one title (into `LITRES_LIBRARY_DIR` when set, else flat `LITRES_DOWNLOAD_DIR`) |
+| `sync_library_now(audio_only)` | Sync purchased titles into `LITRES_LIBRARY_DIR` (ABS layout) |
+>>>>>>> 02c161c (feat: auto-sync purchased library to ABS on-disk layout)
 
 **Install &amp; run (stdio):**
 
