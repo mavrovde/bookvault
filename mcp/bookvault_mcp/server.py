@@ -95,7 +95,9 @@ async def list_library(limit: int = 50) -> list:
 
     def _sync():
         items = []
-        for art in client.iter_library(limit=limit):
+        # `limit` here is the caller's item budget; cap the page size so a
+        # large request doesn't turn into one enormous listing call.
+        for art in client.iter_library(limit=min(limit, 100)):
             items.append(LitresClient.normalize_library_item(art))
             if len(items) >= limit:
                 break
@@ -118,17 +120,25 @@ async def download_book(art_id: int) -> dict:
 
     def _sync():
         if library_root is not None:
-            # Prefer a full list row when present; otherwise a minimal stub.
+            # One detail request, not a walk of the whole library. The previous
+            # shape paged through every purchased title looking for this id --
+            # for a large account that's a run of listing requests before a
+            # single byte is downloaded, which is exactly the cadence the
+            # anti-bot layer notices. The listing row is only used as a
+            # fallback if the detail endpoint has nothing.
             art = None
-            for item in client.iter_library(limit=100_000):
-                if item.get("id") == art_id:
-                    art = item
-                    break
+            try:
+                art = client.get_art(art_id)
+            except Exception as exc:  # noqa: BLE001 -- fall back to the listing below
+                logger.info("Art detail lookup failed for %s, falling back to the listing: %s", art_id, exc)
             if art is None:
-                try:
-                    art = client.get_art(art_id)
-                except Exception as exc:
-                    return {"ok": False, "error": str(exc)}
+                art = next(
+                    (item for item in client.iter_library() if item.get("id") == art_id),
+                    None,
+                )
+            if art is None:
+                logger.warning("Art %s not found in the library or via the detail endpoint", art_id)
+                return {"ok": False, "error": f"Could not look up art {art_id} on litres.ru."}
             row = sync_one(client, library_root, art)
             if row.get("status") == "done":
                 return {

@@ -5,6 +5,7 @@ import zipfile
 
 from bookvault_core.library_fs import is_up_to_date, read_metadata
 from bookvault_core.library_sync import sync_library
+
 from tests.fakes import FakeLitresClient
 
 

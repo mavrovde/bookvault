@@ -17,7 +17,6 @@ import re
 import shutil
 import zipfile
 from pathlib import Path
-from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +24,7 @@ METADATA_NAME = "metadata.json"
 _INVALID = re.compile(r'[<>:"/\\|?*]')
 
 
-def library_root_from_env() -> Optional[Path]:
+def library_root_from_env() -> Path | None:
     """Return configured library root, or None if auto-library is disabled."""
     raw = (os.environ.get("LITRES_LIBRARY_DIR") or "").strip()
     if not raw:
@@ -82,7 +81,7 @@ def pick_last_release(src: dict) -> str:
     return ""
 
 
-def _year(value: Any) -> str:
+def _year(value) -> str:
     if not value:
         return ""
     s = str(value)
@@ -90,7 +89,7 @@ def _year(value: Any) -> str:
     return m.group(1) if m else s
 
 
-def abs_metadata(item: dict, details: Optional[dict] = None) -> dict:
+def abs_metadata(item: dict, details: dict | None = None) -> dict:
     """Build litres-downloader-compatible metadata.json payload."""
     src = {**(item or {}), **(details or {})}
     authors = list(src.get("authors") or [])
@@ -156,7 +155,7 @@ def write_metadata(book_path: Path, meta: dict) -> Path:
     return path
 
 
-def read_metadata(book_path: Path) -> Optional[dict]:
+def read_metadata(book_path: Path) -> dict | None:
     path = Path(book_path) / METADATA_NAME
     if not path.exists():
         return None

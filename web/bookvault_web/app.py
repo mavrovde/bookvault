@@ -18,6 +18,7 @@ from bookvault_core.client import (
     EBOOK_EXTENSIONS,
     LitresAuthError,
 )
+from bookvault_core.library_fs import library_root_from_env
 from fastapi import FastAPI, Form
 from fastapi.requests import Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -262,10 +263,10 @@ def check_activity(req: SweepRequest):
 
 class SyncRequest(BaseModel):
     audio_only: bool = True
-    ebook_format: Optional[str] = None
-    audiobook_format: Optional[str] = None
+    ebook_format: str | None = None
+    audiobook_format: str | None = None
     # Optional subset; None = entire library (subject to audio_only).
-    art_ids: Optional[List[int]] = None
+    art_ids: list[int] | None = None
 
 
 @app.post("/activity/sync")

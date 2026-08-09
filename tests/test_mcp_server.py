@@ -154,6 +154,47 @@ async def test_download_book_into_library_dir(monkeypatch, tmp_path):
     assert (lib / "Author A" / "Book One" / "metadata.json").exists()
 
 
+async def test_download_book_looks_the_art_up_directly_not_by_walking_the_library(
+    monkeypatch, tmp_path
+):
+    """One detail request, not a page-by-page scan of every purchased title.
+    On a large account the scan is a run of listing requests before a single
+    byte is downloaded -- exactly the cadence the anti-bot layer notices."""
+    lib = tmp_path / "abs-lib"
+    monkeypatch.setenv("LITRES_LIBRARY_DIR", str(lib))
+    credentials.save("user@example.com", "hunter2")
+    art = {
+        "id": 1,
+        "title": "Book One",
+        "art_type": 1,
+        "persons": [{"full_name": "Author A", "role": "author"}],
+        "last_released_at": "2024-01-01",
+    }
+    fake = client_factory(
+        monkeypatch,
+        session,
+        library=[art],
+        files_by_id={
+            1: [{"id": 100, "extension": "m4b", "file_type": "mobile_version_mp4",
+                 "is_additional": False, "size": 8}]
+        },
+    )
+    calls = []
+    original = fake.iter_library
+
+    def counting_iter_library(limit=100):
+        calls.append(limit)
+        return original(limit)
+
+    fake.iter_library = counting_iter_library
+
+    result = await mcp_server.download_book(1)
+
+    assert result["ok"] is True
+    assert fake.get_art_calls[0] == 1  # resolved via the detail endpoint...
+    assert calls == []                 # ...without listing the library at all
+
+
 async def test_sync_library_now(monkeypatch, tmp_path):
     lib = tmp_path / "abs-lib"
     monkeypatch.setenv("LITRES_LIBRARY_DIR", str(lib))

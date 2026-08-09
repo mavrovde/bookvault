@@ -8,17 +8,19 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import threading
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from bookvault_core.library_fs import library_root_from_env
+
 from bookvault_web import activity
 
 logger = logging.getLogger(__name__)
 
 _stop = threading.Event()
-_thread: Optional[threading.Thread] = None
+_thread: threading.Thread | None = None
 
 
 def autosync_enabled() -> bool:
@@ -31,11 +33,31 @@ def audio_only_from_env() -> bool:
     return os.environ.get("LITRES_AUTOSYNC_AUDIO_ONLY", "1").lower() not in ("0", "false", "no", "off")
 
 
+DEFAULT_INTERVAL = 6 * 60 * 60  # 6 hours
+MIN_INTERVAL = 15 * 60          # 15 minutes
+
+
 def interval_seconds() -> float:
+    """Gap between autosync ticks.
+
+    Hours, not minutes: a library only changes when the user buys something,
+    so polling it every few minutes buys nothing and costs a lot. A perfectly
+    regular, unattended run of listing requests is also the most scraper-shaped
+    traffic this app can produce -- the rest of the codebase goes out of its way
+    to avoid exactly that (see the jitter in iter_library and the cache-only
+    sweep on page load). Floored at 15 minutes so a typo can't turn this into
+    a hammer."""
     try:
-        return max(30.0, float(os.environ.get("LITRES_AUTOSYNC_INTERVAL", "600")))
+        return max(MIN_INTERVAL, float(os.environ.get("LITRES_AUTOSYNC_INTERVAL", DEFAULT_INTERVAL)))
     except ValueError:
-        return 600.0
+        return float(DEFAULT_INTERVAL)
+
+
+def _next_delay() -> float:
+    """The interval with +/-10% jitter, so repeated ticks don't land on a
+    metronome. Same reasoning as the per-page jitter in iter_library."""
+    interval = interval_seconds()
+    return interval * random.uniform(0.9, 1.1)
 
 
 def on_start_enabled() -> bool:
@@ -62,7 +84,6 @@ def try_start_sync(get_client: Callable, get_prefs: Callable) -> bool:
 
 
 def _loop(get_client: Callable, get_prefs: Callable) -> None:
-    interval = interval_seconds()
     # Optional first tick soon after boot (session restore may still be settling).
     if on_start_enabled():
         for _ in range(30):  # up to ~30s
@@ -76,7 +97,7 @@ def _loop(get_client: Callable, get_prefs: Callable) -> None:
                 break
             time.sleep(1.0)
 
-    while not _stop.wait(interval):
+    while not _stop.wait(_next_delay()):
         try:
             if try_start_sync(get_client, get_prefs):
                 logger.info("Autosync tick started a library sync")

@@ -5,7 +5,6 @@ import json
 import zipfile
 
 import pytest
-
 from bookvault_core.library_fs import (
     abs_metadata,
     book_dir,

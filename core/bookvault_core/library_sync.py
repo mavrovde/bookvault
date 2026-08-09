@@ -8,8 +8,8 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Optional
 
 from bookvault_core import cache
 from bookvault_core.client import DownloadCancelled, LitresClient
@@ -23,7 +23,7 @@ from bookvault_core.library_fs import (
 
 logger = logging.getLogger(__name__)
 
-ProgressCb = Optional[Callable[[str, int, int], None]]
+ProgressCb = Callable[[str, int, int], None] | None
 
 
 def _is_audio(art_or_meta: dict) -> bool:
@@ -61,14 +61,14 @@ def _normalize_art(art: dict) -> dict:
     }
 
 
-def _enrich_details(client: LitresClient, art_id, should_cancel=None) -> Optional[dict]:
+def _enrich_details(client: LitresClient, art_id, should_cancel=None) -> dict | None:
     get_art = getattr(client, "get_art", None)
     if get_art is None:
         return None
     try:
         raw = get_art(art_id, should_cancel=should_cancel)
         return LitresClient.normalize_art_details(raw, files=None)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- detail metadata is a bonus; the listing row is enough to install
         logger.info("Detail fetch failed for art %s (continuing with list metadata): %s", art_id, exc)
         return None
 
@@ -78,10 +78,10 @@ def sync_one(
     library_root: Path,
     art: dict,
     *,
-    preferred_ext: Optional[str] = None,
-    preferred_file_type: Optional[str] = None,
+    preferred_ext: str | None = None,
+    preferred_file_type: str | None = None,
     should_cancel=None,
-    workdir: Optional[Path] = None,
+    workdir: Path | None = None,
 ) -> dict:
     """Download/install a single art. Returns a log row dict."""
     meta = _normalize_art(art)
@@ -170,7 +170,7 @@ def sync_one(
         }
     except DownloadCancelled:
         return {"title": title, "status": "cancelled", "id": art_id}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- one title failing must not sink a whole-library sync
         name = type(exc).__name__
         if "Cancel" in name:
             return {"title": title, "status": "cancelled", "id": art_id}
@@ -188,11 +188,11 @@ def sync_library(
     library_root: Path,
     *,
     audio_only: bool = True,
-    preferred_ext: Optional[str] = None,
-    preferred_file_type: Optional[str] = None,
+    preferred_ext: str | None = None,
+    preferred_file_type: str | None = None,
     should_cancel=None,
     on_progress: ProgressCb = None,
-    art_ids: Optional[set] = None,
+    art_ids: set | None = None,
 ) -> dict:
     """Walk the purchased library and install missing/outdated titles.
 
@@ -201,7 +201,10 @@ def sync_library(
     library_root = Path(library_root)
     library_root.mkdir(parents=True, exist_ok=True)
 
-    arts = list(client.iter_library(limit=100_000))
+    # Default page size: `limit` is the per-page parameter sent to litres.ru,
+    # not a cap on results -- iter_library paginates until the library is
+    # exhausted either way. Asking for a huge page just makes an odd request.
+    arts = list(client.iter_library())
     if art_ids is not None:
         arts = [a for a in arts if a.get("id") in art_ids]
 

@@ -276,9 +276,9 @@ def start_sync(
     client: LitresClient,
     *,
     audio_only: bool = True,
-    preferred_ext: Optional[str] = None,
-    preferred_file_type: Optional[str] = None,
-    art_ids: Optional[set] = None,
+    preferred_ext: str | None = None,
+    preferred_file_type: str | None = None,
+    art_ids: set | None = None,
 ) -> bool:
     """Sync purchased titles into LITRES_LIBRARY_DIR (SYNCING).
 
@@ -311,9 +311,9 @@ def _run_sync(
     client: LitresClient,
     root,
     audio_only: bool,
-    preferred_ext: Optional[str],
-    preferred_file_type: Optional[str],
-    art_ids: Optional[set],
+    preferred_ext: str | None,
+    preferred_file_type: str | None,
+    art_ids: set | None,
 ) -> None:
     try:
         def on_progress(title, done, total):
