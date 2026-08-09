@@ -38,6 +38,13 @@
               {% endfor %}
             </select>
           </label>
+          <label class="format-control" title="Folder the finished zip is saved into. Leave it empty to use your system Downloads folder.">
+            <span aria-hidden="true">📁</span>
+            <input type="text" id="download-dir" class="dir-input" spellcheck="false"
+                   value="{{ download_dir or '' }}"
+                   placeholder="{{ download_dir_effective or 'Save folder' }}">
+          </label>
+          <span id="download-dir-error" class="dir-error" style="display:none"></span>
         </div>
         <span class="account-chip" title="{{ login or 'Signed in' }}">
           <svg class="account-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -70,6 +77,7 @@
           <a id="download-link" href="/download/file" style="display:none">
             <button type="button" class="btn-primary">💾 Save zip file</button>
           </a>
+          <span id="saved-path" class="muted saved-path" style="display:none"></span>
         </div>
       </div>
 

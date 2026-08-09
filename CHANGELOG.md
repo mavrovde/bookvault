@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Choose where the zip is saved.** A 📁 folder box in the toolbar sets where a
+  finished archive is written. Leave it empty and it goes to your **system
+  Downloads folder** (XDG-aware on Linux), so the archive always lands somewhere
+  findable instead of a temp directory. Like the other preferences it lives on
+  the server, so every browser/tab agrees on it and it survives a restart.
+- Archives are named `litres-library-<date>-<time>.zip` — a new build never
+  overwrites one you still want.
+- `LITRES_DOWNLOAD_DIR` now sets the **default** folder for the web/desktop app
+  too, not just the MCP server's `download_book`. The folder chosen in the UI
+  wins over it.
+
+### Changed
+- The archive is still built in a temp workdir and only moved into your folder
+  once the build succeeds, so a crashed or empty build never leaves a
+  half-written `.zip` behind. If the folder turns out to be unwritable, the zip
+  stays in temp and remains downloadable rather than being discarded.
+
+### Fixed
+- Starting a new build no longer deletes the *parent directory* of the previous
+  archive. Harmless while every zip lived in its own temp dir, but with the
+  archive now saved into a folder of your choosing it would have deleted that
+  folder and its contents.
+
 ## [1.2.0] - Linux installer (AppImage)
 
 Adds a Linux **AppImage**, completing the desktop trio (macOS / Windows / Linux).

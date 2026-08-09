@@ -6,7 +6,7 @@ from __future__ import annotations
 import time
 
 from bookvault_core import credentials, session
-from bookvault_web import activity
+from bookvault_web import activity, prefs
 from bookvault_web.app import app
 from fastapi.testclient import TestClient
 
@@ -425,6 +425,43 @@ def test_download_file_serves_the_completed_zip(monkeypatch):
     assert resp.content  # non-empty zip bytes
 
 
+def test_the_saved_folder_pref_reaches_the_build_over_http(monkeypatch, tmp_path):
+    """End-to-end over the real routes: the folder set via POST /prefs is what
+    /activity/prepare saves into, and /download/file still serves the archive
+    from its new home."""
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", None)
+    client_factory(
+        monkeypatch,
+        session,
+        library=[{"id": 1, "title": "Book One"}],
+        files_by_id={1: [{"id": 100, "extension": "epub", "is_additional": False, "size": 10}]},
+    )
+    dest = tmp_path / "MyBooks"
+    with TestClient(app) as client:
+        client.post("/login", data={"login": "u@example.com", "password": "pw"})
+        assert client.post("/prefs", json={"download_dir": str(dest)}).status_code == 200
+        client.post("/activity/prepare", json={})
+        snap = _wait_until_idle()
+        resp = client.get("/download/file")
+
+    saved = list(dest.glob("litres-library-*.zip"))
+    assert len(saved) == 1
+    assert snap["saved_path"] == str(saved[0])
+    assert resp.status_code == 200 and resp.content
+
+
+def test_the_index_page_prefills_the_saved_folder(monkeypatch):
+    """Server-rendered so the field doesn't flash empty before app.js hydrates."""
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", "/Users/someone/Downloads")
+    client_factory(monkeypatch, session, library=[])
+    with TestClient(app) as client:
+        client.post("/login", data={"login": "u@example.com", "password": "pw"})
+        prefs.update(download_dir="/Volumes/Backup")
+        html = client.get("/").text
+    assert 'id="download-dir"' in html
+    assert "/Volumes/Backup" in html
+
+
 def test_results_and_download_survive_the_reload_size_check_over_http(monkeypatch):
     """End-to-end over the real routes: after a build, the automatic on-load
     size-check must not wipe the results view or the download link -- so a user
@@ -469,7 +506,8 @@ def test_activity_route_embeds_prefs_end_to_end(monkeypatch):
     with TestClient(app) as client:
         client.post("/prefs", json={"selected": [3, 1], "ebook_format": "epub"})
         snap = client.get("/activity").json()
-    assert snap["prefs"] == {"selected": [3, 1], "ebook_format": "epub", "audiobook_format": None}
+    assert snap["prefs"]["selected"] == [3, 1]
+    assert snap["prefs"]["ebook_format"] == "epub"
 
 
 def test_login_backend_crash_shows_clean_error_not_500(monkeypatch):

@@ -321,6 +321,13 @@ function renderActivity(s) {
   // re-checks the file still exists, so `zip_path` alone is the right signal.
   document.getElementById('download-link').style.display =
     s.zip_path ? 'inline-block' : 'none';
+  // Where the archive was auto-saved. Durable alongside zip_path, so this
+  // line survives a reload too; absent when the save failed or was skipped,
+  // in which case the button above is the only way to get the file.
+  const savedEl = document.getElementById('saved-path');
+  savedEl.textContent = s.saved_path ? `Saved to ${s.saved_path}` : '';
+  savedEl.title = s.saved_path || '';
+  savedEl.style.display = s.saved_path ? 'inline' : 'none';
   document.getElementById('progress-error').textContent = s.error || '';
 }
 
@@ -473,6 +480,13 @@ function applyPrefs(p) {
     const el = document.getElementById(id);
     if (el && val && [...el.options].some((o) => o.value === val)) el.value = val;
   }
+  // Same idea for the save folder, plus: never overwrite a field the user is
+  // actively typing into.
+  const dirEl = document.getElementById('download-dir');
+  if (dirEl && !downloadDirPending && document.activeElement !== dirEl) {
+    dirEl.value = p.download_dir || '';
+    if (p.download_dir_effective) dirEl.placeholder = p.download_dir_effective;
+  }
   // Don't reconcile the selection while a local change is still on its way to
   // the server -- otherwise a poll landing in that window would momentarily
   // undo the user's just-made tick. The pending push is the newer truth.
@@ -505,13 +519,43 @@ function pushFormat(field, value) {
     body: JSON.stringify({ [field]: value }),
   }).catch(() => {});
 }
-function initFormatPrefs() {
+
+// The save folder is free text, so it's debounced like the selection (one
+// request per pause, not per keystroke) and can be REJECTED by the server --
+// a relative path or a path that's actually a file. Show that inline rather
+// than letting the user find out at the end of a multi-gigabyte build.
+let downloadDirTimer = null;
+let downloadDirPending = false;
+function pushDownloadDir(value) {
+  clearTimeout(downloadDirTimer);
+  downloadDirPending = true;
+  downloadDirTimer = setTimeout(async () => {
+    try {
+      const resp = await fetch('/prefs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ download_dir: value }),
+      });
+      const body = await resp.json().catch(() => ({}));
+      const errEl = document.getElementById('download-dir-error');
+      errEl.textContent = resp.ok ? '' : (body.error || 'Could not save that folder.');
+      errEl.style.display = resp.ok ? 'none' : 'block';
+      // An accepted empty value falls back to the system default -- show it.
+      if (resp.ok && body.download_dir_effective) {
+        document.getElementById('download-dir').placeholder = body.download_dir_effective;
+      }
+    } catch (e) { /* transient -- the next edit retries */ }
+    downloadDirPending = false;
+  }, 400);
+}
+
+function initPrefControls() {
   document.getElementById('ebook-format').addEventListener('change', (e) => pushFormat('ebook_format', e.target.value));
   document.getElementById('audiobook-format').addEventListener('change', (e) => pushFormat('audiobook_format', e.target.value));
+  document.getElementById('download-dir').addEventListener('input', (e) => pushDownloadDir(e.target.value));
 }
 
 (async function init() {
-  initFormatPrefs();
+  initPrefControls();
   await loadLibrary();
   let s;
   try {

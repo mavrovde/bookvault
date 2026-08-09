@@ -53,6 +53,7 @@ app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
+    saved = prefs.snapshot()
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -62,10 +63,12 @@ def index(request: Request):
             "error": None,
             "ebook_formats": EBOOK_EXTENSIONS,
             "audiobook_formats": AUDIOBOOK_FILE_TYPES,
-            # Server-side format prefs, so the initial HTML already shows the
-            # saved choices (no flash before app.js hydrates the rest).
-            "ebook_format": prefs.snapshot()["ebook_format"],
-            "audiobook_format": prefs.snapshot()["audiobook_format"],
+            # Server-side prefs, so the initial HTML already shows the saved
+            # choices (no flash before app.js hydrates the rest).
+            "ebook_format": saved["ebook_format"],
+            "audiobook_format": saved["audiobook_format"],
+            "download_dir": saved["download_dir"],
+            "download_dir_effective": saved["download_dir_effective"],
         },
     )
 
@@ -188,6 +191,9 @@ class PrefsUpdate(BaseModel):
     selected: list[int] | None = None
     ebook_format: str | None = None
     audiobook_format: str | None = None
+    # Folder a finished archive is saved into. "" clears it back to the
+    # LITRES_DOWNLOAD_DIR default (None here means "leave alone", as above).
+    download_dir: str | None = None
 
 
 @app.get("/activity")
@@ -205,11 +211,21 @@ def get_prefs():
 
 @app.post("/prefs")
 def set_prefs(req: PrefsUpdate):
-    updated = prefs.update(
-        selected=req.selected,
-        ebook_format=req.ebook_format,
-        audiobook_format=req.audiobook_format,
-    )
+    try:
+        updated = prefs.update(
+            selected=req.selected,
+            ebook_format=req.ebook_format,
+            audiobook_format=req.audiobook_format,
+            download_dir=req.download_dir,
+        )
+    except prefs.InvalidDownloadDir as exc:
+        # An unusable destination folder. Reject it now, while the user is
+        # looking at the field -- not at the end of a multi-gigabyte build.
+        # The message is looked up from a fixed table rather than taken from
+        # the exception, so no internal/filesystem detail can leak into the
+        # response (CodeQL py/stack-trace-exposure).
+        message = prefs.DOWNLOAD_DIR_ERRORS.get(exc.code, "That folder can't be used.")
+        return JSONResponse({"ok": False, "error": message}, status_code=400)
     return {"ok": True, **updated}
 
 
@@ -242,7 +258,13 @@ def prepare_activity(req: PrepareRequest):
     if req.art_ids is not None and len(req.art_ids) == 0:
         return JSONResponse({"ok": False, "error": "No books selected"}, status_code=400)
     art_ids = set(req.art_ids) if req.art_ids is not None else None
-    started = activity.prepare(client, art_ids, req.ebook_format, req.audiobook_format)
+    # Resolved here rather than inside activity.py, so the state machine stays
+    # free of prefs -- same as the two format preferences, which the frontend
+    # sends along with the request.
+    started = activity.prepare(
+        client, art_ids, req.ebook_format, req.audiobook_format,
+        dest_dir=prefs.resolve_download_dir(),
+    )
     return {"ok": True, "started": started}
 
 
