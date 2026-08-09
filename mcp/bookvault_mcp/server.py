@@ -76,12 +76,17 @@ async def login_to_litres(login: str, password: str) -> dict:
 
 @mcp.tool()
 async def list_library(limit: int = 50) -> list:
-    """List up to `limit` purchased litres.ru items with full library metadata.
+    """List up to `limit` purchased litres.ru items with their metadata.
 
-    Each item is shaped by `LitresClient.normalize_library_item` and includes
-    id/title/authors/narrators/series/cover/url/is_audio/purchased_at/dates/
-    language/rating/DRM flags and related fields available on the library
-    listing endpoint (not detail-only fields like ISBN or HTML annotation).
+    Each item is shaped by `LitresClient.normalize_library_item`: id, uuid,
+    title, subtitle, authors, narrators, series, is_audio, language_code,
+    cover_url, url, purchase/release dates, symbols_count, DRM and archived
+    flags, and the average rating.
+
+    Deliberately not the full API record -- storefront data (prices, labels),
+    layout data (cover dimensions) and internal ids are omitted, since this
+    result goes into the caller's context window. Detail-only fields such as
+    ISBN, genres and the HTML annotation aren't on the listing endpoint at all.
     """
     await _ensure_logged_in()
     client = session.current_client()
