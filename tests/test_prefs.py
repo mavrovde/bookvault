@@ -106,6 +106,33 @@ def test_download_dir_defaults_to_the_system_downloads_folder(monkeypatch):
     assert prefs.resolve_download_dir() == Path("/Users/someone/Downloads")
 
 
+def test_system_download_dir_honours_the_xdg_env_var(monkeypatch, tmp_path):
+    """A Linux desktop can move/rename Downloads; XDG_DOWNLOAD_DIR wins."""
+    monkeypatch.setenv("XDG_DOWNLOAD_DIR", str(tmp_path / "Téléchargements"))
+    assert prefs._system_download_dir() == str(tmp_path / "Téléchargements")
+
+
+def test_system_download_dir_reads_the_xdg_user_dirs_file(monkeypatch, tmp_path):
+    """No env var, but the desktop wrote ~/.config/user-dirs.dirs -- entries
+    there are shell-quoted and use $HOME, both of which must be expanded."""
+    monkeypatch.delenv("XDG_DOWNLOAD_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    config = tmp_path / ".config"
+    config.mkdir()
+    (config / "user-dirs.dirs").write_text(
+        'XDG_DESKTOP_DIR="$HOME/Skrivbord"\nXDG_DOWNLOAD_DIR="$HOME/Hämtningar"\n'
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert prefs._system_download_dir() == str(tmp_path / "Hämtningar")
+
+
+def test_system_download_dir_falls_back_to_home_downloads(monkeypatch, tmp_path):
+    """macOS/Windows, or a Linux box with no XDG config at all."""
+    monkeypatch.delenv("XDG_DOWNLOAD_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    assert prefs._system_download_dir() == str(tmp_path / "Downloads")
+
+
 def test_a_chosen_folder_wins_over_the_default(monkeypatch):
     monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", "/Users/someone/Downloads")
     prefs.update(download_dir="/Volumes/Backup/books")
