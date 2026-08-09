@@ -3,13 +3,12 @@ HTTP surface -- the selection + format prefs that make every browser show the
 same view."""
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
 from bookvault_core import session
 from bookvault_web import prefs
 from bookvault_web.app import app
-from tests.fakes import client_factory
+from fastapi.testclient import TestClient
 
+from tests.fakes import client_factory
 
 # -- the store itself -------------------------------------------------------
 

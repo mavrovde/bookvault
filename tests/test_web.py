@@ -5,11 +5,11 @@ from __future__ import annotations
 
 import time
 
-from fastapi.testclient import TestClient
-
 from bookvault_core import credentials, session
 from bookvault_web import activity
 from bookvault_web.app import app
+from fastapi.testclient import TestClient
+
 from tests.fakes import client_factory
 
 

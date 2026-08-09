@@ -6,9 +6,9 @@ from __future__ import annotations
 import threading
 
 import pytest
-
 from bookvault_core import cache, credentials, session
 from bookvault_core.client import LitresAuthError
+
 from tests.fakes import FakeLitresClient, client_factory
 
 # --------------------------------------------------------------------------

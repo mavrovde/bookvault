@@ -5,9 +5,9 @@ next test."""
 from __future__ import annotations
 
 import pytest
-
 from bookvault_core import cache, client, credentials, session
 from bookvault_web import activity, prefs
+
 from tests.fakes import FakeKeyring
 
 
