@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -m pytest:*)",
+      "Bash(.venv/bin/python -m ruff check:*)",
+      "Bash(.venv/bin/python -m pip_audit:*)",
+      "Bash(.venv/bin/python -m pip list:*)",
+      "Bash(.venv/bin/python -m pip show:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh pr checks:*)",
+      "Bash(gh run view:*)",
+      "Bash(docker compose config:*)"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(./.litres_session.json)",
+      "Read(./.litres_cache.json)",
+      "Read(./.litres_state.json)",
+      "Write(./.env)",
+      "Write(./.litres_session.json)",
+      "Write(./.litres_cache.json)",
+      "Write(./.litres_state.json)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -x .venv/bin/python ]; then .venv/bin/python -m ruff check . --quiet || true; fi",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
