@@ -14,8 +14,7 @@ OS-keychain credentials as the web app.
 
 - `login_status()` -- whether there's an active, working session.
 - `login_to_litres(login, password)` -- log in and persist the session.
-- `list_library(limit=50)` -- list purchased books/audiobooks with metadata
-  (authors, narrators, series, dates, language, DRM flag, rating).
+- `list_library(limit=50)` -- list purchased books/audiobooks.
 - `download_book(art_id)` -- download one title to `LITRES_DOWNLOAD_DIR`.
 
 ## Install

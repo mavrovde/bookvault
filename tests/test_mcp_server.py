@@ -62,37 +62,12 @@ async def test_list_library_bootstraps_via_restore_session(monkeypatch):
     client_factory(
         monkeypatch,
         session,
-        library=[
-            {
-                "id": 1,
-                "title": "Book One",
-                "art_type": 0,
-                "persons": [{"full_name": "Author A", "role": "author"}],
-                "cover_url": "/pub/c/cover/1.jpg",
-                "url": "/book/author-a/book-one-1/",
-                "purchased_at": "2026-01-02T03:04:05",
-                "series": [{"id": 9, "name": "Saga", "art_order": 1}],
-            },
-            {"id": 2, "title": "Book Two", "art_type": 1, "persons": [], "cover_url": None},
-        ],
+        library=[{"id": 1, "title": "Book One"}, {"id": 2, "title": "Book Two"}],
     )
 
     items = await mcp_server.list_library()
 
-    assert len(items) == 2
-    assert items[0]["id"] == 1
-    assert items[0]["title"] == "Book One"
-    assert items[0]["authors"] == ["Author A"]
-    assert items[0]["is_audio"] is False
-    assert items[0]["cover_url"] == "https://static.litres.ru/pub/c/cover/1.jpg"
-    assert items[0]["url"] == "https://www.litres.ru/book/author-a/book-one-1/"
-    assert items[0]["purchased_at"] == "2026-01-02T03:04:05"
-    assert items[0]["series"]["name"] == "Saga"
-    assert items[1]["id"] == 2
-    assert items[1]["is_audio"] is True
-    # Full metadata keys are always present (even when source fields are missing).
-    for key in ("narrators", "language_code", "is_drm", "rating_avg", "purchased_at"):
-        assert key in items[0]
+    assert items == [{"id": 1, "title": "Book One"}, {"id": 2, "title": "Book Two"}]
 
 
 async def test_list_library_respects_limit(monkeypatch):

@@ -23,7 +23,7 @@ from pathlib import Path
 
 import anyio
 from bookvault_core import session
-from bookvault_core.client import LitresAuthError, LitresClient
+from bookvault_core.client import LitresAuthError
 from bookvault_core.library_fs import library_root_from_env
 from bookvault_core.library_sync import sync_library, sync_one
 from dotenv import load_dotenv
@@ -83,20 +83,7 @@ async def login_to_litres(login: str, password: str) -> dict:
 
 @mcp.tool()
 async def list_library(limit: int = 50) -> list:
-    """List up to `limit` purchased litres.ru items with their metadata.
-
-    Each item is shaped by `LitresClient.normalize_library_item`: id, uuid,
-    title, subtitle, authors, narrators, series, is_audio, language_code,
-    cover_url, url, purchase/release dates, symbols_count, DRM and archived
-    flags, and the average rating.
-
-    Deliberately not the full API record -- storefront data (prices, labels),
-    layout data (cover dimensions) and internal ids are omitted, since this
-    result goes into the caller's context window. Detail-only fields such as
-    ISBN, genres and the HTML annotation aren't on the listing endpoint at all.
-
-    `limit` is clamped to 1..MAX_LIST_LIMIT.
-    """
+    """List up to `limit` items from the logged-in user's purchased litres.ru library."""
     await _ensure_logged_in()
     client = session.current_client()
 
@@ -108,11 +95,9 @@ async def list_library(limit: int = 50) -> list:
 
     def _sync():
         items = []
-        # The per-page size sent to litres.ru, capped so one call can't turn
-        # into an enormous listing request.
-        for art in client.iter_library(limit=min(wanted, 100)):
-            items.append(LitresClient.normalize_library_item(art))
-            if len(items) >= wanted:
+        for art in client.iter_library(limit=limit):
+            items.append({"id": art.get("id"), "title": art.get("title")})
+            if len(items) >= limit:
                 break
         return items
 
