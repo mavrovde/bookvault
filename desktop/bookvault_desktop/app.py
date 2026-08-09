@@ -78,7 +78,7 @@ def _ensure_chromium(status: Callable[[str], None] | None = None) -> None:
             exe = p.chromium.executable_path
         if exe and os.path.exists(exe):
             return  # already installed -- nothing to do
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- probing for Chromium is best-effort; we install below either way
         # Couldn't resolve/launch the driver to check -- fall through and try
         # installing below, which is the right move either way.
         logger.debug("Could not probe for an existing Chromium: %s", exc)
@@ -206,7 +206,7 @@ def main() -> None:
             _ensure_chromium(status=lambda msg: window.load_html(_splash_html(msg)))
             _wait_until_serving(server, thread, timeout=90.0)
             window.load_url(app_url)
-        except Exception as exc:  # never came up -- show why, don't hang blank
+        except Exception as exc:  # noqa: BLE001 -- never came up -- show why, don't hang blank
             window.load_html(f"<body style='font-family:sans-serif;padding:2rem'>"
                              f"<h2>BookVault couldn't start</h2><pre>{_html.escape(str(exc))}</pre></body>")
 

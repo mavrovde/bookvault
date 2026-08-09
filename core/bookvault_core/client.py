@@ -49,7 +49,7 @@ try:
     from curl_cffi import requests as cffi_requests
 
     _CURL_CFFI_AVAILABLE = True
-except Exception:  # pragma: no cover - exercised only where curl_cffi is absent
+except Exception:  # noqa: BLE001  # pragma: no cover - exercised only where curl_cffi is absent
     cffi_requests = None
     _CURL_CFFI_AVAILABLE = False
 
@@ -139,7 +139,7 @@ def _is_ddos_guard(headers, body: bytes = b"") -> bool:
     server = ""
     try:
         server = (headers.get("server") or headers.get("Server") or "").lower()
-    except Exception:
+    except Exception:  # noqa: BLE001 -- header access on a foreign response object must never throw
         server = ""
     if "ddos-guard" in server:
         return True
@@ -161,7 +161,7 @@ def _retry_after_seconds(headers) -> float | None:
     """Parse a Retry-After header (delta-seconds form) into a float, or None."""
     try:
         raw = headers.get("retry-after") or headers.get("Retry-After")
-    except Exception:
+    except Exception:  # noqa: BLE001 -- header access on a foreign response object must never throw
         raw = None
     if not raw:
         return None
@@ -289,7 +289,7 @@ class LitresClient:
         detection / error snippets -- never raises."""
         try:
             return resp.body() or b""
-        except Exception:
+        except Exception:  # noqa: BLE001 -- best-effort body read; this helper is documented as never raising
             return b""
 
     def _get_retrying(self, url: str, *, should_cancel=None, **kwargs):
@@ -330,18 +330,18 @@ class LitresClient:
         consistent set. Best-effort: any failure just leaves the old cookies."""
         try:
             page = self.context.new_page()
-        except Exception as exc:  # tests' fake context, or a closed browser
+        except Exception as exc:  # noqa: BLE001 -- tests' fake context, or a closed browser
             logger.debug("Cookie re-warm could not open a page: %s", exc)
             return
         try:
             page.goto(LOGIN_PAGE, wait_until="networkidle", timeout=20000)
             logger.info("Re-warmed DDoS-Guard cookies via a page visit")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- Playwright navigation: unbounded error space, and a failed re-warm is not fatal
             logger.debug("Cookie re-warm navigation failed: %s", exc)
         finally:
             try:
                 page.close()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- closing a page is best-effort cleanup
                 logger.debug("Closing the re-warm page failed (harmless): %s", exc)
 
     def is_logged_in(self) -> bool:
@@ -362,7 +362,7 @@ class LitresClient:
             if not resp.ok:
                 return None
             data = (resp.json().get("payload") or {}).get("data") or {}
-        except Exception:  # network/JSON hiccup -- never break restore over a label
+        except Exception:  # noqa: BLE001 -- network/JSON hiccup -- never break restore over a label
             return None
         profile = data.get("profile") or {}
         return profile.get("email") or data.get("login") or profile.get("nickname") or None
@@ -385,7 +385,7 @@ class LitresClient:
         captured = {}
         try:
             page = self.context.new_page()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- Playwright page creation; recapture failing just means we return False
             logger.debug("Header recapture could not open a page: %s", exc)
             return False
 
@@ -396,7 +396,7 @@ class LitresClient:
         page.on("request", on_request)
         try:
             page.goto(LOGIN_PAGE, wait_until="networkidle", timeout=timeout_ms)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- Playwright navigation; the headers may already have been captured
             logger.debug("Header recapture navigation failed: %s", exc)
         finally:
             page.remove_listener("request", on_request)
@@ -436,7 +436,7 @@ class LitresClient:
                 raise LitresAuthError(f"Login failed ({resp.status}): {resp.text()[:300]}")
             try:
                 page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- Playwright wait; the check below is what decides success
                 # Never fatal: the headers may already have been captured, and
                 # the check below is what actually decides success.
                 logger.debug("Post-login networkidle wait timed out: %s", exc)
@@ -444,7 +444,7 @@ class LitresClient:
                 # The SPA didn't auto-fetch the profile this time -- force it.
                 try:
                     page.reload(wait_until="networkidle", timeout=30000)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 -- Playwright reload is a best-effort nudge for the SPA
                     logger.debug("Post-login reload failed: %s", exc)
             self._extra_headers = {k: v for k, v in captured.items() if k.lower() not in _DROP_HEADERS}
         finally:

@@ -299,7 +299,7 @@ def _sweep_sizes(client: LitresClient, books: list, selected: list | None, do_li
                 size_mb, files = fetch_size(client, art_id, should_cancel=_cancel_event.is_set)
                 cache.set_files(art_id, files)
                 live = True
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- one book's size failing must not abort the whole sweep
                 # Best-effort, same as the old frontend loop: leave this row's
                 # size blank and move on rather than aborting the whole sweep.
                 logger.info("Size fetch failed for art %s: %s", art_id, exc)
@@ -345,7 +345,7 @@ def _run_refresh(client: LitresClient, selected: list | None) -> None:
     try:
         books = build_books(client)
         cache.set_library(books)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- a refresh failing must leave the machine IDLE, not wedged
         # A transient blip / anti-bot block / stale client after a
         # login-logout race shouldn't crash the machine -- surface a clean,
         # retryable message and go back to idle.
@@ -507,7 +507,7 @@ def _run_prepare(
                     # book is neither "done" nor an error, just not included).
                     cancelled = True
                     break
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 -- one book failing must not sink a multi-hour zip build
                     # One book failing (a stalled/timed-out transfer, an
                     # anti-bot block, ...) shouldn't sink the whole job --
                     # log the raw detail and show a friendly message + reason

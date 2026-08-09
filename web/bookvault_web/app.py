@@ -115,7 +115,7 @@ def get_library(refresh: bool = False):
                 return {"ok": True, "books": stale}
     try:
         books = session.run(activity.build_books, client)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- any backend failure must surface as a clean 503, never a raw traceback
         # A transient network blip, an anti-bot block, or a session that
         # was replaced (logout/re-login) mid-request should surface as a
         # clean error the frontend can retry -- not a raw 500 with a
@@ -146,7 +146,7 @@ def get_book_size(art_id: int):
         return {"ok": True, "size_mb": activity.size_of_files(cached_files), "cached": True}
     try:
         size_mb, files = session.run(activity.fetch_size, client, art_id)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- a failed size fetch just leaves that book's size unknown
         # Best-effort -- a failed size fetch just leaves that book's size
         # unknown; a clean error here is enough, no need to retry serverside.
         logger.info("Size fetch failed for art %s: %s", art_id, exc)
