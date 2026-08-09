@@ -279,4 +279,7 @@ button:active { transform: scale(0.97); }
 #progress-log li.error .detail, #progress-log li.skipped .detail { color: var(--text-muted); cursor: help; }
 
 .progress-actions { display: flex; align-items: center; gap: 0.6rem; margin-top: 1rem; }
-.saved-path { font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The path can be long; let it ellipsize rather than squeeze the button
+   next to it onto two lines. */
+#download-link { flex-shrink: 0; }
+.saved-path { font-size: 0.82rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
