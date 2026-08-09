@@ -25,7 +25,6 @@ import os
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,7 @@ LIBRARY_TTL = int(os.environ.get("LITRES_LIBRARY_CACHE_TTL", str(15 * 60)))
 FILES_TTL = int(os.environ.get("LITRES_FILES_CACHE_TTL", str(7 * 24 * 60 * 60)))
 
 _lock = threading.Lock()
-_state: Optional[dict] = None
+_state: dict | None = None
 
 
 def _load() -> dict:
@@ -70,7 +69,7 @@ def _save() -> None:
     os.replace(tmp, CACHE_PATH)
 
 
-def get_library() -> Optional[list]:
+def get_library() -> list | None:
     """Return the cached library listing (the web UI's book-list shape) if
     still fresh, else None."""
     with _lock:
@@ -80,7 +79,7 @@ def get_library() -> Optional[list]:
         return None
 
 
-def get_library_stale() -> Optional[list]:
+def get_library_stale() -> list | None:
     """Return the cached library listing regardless of TTL freshness, or None
     if nothing was ever cached. A live re-fetch runs on the single Playwright
     worker thread (see session.py); when that thread is busy with a long
@@ -99,7 +98,7 @@ def set_library(books: list) -> None:
     logger.info("Cached library listing: %d book(s)", len(books))
 
 
-def get_files(art_id) -> Optional[list]:
+def get_files(art_id) -> list | None:
     """Return the cached file listing for one book if still fresh, else
     None. Keyed by string since JSON object keys are always strings."""
     with _lock:

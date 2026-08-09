@@ -10,18 +10,20 @@ import logging
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
-from typing import List, Optional
 
 import anyio
+from bookvault_core import cache, session
+from bookvault_core.client import (
+    AUDIOBOOK_FILE_TYPES,
+    EBOOK_EXTENSIONS,
+    LitresAuthError,
+)
 from fastapi import FastAPI, Form
 from fastapi.requests import Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-
-from bookvault_core import cache, session
-from bookvault_core.client import AUDIOBOOK_FILE_TYPES, EBOOK_EXTENSIONS, LitresAuthError
 
 from . import activity, prefs
 
@@ -162,17 +164,17 @@ def get_book_size(art_id: int):
 
 
 class PrepareRequest(BaseModel):
-    art_ids: Optional[List[int]] = None
-    ebook_format: Optional[str] = None
-    audiobook_format: Optional[str] = None
+    art_ids: list[int] | None = None
+    ebook_format: str | None = None
+    audiobook_format: str | None = None
     # Ids to resolve first during the size sweep that follows a refresh --
     # normally the user's current checkbox selection, so a selected book
     # isn't stuck behind a whole library's worth of others.
-    selected: Optional[List[int]] = None
+    selected: list[int] | None = None
 
 
 class SweepRequest(BaseModel):
-    selected: Optional[List[int]] = None
+    selected: list[int] | None = None
     # False = cache-only sweep (resolve sizes already on disk, no litres.ru
     # calls). The frontend's automatic on-load sweep sends False so merely
     # opening the app never fires a library's worth of size requests; the
@@ -183,9 +185,9 @@ class SweepRequest(BaseModel):
 class PrefsUpdate(BaseModel):
     # All optional: a caller pushes just the field(s) that changed (the
     # selection, or one format) without clobbering the others.
-    selected: Optional[List[int]] = None
-    ebook_format: Optional[str] = None
-    audiobook_format: Optional[str] = None
+    selected: list[int] | None = None
+    ebook_format: str | None = None
+    audiobook_format: str | None = None
 
 
 @app.get("/activity")

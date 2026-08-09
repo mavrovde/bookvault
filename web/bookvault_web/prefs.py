@@ -20,7 +20,6 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +28,7 @@ logger = logging.getLogger(__name__)
 STATE_PATH = Path(os.environ.get("LITRES_STATE_FILE", ".litres_state.json"))
 
 _lock = threading.Lock()
-_state: Optional[dict] = None
+_state: dict | None = None
 
 _DEFAULTS = {"selected": [], "ebook_format": None, "audiobook_format": None}
 
@@ -73,9 +72,9 @@ def snapshot() -> dict:
 
 def update(
     *,
-    selected: Optional[list] = None,
-    ebook_format: Optional[str] = None,
-    audiobook_format: Optional[str] = None,
+    selected: list | None = None,
+    ebook_format: str | None = None,
+    audiobook_format: str | None = None,
 ) -> dict:
     """Partial update: only the fields passed (non-None) are changed, so a
     caller can push just the selection, or just one format, without clobbering

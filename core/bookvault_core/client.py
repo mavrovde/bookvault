@@ -31,9 +31,9 @@ import logging
 import os
 import random
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -121,7 +121,7 @@ class LitresBlocked(LitresAuthError):
     failure, but the retry layer can catch it specifically. `retry_after` is
     the server's Retry-After hint in seconds when it sent one."""
 
-    def __init__(self, message: str, retry_after: Optional[float] = None):
+    def __init__(self, message: str, retry_after: float | None = None):
         super().__init__(message)
         self.retry_after = retry_after
 
@@ -157,7 +157,7 @@ def _is_block(status: int, headers=None, body: bytes = b"") -> bool:
     return False
 
 
-def _retry_after_seconds(headers) -> Optional[float]:
+def _retry_after_seconds(headers) -> float | None:
     """Parse a Retry-After header (delta-seconds form) into a float, or None."""
     try:
         raw = headers.get("retry-after") or headers.get("Retry-After")
@@ -171,7 +171,7 @@ def _retry_after_seconds(headers) -> Optional[float]:
         return None  # HTTP-date form is rare here; fall back to our own backoff
 
 
-def _backoff_delay(attempt: int, retry_after: Optional[float]) -> float:
+def _backoff_delay(attempt: int, retry_after: float | None) -> float:
     """Delay before retry `attempt` (0-based): honor Retry-After if given,
     else exponential (RETRY_BASE_DELAY * 2**attempt) capped at RETRY_MAX_DELAY,
     plus jitter. Jitter matters twice over: it avoids a thundering-herd retry
@@ -236,7 +236,7 @@ class LitresClient:
     are *not* persisted -- they're cheap to recapture and may rotate.
     """
 
-    def __init__(self, storage_state_path: Optional[Path] = None):
+    def __init__(self, storage_state_path: Path | None = None):
         self._pw = sync_playwright().start()
         try:
             self._browser = self._pw.chromium.launch(headless=HEADLESS)
@@ -341,8 +341,8 @@ class LitresClient:
         finally:
             try:
                 page.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Closing the re-warm page failed (harmless): %s", exc)
 
     def is_logged_in(self) -> bool:
         if not self._extra_headers and not self._recapture_headers():
@@ -350,7 +350,7 @@ class LitresClient:
         resp = self._get(f"{API_BASE}/users/me")
         return resp.ok
 
-    def account_login(self) -> Optional[str]:
+    def account_login(self) -> str | None:
         """A human-readable identity for the logged-in account -- the account
         email, falling back to the litres login/nickname -- read from
         `/users/me`. Session cookies don't carry a login name, so a cookie-only
@@ -436,14 +436,16 @@ class LitresClient:
                 raise LitresAuthError(f"Login failed ({resp.status}): {resp.text()[:300]}")
             try:
                 page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Never fatal: the headers may already have been captured, and
+                # the check below is what actually decides success.
+                logger.debug("Post-login networkidle wait timed out: %s", exc)
             if not captured:
                 # The SPA didn't auto-fetch the profile this time -- force it.
                 try:
                     page.reload(wait_until="networkidle", timeout=30000)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Post-login reload failed: %s", exc)
             self._extra_headers = {k: v for k, v in captured.items() if k.lower() not in _DROP_HEADERS}
         finally:
             page.remove_listener("request", on_request)
@@ -476,8 +478,7 @@ class LitresClient:
             logger.debug("Library page %d: %d item(s) (%d total so far)", page_count, len(items), item_count)
             if not items:
                 return
-            for item in items:
-                yield item
+            yield from items
             next_page = (payload.get("pagination") or {}).get("next_page")
             if not next_page:
                 logger.info("Library listing complete: %d item(s) across %d page(s)", item_count, page_count)
@@ -508,9 +509,9 @@ class LitresClient:
     @staticmethod
     def pick_best_file(
         files: list,
-        preferred_ext: Optional[str] = None,
-        preferred_file_type: Optional[str] = None,
-    ) -> Optional[dict]:
+        preferred_ext: str | None = None,
+        preferred_file_type: str | None = None,
+    ) -> dict | None:
         """Pick one file per book. `preferred_ext`/`preferred_file_type` (the
         user's chosen default format) are tried first; if the book doesn't
         have that format, falls back to the built-in preference order."""
@@ -552,14 +553,13 @@ class LitresClient:
             timeout = httpx.Timeout(timeout_s)
             with httpx.Client(
                 transport=self._httpx_transport, follow_redirects=True, timeout=timeout, cookies=cookies
-            ) as http:
-                with http.stream("GET", url, headers=headers) as resp:
-                    yield _StreamResp(
-                        resp.status_code,
-                        resp.headers,
-                        lambda size: resp.iter_bytes(chunk_size=size),
-                        lambda: resp.read(),
-                    )
+            ) as http, http.stream("GET", url, headers=headers) as resp:
+                yield _StreamResp(
+                    resp.status_code,
+                    resp.headers,
+                    lambda size: resp.iter_bytes(chunk_size=size),
+                    lambda: resp.read(),
+                )
         else:
             # Let the impersonation own the browser-shaped headers so they stay
             # consistent with its TLS/JA4 fingerprint; still forward auth/app

@@ -42,7 +42,6 @@ import threading
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Optional
 
 from bookvault_core import cache, session
 from bookvault_core.client import DownloadCancelled, LitresBlocked, LitresClient
@@ -132,7 +131,7 @@ def build_books(client: LitresClient) -> list:
     return books
 
 
-def size_of_files(files: list) -> Optional[float]:
+def size_of_files(files: list) -> float | None:
     """MB of the best downloadable file in a listing, or None if there's no
     downloadable file at all."""
     best = LitresClient.pick_best_file(files)
@@ -140,7 +139,7 @@ def size_of_files(files: list) -> Optional[float]:
     return round(size / 1e6, 1) if size else None
 
 
-def fetch_size(client: LitresClient, art_id, should_cancel=None) -> tuple[Optional[float], list]:
+def fetch_size(client: LitresClient, art_id, should_cancel=None) -> tuple[float | None, list]:
     """Live-fetch a book's file listing and return (size_mb, files).
     `should_cancel` lets an anti-bot backoff inside get_files be interrupted
     by a Stop rather than blocking the sweep for the full retry window."""
@@ -182,7 +181,7 @@ def _begin(state: str, *, total=None, message="") -> bool:
     return True
 
 
-def refresh(client: LitresClient, selected: Optional[list] = None) -> bool:
+def refresh(client: LitresClient, selected: list | None = None) -> bool:
     """Reload the library listing from litres.ru (REFRESHING), then sweep
     book sizes (CHECKING). Returns False if an activity is already running."""
     if not _begin(REFRESHING, message="Reloading your library list from litres.ru…"):
@@ -192,7 +191,7 @@ def refresh(client: LitresClient, selected: Optional[list] = None) -> bool:
     return True
 
 
-def check_sizes(client: LitresClient, selected: Optional[list] = None, live: bool = True) -> bool:
+def check_sizes(client: LitresClient, selected: list | None = None, live: bool = True) -> bool:
     """Sweep the cached library's book sizes (CHECKING), paced to be gentle
     on litres.ru. `selected` ids, if given, are checked first. When
     `live` is False the sweep is *cache-only*: it resolves sizes already on
@@ -210,9 +209,9 @@ def check_sizes(client: LitresClient, selected: Optional[list] = None, live: boo
 
 def prepare(
     client: LitresClient,
-    art_ids: Optional[set] = None,
-    preferred_ext: Optional[str] = None,
-    preferred_file_type: Optional[str] = None,
+    art_ids: set | None = None,
+    preferred_ext: str | None = None,
+    preferred_file_type: str | None = None,
 ) -> bool:
     """Build a zip of the selected books in the background (PREPARING).
     `art_ids` None/empty means "everything"; a specific set restricts the
@@ -260,7 +259,7 @@ def cancel() -> bool:
 # --------------------------------------------------------------------------
 
 
-def _pending_size_ids(books: list, selected: Optional[list]) -> list:
+def _pending_size_ids(books: list, selected: list | None) -> list:
     """Ids of books still needing a size, selected ones first so checking a
     box doesn't mean waiting behind a whole library's worth of others."""
     ids = [b["id"] for b in books]
@@ -272,7 +271,7 @@ def _pending_size_ids(books: list, selected: Optional[list]) -> list:
     return ids
 
 
-def _sweep_sizes(client: LitresClient, books: list, selected: Optional[list], do_live: bool = True) -> None:
+def _sweep_sizes(client: LitresClient, books: list, selected: list | None, do_live: bool = True) -> None:
     """The paced per-book size loop. Assumes the machine is already in
     CHECKING (or will be moved to STOPPING by cancel()). Always lands back
     at IDLE with a result of done or cancelled.
@@ -333,7 +332,7 @@ def _sweep_sizes(client: LitresClient, books: list, selected: Optional[list], do
     )
 
 
-def _run_check(client: LitresClient, selected: Optional[list], live: bool = True) -> None:
+def _run_check(client: LitresClient, selected: list | None, live: bool = True) -> None:
     try:
         books = cache.get_library() or []
         _sweep_sizes(client, books, selected, do_live=live)
@@ -342,7 +341,7 @@ def _run_check(client: LitresClient, selected: Optional[list], live: bool = True
         _update(state=IDLE, result="error", error=_friendly_error(exc), message="")
 
 
-def _run_refresh(client: LitresClient, selected: Optional[list]) -> None:
+def _run_refresh(client: LitresClient, selected: list | None) -> None:
     try:
         books = build_books(client)
         cache.set_library(books)
@@ -419,9 +418,9 @@ def _add_to_zip(zf: zipfile.ZipFile, dest: Path, safe_title: str, is_audio: bool
 
 def _run_prepare(
     client: LitresClient,
-    art_ids: Optional[set],
-    preferred_ext: Optional[str],
-    preferred_file_type: Optional[str],
+    art_ids: set | None,
+    preferred_ext: str | None,
+    preferred_file_type: str | None,
 ) -> None:
     workdir = Path(tempfile.mkdtemp(prefix="litres-"))
     zip_path = workdir / "litres-library.zip"
@@ -487,8 +486,12 @@ def _run_prepare(
                     client.download_file(
                         art_id, best["id"], dest.name, dest,
                         should_cancel=_cancel_event.is_set,
-                        on_progress=lambda written, total: _update(
-                            current_downloaded=written, current_total=total or best_size
+                        # `best_size` is bound as a default rather than captured
+                        # from the enclosing loop: the callback is only ever
+                        # invoked during this iteration, but binding makes that
+                        # guarantee explicit instead of relying on it.
+                        on_progress=lambda written, total, fallback=best_size: _update(
+                            current_downloaded=written, current_total=total or fallback
                         ),
                     )
                     elapsed = time.monotonic() - started_at

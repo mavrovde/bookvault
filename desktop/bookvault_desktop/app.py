@@ -19,12 +19,13 @@ and unit-testable -- without a display or a GUI backend.
 from __future__ import annotations
 
 import html as _html
+import logging
 import os
 import socket
 import subprocess
 import threading
 import time
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import uvicorn
 
@@ -33,6 +34,8 @@ import uvicorn
 # keychain credentials to restore; a fresh user stays logged out with no
 # browser (see bookvault_core.session.restore_session(allow_env_login=False)).
 from bookvault_web.app import app
+
+logger = logging.getLogger(__name__)
 
 WINDOW_TITLE = "BookVault"
 
@@ -60,7 +63,7 @@ def _splash_html(message: str = "Starting up &amp; restoring your session…") -
 </body></html>"""
 
 
-def _ensure_chromium(status: Optional[Callable[[str], None]] = None) -> None:
+def _ensure_chromium(status: Callable[[str], None] | None = None) -> None:
     """Make sure Playwright's Chromium (needed to log in to litres.ru) is
     installed. A no-op once it's present, so it's cheap on every launch and only
     downloads on a genuine first run -- e.g. the first launch of a freshly
@@ -75,8 +78,10 @@ def _ensure_chromium(status: Optional[Callable[[str], None]] = None) -> None:
             exe = p.chromium.executable_path
         if exe and os.path.exists(exe):
             return  # already installed -- nothing to do
-    except Exception:
-        pass  # couldn't resolve/launch the driver to check -- try installing below
+    except Exception as exc:
+        # Couldn't resolve/launch the driver to check -- fall through and try
+        # installing below, which is the right move either way.
+        logger.debug("Could not probe for an existing Chromium: %s", exc)
 
     if status:
         status("First run: downloading the browser engine (~150&nbsp;MB, one time)…")
@@ -135,7 +140,7 @@ def build_server(port: int) -> uvicorn.Server:
 
 def _wait_until_serving(
     server: uvicorn.Server,
-    thread: Optional[threading.Thread] = None,
+    thread: threading.Thread | None = None,
     timeout: float = 10.0,
 ) -> None:
     """Block until uvicorn's socket is bound and accepting, by polling the real
