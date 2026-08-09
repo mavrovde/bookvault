@@ -140,6 +140,16 @@ def test_a_relative_path_is_rejected():
         prefs.update(download_dir="books/mine")
 
 
+def test_rejections_carry_a_code_not_a_message():
+    """The route answers with a string looked up from DOWNLOAD_DIR_ERRORS, never
+    with text derived from the exception -- otherwise internal/filesystem detail
+    could leak into an HTTP response (CodeQL py/stack-trace-exposure)."""
+    with pytest.raises(prefs.InvalidDownloadDir) as caught:
+        prefs.update(download_dir="books/mine")
+    assert caught.value.code == "not_absolute"
+    assert caught.value.code in prefs.DOWNLOAD_DIR_ERRORS
+
+
 def test_a_path_that_is_actually_a_file_is_rejected(tmp_path):
     a_file = tmp_path / "notes.txt"
     a_file.write_text("hi")
@@ -234,7 +244,8 @@ def test_post_prefs_rejects_a_bad_save_folder_with_400():
         resp = client.post("/prefs", json={"download_dir": "books/mine"})
         assert resp.status_code == 400
         assert resp.json()["ok"] is False
-        assert "full folder path" in resp.json()["error"]
+        # Exactly the canned string for that code -- nothing exception-derived.
+        assert resp.json()["error"] == prefs.DOWNLOAD_DIR_ERRORS["not_absolute"]
         # ...and nothing was stored.
         assert client.get("/prefs").json()["download_dir"] is None
 

@@ -218,10 +218,14 @@ def set_prefs(req: PrefsUpdate):
             audiobook_format=req.audiobook_format,
             download_dir=req.download_dir,
         )
-    except ValueError as exc:
+    except prefs.InvalidDownloadDir as exc:
         # An unusable destination folder. Reject it now, while the user is
         # looking at the field -- not at the end of a multi-gigabyte build.
-        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        # The message is looked up from a fixed table rather than taken from
+        # the exception, so no internal/filesystem detail can leak into the
+        # response (CodeQL py/stack-trace-exposure).
+        message = prefs.DOWNLOAD_DIR_ERRORS.get(exc.code, "That folder can't be used.")
+        return JSONResponse({"ok": False, "error": message}, status_code=400)
     return {"ok": True, **updated}
 
 

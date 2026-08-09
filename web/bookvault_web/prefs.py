@@ -54,6 +54,26 @@ def _system_download_dir() -> str:
 # in the system Downloads folder rather than a temp directory nobody can find.
 DEFAULT_DOWNLOAD_DIR = os.environ.get("LITRES_DOWNLOAD_DIR") or _system_download_dir()
 
+
+class InvalidDownloadDir(ValueError):
+    """The save folder the user typed can't be used.
+
+    Carries a `code`, not a message: the route answers with the fixed string
+    DOWNLOAD_DIR_ERRORS maps that code to, so nothing derived from the
+    exception (which can carry filesystem detail) is ever echoed back over
+    HTTP. Subclasses ValueError so callers can still catch it broadly."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+# The only strings the /prefs route will send back for a rejected folder.
+DOWNLOAD_DIR_ERRORS = {
+    "not_absolute": "Please give a full folder path (starting with / or ~).",
+    "not_a_folder": "That path is a file, not a folder.",
+}
+
 _lock = threading.Lock()
 _state: dict | None = None
 
@@ -99,10 +119,10 @@ def _normalise_download_dir(value: str) -> str | None:
     if not text:
         return None  # cleared -- fall back to the system/env default
     if not os.path.isabs(text):
-        raise ValueError("Please give a full folder path (starting with / or ~).")
+        raise InvalidDownloadDir("not_absolute")
     path = Path(text)
     if path.exists() and not path.is_dir():
-        raise ValueError("That path is a file, not a folder.")
+        raise InvalidDownloadDir("not_a_folder")
     return str(path)
 
 
