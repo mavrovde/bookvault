@@ -29,6 +29,10 @@ def isolated_module_state(tmp_path, monkeypatch):
     monkeypatch.setattr(session, "SESSION_STATE_PATH", tmp_path / ".litres_session.json")
     monkeypatch.setattr(cache, "CACHE_PATH", tmp_path / ".litres_cache.json")
     monkeypatch.setattr(prefs, "STATE_PATH", tmp_path / ".litres_state.json")
+    # Never let a build auto-save into the developer's real Downloads folder
+    # (the default destination) -- None keeps finished archives in their temp
+    # workdir. Tests that exercise auto-saving set this to a tmp_path of their own.
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", None)
     # No real pacing sleep between size fetches in tests -- the sweep's
     # behaviour is what's under test, not litres.ru-friendliness timing.
     monkeypatch.setattr(activity, "PACE_SECONDS", 0)
@@ -54,6 +58,8 @@ def isolated_module_state(tmp_path, monkeypatch):
             error=None,
             sizes={},
             zip_path=None,
+            saved_path=None,
+            workdir=None,
         )
         cache._state = None
         prefs._state = None

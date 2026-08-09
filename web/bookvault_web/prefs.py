@@ -27,10 +27,42 @@ logger = logging.getLogger(__name__)
 # (see Dockerfile.web) so it persists across container restarts.
 STATE_PATH = Path(os.environ.get("LITRES_STATE_FILE", ".litres_state.json"))
 
+def _system_download_dir() -> str:
+    """The OS's own Downloads folder -- the destination when the user hasn't
+    chosen one and no LITRES_DOWNLOAD_DIR is set. Linux desktops let the user
+    rename/move it (XDG user dirs), so honour that before assuming the
+    English default; macOS and Windows both use ~/Downloads."""
+    xdg = os.environ.get("XDG_DOWNLOAD_DIR")
+    if xdg:
+        return os.path.expandvars(os.path.expanduser(xdg))
+    user_dirs = Path.home() / ".config" / "user-dirs.dirs"
+    try:
+        for line in user_dirs.read_text().splitlines():
+            if line.startswith("XDG_DOWNLOAD_DIR="):
+                raw = line.split("=", 1)[1].strip().strip('"')
+                # Entries look like "$HOME/Downloads"
+                return os.path.expandvars(os.path.expanduser(raw))
+    except OSError:
+        pass  # no XDG config (macOS/Windows, or a bare Linux) -- use the default
+    return str(Path.home() / "Downloads")
+
+
+# Where a finished archive is saved when the user hasn't picked a folder.
+# Read at import (like STATE_PATH) so tests and the frozen app can override the
+# attribute. LITRES_DOWNLOAD_DIR is already set by packaging/entry.py for the
+# desktop app and honoured by the MCP server; failing that, the archive lands
+# in the system Downloads folder rather than a temp directory nobody can find.
+DEFAULT_DOWNLOAD_DIR = os.environ.get("LITRES_DOWNLOAD_DIR") or _system_download_dir()
+
 _lock = threading.Lock()
 _state: dict | None = None
 
-_DEFAULTS = {"selected": [], "ebook_format": None, "audiobook_format": None}
+_DEFAULTS = {
+    "selected": [],
+    "ebook_format": None,
+    "audiobook_format": None,
+    "download_dir": None,
+}
 
 
 def _load() -> dict:
@@ -58,15 +90,50 @@ def _save() -> None:
     os.replace(tmp, STATE_PATH)
 
 
+def _normalise_download_dir(value: str) -> str | None:
+    """Turn what the user typed into a storable absolute path, or None when
+    they cleared the field. Raises ValueError on anything unusable so the
+    route can answer 400 instead of silently saving a path that will fail at
+    the end of a multi-gigabyte build."""
+    text = os.path.expanduser(str(value).strip())
+    if not text:
+        return None  # cleared -- fall back to the system/env default
+    if not os.path.isabs(text):
+        raise ValueError("Please give a full folder path (starting with / or ~).")
+    path = Path(text)
+    if path.exists() and not path.is_dir():
+        raise ValueError("That path is a file, not a folder.")
+    return str(path)
+
+
+def _effective_download_dir(state: dict) -> str | None:
+    """The destination actually in force: the folder the user chose, else
+    LITRES_DOWNLOAD_DIR, else the system Downloads folder."""
+    return state["download_dir"] or DEFAULT_DOWNLOAD_DIR
+
+
+def resolve_download_dir() -> Path | None:
+    """Where a finished archive should be saved. The one place the
+    pref/env/system fallback is decided. None only if the default itself has
+    been cleared (tests do this to keep the archive in its temp workdir)."""
+    with _lock:
+        effective = _effective_download_dir(_load())
+    return Path(effective) if effective else None
+
+
 def snapshot() -> dict:
     """A copy of the shared UI state, safe for the caller to embed in a JSON
-    response (selected art_ids + the two format preferences)."""
+    response (selected art_ids, the two format preferences, and the archive
+    destination). `download_dir_effective` is derived, not stored -- it lets
+    the UI show the env-provided default without reimplementing the fallback."""
     with _lock:
         state = _load()
         return {
             "selected": list(state["selected"]),
             "ebook_format": state["ebook_format"],
             "audiobook_format": state["audiobook_format"],
+            "download_dir": state["download_dir"],
+            "download_dir_effective": _effective_download_dir(state),
         }
 
 
@@ -75,10 +142,18 @@ def update(
     selected: list | None = None,
     ebook_format: str | None = None,
     audiobook_format: str | None = None,
+    download_dir: str | None = None,
 ) -> dict:
     """Partial update: only the fields passed (non-None) are changed, so a
     caller can push just the selection, or just one format, without clobbering
-    the rest. Returns the new snapshot."""
+    the rest. Returns the new snapshot.
+
+    `download_dir=""` is the exception that proves the rule: None already means
+    "leave alone", so the empty string is how a caller clears the pref back to
+    the LITRES_DOWNLOAD_DIR default. Raises ValueError on an unusable path."""
+    # Validate before taking the lock: a rejected path must not leave the
+    # other fields of a multi-field update half-applied in memory.
+    new_dir = _normalise_download_dir(download_dir) if download_dir is not None else None
     with _lock:
         state = _load()
         if selected is not None:
@@ -97,11 +172,15 @@ def update(
             state["ebook_format"] = ebook_format
         if audiobook_format is not None:
             state["audiobook_format"] = audiobook_format
+        if download_dir is not None:
+            state["download_dir"] = new_dir
         _save()
         return {
             "selected": list(state["selected"]),
             "ebook_format": state["ebook_format"],
             "audiobook_format": state["audiobook_format"],
+            "download_dir": state["download_dir"],
+            "download_dir_effective": _effective_download_dir(state),
         }
 
 

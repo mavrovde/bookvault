@@ -85,15 +85,22 @@ _state = {
     "error": None,          # raw-ish error line for the UI when result == "error"
     "sizes": {},            # {art_id: size_mb|None} resolved during a sweep, for the UI to paint rows
     "zip_path": None,       # path to the built zip, for the /download/file route
+    "saved_path": None,     # where the archive was auto-saved (the configured download
+                            # folder), or None when it stayed in its temp workdir. Durable
+                            # alongside zip_path so the "Saved to ..." line survives a reload.
+    "workdir": None,        # temp dir of the last build, kept ONLY so the next prepare() can
+                            # delete it. Never derive this from zip_path: once the archive is
+                            # moved into the user's folder, its parent is the USER's folder.
 }
 
 
 def snapshot() -> dict:
     """A safe copy of the current state for the UI to render. The `log` and
-    `sizes` collections are copied so a caller can't mutate the live ones."""
+    `sizes` collections are copied so a caller can't mutate the live ones;
+    `workdir` is internal bookkeeping and is not part of the wire shape."""
     with _lock:
         return {
-            **_state,
+            **{k: v for k, v in _state.items() if k != "workdir"},
             "log": list(_state["log"]),
             "results": list(_state["results"]),
             "sizes": dict(_state["sizes"]),
@@ -174,9 +181,10 @@ def _begin(state: str, *, total=None, message="") -> bool:
             error=None,
             sizes={},
         )
-    # Note: `zip_path` and `results` are intentionally NOT reset here, so a
-    # finished build's download link and results view survive the size-check
-    # that fires on the next page load. Only a new prepare() replaces them.
+    # Note: `zip_path`, `saved_path` and `results` are intentionally NOT reset
+    # here, so a finished build's download link, "Saved to ..." line and
+    # results view survive the size-check that fires on the next page load.
+    # Only a new prepare() replaces them.
     _cancel_event.clear()
     return True
 
@@ -212,10 +220,14 @@ def prepare(
     art_ids: set | None = None,
     preferred_ext: str | None = None,
     preferred_file_type: str | None = None,
+    dest_dir: Path | None = None,
 ) -> bool:
     """Build a zip of the selected books in the background (PREPARING).
     `art_ids` None/empty means "everything"; a specific set restricts the
-    zip to those ids. Returns False if an activity is already running."""
+    zip to those ids. `dest_dir`, when given, is the folder a *successful*
+    archive is moved into (see prefs.resolve_download_dir); None leaves it in
+    its temp workdir, reachable only via /download/file. Returns False if an
+    activity is already running."""
     total = len(art_ids) if art_ids is not None else None
     if not _begin(PREPARING, total=total):
         return False
@@ -223,20 +235,24 @@ def prepare(
     # download link (_begin leaves both untouched so they survive size-checks,
     # so clear them explicitly here for the fresh build).
     with _lock:
-        previous_zip = _state["zip_path"]
-        _state.update(results=[], zip_path=None)
-    # Each build gets its own mkdtemp workdir; once superseded, the previous
-    # build's zip (potentially many GB) is unreachable -- delete its whole
-    # workdir rather than leaking it until the OS cleans the temp dir.
-    if previous_zip:
-        shutil.rmtree(Path(previous_zip).parent, ignore_errors=True)
+        previous_workdir = _state["workdir"]
+        _state.update(results=[], zip_path=None, saved_path=None, workdir=None)
+    # Each build gets its own mkdtemp workdir; once superseded, whatever is
+    # left in the previous one (potentially a many-GB zip) is unreachable --
+    # delete it rather than leaking it until the OS cleans the temp dir.
+    # Deliberately the recorded workdir, NOT Path(previous_zip).parent: an
+    # auto-saved archive lives in the user's own folder, and rmtree-ing its
+    # parent would delete that folder and everything else in it.
+    if previous_workdir:
+        shutil.rmtree(previous_workdir, ignore_errors=True)
     logger.info(
-        "Starting zip build: %s, ebook_format=%s, audiobook_format=%s",
+        "Starting zip build: %s, ebook_format=%s, audiobook_format=%s, dest=%s",
         f"{len(art_ids)} selected book(s)" if art_ids is not None else "entire library",
         preferred_ext,
         preferred_file_type,
+        dest_dir or "(temp only)",
     )
-    session.submit(_run_prepare, client, art_ids, preferred_ext, preferred_file_type)
+    session.submit(_run_prepare, client, art_ids, preferred_ext, preferred_file_type, dest_dir)
     return True
 
 
@@ -416,11 +432,31 @@ def _add_to_zip(zf: zipfile.ZipFile, dest: Path, safe_title: str, is_audio: bool
         zf.write(dest, arcname=dest.name, compress_type=zipfile.ZIP_STORED)
 
 
+def _save_archive(zip_path: Path, dest_dir: Path) -> Path:
+    """Move a finished archive out of its temp workdir into the user's chosen
+    folder, under a timestamped name. Timestamped rather than fixed so a new
+    build never silently overwrites an archive the user still wants; the
+    numeric suffix settles the (unlikely) same-second collision. Returns the
+    saved path. Raises OSError if the folder can't be written."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"litres-library-{time.strftime('%Y%m%d-%H%M%S')}"
+    target = dest_dir / f"{stem}.zip"
+    n = 2
+    while target.exists():
+        target = dest_dir / f"{stem} ({n}).zip"
+        n += 1
+    # shutil.move, not os.replace: the download folder is very often on a
+    # different filesystem than the temp dir (external drive, network share).
+    shutil.move(str(zip_path), str(target))
+    return target
+
+
 def _run_prepare(
     client: LitresClient,
     art_ids: set | None,
     preferred_ext: str | None,
     preferred_file_type: str | None,
+    dest_dir: Path | None = None,
 ) -> None:
     workdir = Path(tempfile.mkdtemp(prefix="litres-"))
     zip_path = workdir / "litres-library.zip"
@@ -530,7 +566,29 @@ def _run_prepare(
                         {"title": title, "ext": ext, "size_mb": size_mb, "status": "done"}
                     )
         with _lock:
-            done, total_logged = _state["done"], len(_state["log"])
+            done = _state["done"]
+
+        # Move the finished archive into the user's folder, if they configured
+        # one. Deliberately after the build, never during: a crashed or empty
+        # build must not leave a half-written .zip sitting in their folder.
+        final_zip, saved_path, save_error = zip_path, None, None
+        if done > 0 and dest_dir is not None:
+            try:
+                final_zip = _save_archive(zip_path, dest_dir)
+                saved_path = str(final_zip)
+                logger.info("Archive saved to %s", final_zip)
+            except OSError as exc:
+                # Read-only folder, full disk, unplugged volume... Keep the
+                # archive in the workdir so it's still downloadable rather
+                # than throwing away a build that may have taken hours.
+                logger.warning("Could not save the archive to %s: %s", dest_dir, exc)
+                save_error = (
+                    f"Couldn't save to {dest_dir} ({exc.strerror or exc}). "
+                    "The archive is still available with the button below."
+                )
+
+        with _lock:
+            total_logged = len(_state["log"])
             _state.update(
                 state=IDLE,
                 result="cancelled" if cancelled else "done",
@@ -541,20 +599,25 @@ def _run_prepare(
                 # where every book failed/was skipped produces an empty archive
                 # not worth downloading. Durable (see _begin) so the link
                 # survives a reload's size-check.
-                zip_path=str(zip_path) if done > 0 else None,
-                message="Stopped." if cancelled else "",
+                zip_path=str(final_zip) if done > 0 else None,
+                saved_path=saved_path,
+                # Keep the workdir only while it still holds the archive; once
+                # moved out, there's nothing left worth keeping.
+                workdir=None if (done == 0 or saved_path) else str(workdir),
+                message=" ".join(p for p in ("Stopped." if cancelled else "", save_error or "") if p),
                 # Preserve this build's per-book outcomes so the results view /
                 # failed filter survives the next page load's size-check.
                 results=list(_state["log"]),
             )
-        if done == 0:
-            # Nothing to offer -- don't leave the empty archive's workdir
-            # behind (the offered-zip case is cleaned by the NEXT prepare).
+        if done == 0 or saved_path:
+            # Nothing left in the workdir -- either the build produced no
+            # archive worth offering, or the archive has been moved out of it.
+            # (The still-in-temp case is cleaned by the NEXT prepare.)
             shutil.rmtree(workdir, ignore_errors=True)
         logger.info(
             "Zip build %s: %d/%d book(s) succeeded, zip=%s",
             "cancelled" if cancelled else "finished",
-            done, total_logged, zip_path,
+            done, total_logged, final_zip,
         )
     except Exception as exc:
         logger.exception("Zip build crashed")

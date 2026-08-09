@@ -112,6 +112,14 @@ button:active { transform: scale(0.97); }
   cursor: help;
 }
 .format-control select { padding: 0.3rem 0.55rem; font-size: 0.8rem; }
+/* The save folder is a path, so it needs far more room than the format
+   pickers -- but it must still yield before the topbar wraps. */
+.dir-input {
+  padding: 0.3rem 0.55rem; font-size: 0.8rem;
+  width: 15rem; max-width: 32vw; min-width: 7rem;
+  text-overflow: ellipsis;
+}
+.dir-error { color: var(--danger); font-size: 0.78rem; }
 .account-chip { display: flex; align-items: center; gap: 0.4rem; }
 .account-icon { width: 16px; height: 16px; color: var(--text-faint); flex-shrink: 0; }
 .account-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -270,4 +278,5 @@ button:active { transform: scale(0.97); }
 #progress-log li .detail { color: var(--text-faint); font-size: 0.8rem; flex-shrink: 0; max-width: 48%; text-align: right; }
 #progress-log li.error .detail, #progress-log li.skipped .detail { color: var(--text-muted); cursor: help; }
 
-.progress-actions { display: flex; gap: 0.6rem; margin-top: 1rem; }
+.progress-actions { display: flex; align-items: center; gap: 0.6rem; margin-top: 1rem; }
+.saved-path { font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
