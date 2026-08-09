@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import httpx
 import pytest
-
 from bookvault_core import client as client_mod
-from bookvault_core.client import DownloadCancelled, LitresAuthError, LitresBlocked, LitresClient
+from bookvault_core.client import (
+    DownloadCancelled,
+    LitresAuthError,
+    LitresBlocked,
+    LitresClient,
+)
+
 from tests.fakes import FakeAPIResponse, make_bare_client
 
 # --------------------------------------------------------------------------

@@ -17,6 +17,7 @@ import zipfile
 from bookvault_core import cache
 from bookvault_core.client import DownloadCancelled
 from bookvault_web import activity
+
 from tests.fakes import FakeLitresClient
 
 TEXT_FILES = [{"id": 100, "extension": "epub", "is_additional": False, "size": 1_000_000}]  # 1.0 MB

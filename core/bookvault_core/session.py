@@ -17,7 +17,6 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
 
 from . import cache, credentials
 from .client import LitresAuthError, LitresClient
@@ -60,11 +59,11 @@ async def run_async(fn, *args, **kwargs):
     return await asyncio.wrap_future(future)
 
 
-def current_client() -> Optional[LitresClient]:
+def current_client() -> LitresClient | None:
     return _state["client"]
 
 
-def current_login() -> Optional[str]:
+def current_login() -> str | None:
     return _state["login"]
 
 
@@ -100,7 +99,7 @@ def _restore_session_impl(allow_env_login: bool = True) -> None:
                 return
             logger.info("Saved session cookies are no longer valid, discarding")
             client.close()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- validating a restored session must never crash startup
             # Do NOT delete the session file -- the cookies may be perfectly
             # fine once the network is back; only a *validated* rejection
             # above discards them.
@@ -108,8 +107,8 @@ def _restore_session_impl(allow_env_login: bool = True) -> None:
             if client is not None:
                 try:
                     client.close()
-                except Exception:
-                    pass
+                except Exception as close_exc:  # noqa: BLE001 -- closing the browser is best-effort cleanup
+                    logger.debug("Closing the unvalidated client failed: %s", close_exc)
             return
 
     saved = credentials.load_last()
@@ -133,7 +132,7 @@ def _restore_session_impl(allow_env_login: bool = True) -> None:
     client = LitresClient()
     try:
         client.login(login_id, password)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- an unattended re-login must never crash startup
         # Same best-effort contract as above: an unattended re-login must
         # never crash startup -- and whatever went wrong (bad credentials,
         # a Playwright timeout on a changed login page, no network), the
@@ -141,8 +140,8 @@ def _restore_session_impl(allow_env_login: bool = True) -> None:
         logger.warning("Automatic login for %s failed: %s", login_id, exc)
         try:
             client.close()
-        except Exception:
-            pass
+        except Exception as close_exc:  # noqa: BLE001 -- closing the browser is best-effort cleanup
+            logger.debug("Closing the client after a failed auto-login failed: %s", close_exc)
         return
     client.save_state(SESSION_STATE_PATH)
     _state["client"], _state["login"] = client, login_id
@@ -162,8 +161,8 @@ def _login_impl(login_id: str, password: str) -> LitresClient:
         logger.warning("Login failed for %s: %s", login_id, exc)
         try:
             client.close()
-        except Exception:
-            pass
+        except Exception as close_exc:  # noqa: BLE001 -- closing the browser is best-effort cleanup
+            logger.debug("Closing the client after a failed login failed: %s", close_exc)
         if isinstance(exc, LitresAuthError):
             raise
         raise LitresAuthError(

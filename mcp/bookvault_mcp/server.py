@@ -22,11 +22,10 @@ import os
 from pathlib import Path
 
 import anyio
-from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
-
 from bookvault_core import session
 from bookvault_core.client import LitresAuthError
+from dotenv import load_dotenv
+from mcp.server.fastmcp import FastMCP
 
 load_dotenv()
 

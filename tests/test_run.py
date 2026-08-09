@@ -4,7 +4,6 @@ overrides, the reload/no-reload split) without starting a server."""
 from __future__ import annotations
 
 import pytest
-
 from bookvault_web import run as run_mod
 
 

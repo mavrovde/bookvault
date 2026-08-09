@@ -10,18 +10,20 @@ import logging
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
-from typing import List, Optional
 
 import anyio
+from bookvault_core import cache, session
+from bookvault_core.client import (
+    AUDIOBOOK_FILE_TYPES,
+    EBOOK_EXTENSIONS,
+    LitresAuthError,
+)
 from fastapi import FastAPI, Form
 from fastapi.requests import Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-
-from bookvault_core import cache, session
-from bookvault_core.client import AUDIOBOOK_FILE_TYPES, EBOOK_EXTENSIONS, LitresAuthError
 
 from . import activity, prefs
 
@@ -113,7 +115,7 @@ def get_library(refresh: bool = False):
                 return {"ok": True, "books": stale}
     try:
         books = session.run(activity.build_books, client)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- any backend failure must surface as a clean 503, never a raw traceback
         # A transient network blip, an anti-bot block, or a session that
         # was replaced (logout/re-login) mid-request should surface as a
         # clean error the frontend can retry -- not a raw 500 with a
@@ -144,7 +146,7 @@ def get_book_size(art_id: int):
         return {"ok": True, "size_mb": activity.size_of_files(cached_files), "cached": True}
     try:
         size_mb, files = session.run(activity.fetch_size, client, art_id)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- a failed size fetch just leaves that book's size unknown
         # Best-effort -- a failed size fetch just leaves that book's size
         # unknown; a clean error here is enough, no need to retry serverside.
         logger.info("Size fetch failed for art %s: %s", art_id, exc)
@@ -162,17 +164,17 @@ def get_book_size(art_id: int):
 
 
 class PrepareRequest(BaseModel):
-    art_ids: Optional[List[int]] = None
-    ebook_format: Optional[str] = None
-    audiobook_format: Optional[str] = None
+    art_ids: list[int] | None = None
+    ebook_format: str | None = None
+    audiobook_format: str | None = None
     # Ids to resolve first during the size sweep that follows a refresh --
     # normally the user's current checkbox selection, so a selected book
     # isn't stuck behind a whole library's worth of others.
-    selected: Optional[List[int]] = None
+    selected: list[int] | None = None
 
 
 class SweepRequest(BaseModel):
-    selected: Optional[List[int]] = None
+    selected: list[int] | None = None
     # False = cache-only sweep (resolve sizes already on disk, no litres.ru
     # calls). The frontend's automatic on-load sweep sends False so merely
     # opening the app never fires a library's worth of size requests; the
@@ -183,9 +185,9 @@ class SweepRequest(BaseModel):
 class PrefsUpdate(BaseModel):
     # All optional: a caller pushes just the field(s) that changed (the
     # selection, or one format) without clobbering the others.
-    selected: Optional[List[int]] = None
-    ebook_format: Optional[str] = None
-    audiobook_format: Optional[str] = None
+    selected: list[int] | None = None
+    ebook_format: str | None = None
+    audiobook_format: str | None = None
 
 
 @app.get("/activity")

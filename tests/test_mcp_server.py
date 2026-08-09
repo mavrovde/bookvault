@@ -7,10 +7,10 @@ from __future__ import annotations
 import inspect
 
 import pytest
-
 from bookvault_core import credentials, session
-from bookvault_mcp import server as mcp_server
 from bookvault_core.client import LitresAuthError
+from bookvault_mcp import server as mcp_server
+
 from tests.fakes import client_factory
 
 
