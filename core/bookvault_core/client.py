@@ -61,6 +61,7 @@ _HTML_RE = re.compile(r"<[^>]+>")
 # These are facts about litres.ru itself, not settings -- not configurable.
 API_BASE = "https://api.litres.ru/foundation/api"
 DOWNLOAD_BASE = "https://www.litres.ru"
+COVER_BASE = "https://static.litres.ru"
 LOGIN_PAGE = "https://www.litres.ru/auth/login"
 
 # Set LITRES_HEADLESS=0 to watch the login flow in a real Chromium window
@@ -494,6 +495,85 @@ class LitresClient:
             # jitter the gap so the cadence doesn't look mechanically scripted.
             time.sleep(random.uniform(0.3, 0.7))
 
+
+    @staticmethod
+    def _absolute(url, base: str):
+        """litres.ru returns site-relative paths; make them absolute, and leave
+        an already-absolute URL alone."""
+        if not url:
+            return None
+        text = str(url)
+        return text if text.startswith(("http://", "https://")) else f"{base}{text}"
+
+    @staticmethod
+    def person_names(art: dict, role: str) -> list:
+        """Full names of the people on an art with the given role."""
+        return [
+            p.get("full_name")
+            for p in (art.get("persons") or [])
+            if p.get("role") == role and p.get("full_name")
+        ]
+
+    @staticmethod
+    def title_or_id(art: dict) -> str:
+        """A title is occasionally missing/blank -- fall back to the id rather
+        than rendering an empty row."""
+        art_id = art.get("id")
+        return art.get("title") or (str(art_id) if art_id is not None else "")
+
+    @staticmethod
+    def normalize_library_item(art: dict) -> dict:
+        """Shape one raw `/users/me/arts` item into stable metadata for the MCP
+        `list_library` tool.
+
+        Deliberately a *subset* of what the endpoint returns. This dict is
+        handed to an MCP client and lands in an LLM's context window, so every
+        key is paid for on every call, for every title. Included: what someone
+        asks a backup tool about their own library -- who wrote/read it, what
+        it's part of, when they bought it, whether it's an audiobook, whether
+        it's DRM'd.
+
+        Deliberately omitted: storefront and layout data that can't serve that
+        purpose -- prices (these are already-purchased items), bestseller/
+        exclusive labels, cover pixel dimensions, and internal plumbing like
+        release_file_id or alternative_versions (`get_files` resolves what's
+        actually downloadable). Detail-only fields such as ISBN, genres and the
+        HTML annotation are not on this endpoint at all and are left out rather
+        than invented as empty keys.
+        """
+        series_list = []
+        for s in art.get("series") or []:
+            if not isinstance(s, dict) or not s.get("name"):
+                continue
+            series_list.append({"name": s["name"], "art_order": s.get("art_order")})
+
+        art_type = art.get("art_type")
+        rating = art.get("rating") or {}
+
+        return {
+            "id": art.get("id"),
+            "uuid": art.get("uuid"),
+            "title": LitresClient.title_or_id(art),
+            "subtitle": art.get("subtitle") or "",
+            "authors": LitresClient.person_names(art, "author"),
+            "narrators": LitresClient.person_names(art, "reader"),
+            "series": series_list[0] if series_list else None,
+            "series_list": series_list,
+            "art_type": art_type,
+            "is_audio": art_type == 1,
+            "language_code": art.get("language_code"),
+            "cover_url": LitresClient._absolute(art.get("cover_url"), COVER_BASE),
+            "url": LitresClient._absolute(art.get("url"), DOWNLOAD_BASE),
+            "purchased_at": art.get("purchased_at"),
+            "date_written_at": art.get("date_written_at"),
+            "last_released_at": art.get("last_released_at"),
+            "last_updated_at": art.get("last_updated_at"),
+            "symbols_count": art.get("symbols_count"),
+            "is_drm": bool(art.get("is_drm")),
+            "is_adult_content": bool(art.get("is_adult_content")),
+            "is_archived": bool(art.get("is_archived")),
+            "rating_avg": rating.get("rated_avg"),
+        }
 
     @staticmethod
     def normalize_art_details(art: dict, files: list | None = None) -> dict:

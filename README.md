@@ -217,7 +217,7 @@ The MCP server exposes your library to any MCP client (e.g. Claude Desktop) as t
 |---|---|
 | `login_status()` | Whether there's an active session |
 | `login_to_litres(login, password)` | Log in and persist the session |
-| `list_library(limit)` | List your purchased titles |
+| `list_library(limit)` | List your purchased titles with metadata (authors, narrators, series, dates, DRM flag) |
 | `download_book(art_id)` | Download one title (into `LITRES_LIBRARY_DIR` when set, else flat `LITRES_DOWNLOAD_DIR`) |
 | `sync_library_now(audio_only)` | Sync purchased titles into `LITRES_LIBRARY_DIR` (Audiobookshelf layout) |
 
