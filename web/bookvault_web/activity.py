@@ -44,7 +44,12 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from bookvault_core import cache, session
-from bookvault_core.client import DownloadCancelled, LitresBlocked, LitresClient
+from bookvault_core.client import (
+    COVER_BASE,
+    DownloadCancelled,
+    LitresBlocked,
+    LitresClient,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,20 +128,22 @@ def build_books(client: LitresClient) -> list:
     """Turn the raw litres.ru library listing into the flat book shape the
     web UI renders (id/title/authors/is_audio/cover_url).
 
-    Built on `LitresClient.normalize_library_item` so web and MCP share one
-    metadata mapping; the UI keeps its slim card fields, while MCP returns
-    the full normalized dict.
+    Deliberately builds these five fields directly rather than going through
+    `normalize_library_item` and discarding the rest: this runs on the single
+    Playwright worker thread for every title on every refresh, and a page load
+    waits on it. The genuinely shared pieces -- the cover prefix, the
+    author-role filter, the title/id fallback -- are the helpers below, so the
+    two surfaces still can't drift on the rules that matter.
     """
     books = []
     for art in client.iter_library():
-        meta = LitresClient.normalize_library_item(art)
         books.append(
             {
-                "id": meta["id"],
-                "title": meta["title"],
-                "authors": meta["authors_str"],
-                "is_audio": meta["is_audio"],
-                "cover_url": meta["cover_url"],
+                "id": art.get("id"),
+                "title": LitresClient.title_or_id(art),
+                "authors": ", ".join(LitresClient.person_names(art, "author")),
+                "is_audio": art.get("art_type") == 1,
+                "cover_url": LitresClient._absolute(art.get("cover_url"), COVER_BASE),
             }
         )
     return books

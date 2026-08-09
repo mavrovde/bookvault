@@ -74,7 +74,6 @@ async def test_list_library_bootstraps_via_restore_session(monkeypatch):
     assert items[0]["id"] == 1
     assert items[0]["title"] == "Book One"
     assert items[0]["authors"] == ["Author A"]
-    assert items[0]["authors_str"] == "Author A"
     assert items[0]["is_audio"] is False
     assert items[0]["cover_url"] == "https://static.litres.ru/pub/c/cover/1.jpg"
     assert items[0]["url"] == "https://www.litres.ru/book/author-a/book-one-1/"
@@ -83,7 +82,7 @@ async def test_list_library_bootstraps_via_restore_session(monkeypatch):
     assert items[1]["id"] == 2
     assert items[1]["is_audio"] is True
     # Full metadata keys are always present (even when source fields are missing).
-    for key in ("narrators", "language_code", "is_drm", "labels", "rating_avg"):
+    for key in ("narrators", "language_code", "is_drm", "rating_avg", "purchased_at"):
         assert key in items[0]
 
 

@@ -58,6 +58,7 @@ logger = logging.getLogger(__name__)
 # These are facts about litres.ru itself, not settings -- not configurable.
 API_BASE = "https://api.litres.ru/foundation/api"
 DOWNLOAD_BASE = "https://www.litres.ru"
+COVER_BASE = "https://static.litres.ru"
 LOGIN_PAGE = "https://www.litres.ru/auth/login"
 
 # Set LITRES_HEADLESS=0 to watch the login flow in a real Chromium window
@@ -493,130 +494,82 @@ class LitresClient:
 
 
     @staticmethod
+    def _absolute(url, base: str):
+        """litres.ru returns site-relative paths; make them absolute, and leave
+        an already-absolute URL alone."""
+        if not url:
+            return None
+        text = str(url)
+        return text if text.startswith(("http://", "https://")) else f"{base}{text}"
+
+    @staticmethod
+    def person_names(art: dict, role: str) -> list:
+        """Full names of the people on an art with the given role."""
+        return [
+            p.get("full_name")
+            for p in (art.get("persons") or [])
+            if p.get("role") == role and p.get("full_name")
+        ]
+
+    @staticmethod
+    def title_or_id(art: dict) -> str:
+        """A title is occasionally missing/blank -- fall back to the id rather
+        than rendering an empty row."""
+        art_id = art.get("id")
+        return art.get("title") or (str(art_id) if art_id is not None else "")
+
+    @staticmethod
     def normalize_library_item(art: dict) -> dict:
-        """Shape one raw `/users/me/arts` item into stable, full metadata.
+        """Shape one raw `/users/me/arts` item into stable metadata for the MCP
+        `list_library` tool.
 
-        The library listing already carries rich fields (authors, narrators,
-        series, purchase date, cover, DRM flags, rating, ...). Detail-only
-        fields such as ISBN / HTML annotation / genres are NOT on this
-        endpoint and are left out rather than inventing empty keys.
+        Deliberately a *subset* of what the endpoint returns. This dict is
+        handed to an MCP client and lands in an LLM's context window, so every
+        key is paid for on every call, for every title. Included: what someone
+        asks a backup tool about their own library -- who wrote/read it, what
+        it's part of, when they bought it, whether it's an audiobook, whether
+        it's DRM'd.
 
-        Used by the MCP `list_library` tool and the web UI's book list so both
-        surfaces stay in lockstep.
+        Deliberately omitted: storefront and layout data that can't serve that
+        purpose -- prices (these are already-purchased items), bestseller/
+        exclusive labels, cover pixel dimensions, and internal plumbing like
+        release_file_id or alternative_versions (`get_files` resolves what's
+        actually downloadable). Detail-only fields such as ISBN, genres and the
+        HTML annotation are not on this endpoint at all and are left out rather
+        than invented as empty keys.
         """
-        persons_in = art.get("persons") or []
-        authors: list[str] = []
-        narrators: list[str] = []
-        persons: list[dict] = []
-        for person in persons_in:
-            name = person.get("full_name") or ""
-            role = person.get("role") or ""
-            if name:
-                persons.append(
-                    {
-                        "id": person.get("id"),
-                        "full_name": name,
-                        "role": role,
-                        "url": person.get("url"),
-                    }
-                )
-            if role == "author" and name:
-                authors.append(name)
-            elif role == "reader" and name:
-                narrators.append(name)
-
         series_list = []
         for s in art.get("series") or []:
-            if not isinstance(s, dict):
+            if not isinstance(s, dict) or not s.get("name"):
                 continue
-            name = s.get("name")
-            if not name:
-                continue
-            series_list.append(
-                {
-                    "id": s.get("id"),
-                    "name": name,
-                    "url": s.get("url"),
-                    "art_order": s.get("art_order"),
-                    "arts_count": s.get("arts_count") or s.get("unique_arts_count"),
-                }
-            )
-        primary_series = series_list[0] if series_list else None
-
-        cover = art.get("cover_url")
-        if cover and not str(cover).startswith(("http://", "https://")):
-            cover = f"https://static.litres.ru{cover}"
-
-        rel_url = art.get("url") or ""
-        if rel_url and not str(rel_url).startswith(("http://", "https://")):
-            page_url = f"https://www.litres.ru{rel_url}"
-        else:
-            page_url = rel_url or None
+            series_list.append({"name": s["name"], "art_order": s.get("art_order")})
 
         art_type = art.get("art_type")
         rating = art.get("rating") or {}
-        prices = art.get("prices") or {}
-        labels = art.get("labels") or {}
-
-        title = art.get("title") or (str(art.get("id")) if art.get("id") is not None else "")
 
         return {
             "id": art.get("id"),
             "uuid": art.get("uuid"),
-            "title": title,
+            "title": LitresClient.title_or_id(art),
             "subtitle": art.get("subtitle") or "",
-            "url": page_url,
-            "cover_url": cover or None,
-            "cover_width": art.get("cover_width"),
-            "cover_height": art.get("cover_height"),
+            "authors": LitresClient.person_names(art, "author"),
+            "narrators": LitresClient.person_names(art, "reader"),
+            "series": series_list[0] if series_list else None,
+            "series_list": series_list,
             "art_type": art_type,
             "is_audio": art_type == 1,
             "language_code": art.get("language_code"),
-            "min_age": art.get("min_age"),
-            "authors": authors,
-            "authors_str": ", ".join(authors),
-            "narrators": narrators,
-            "narrators_str": ", ".join(narrators),
-            "persons": persons,
-            "series": primary_series,
-            "series_list": series_list,
+            "cover_url": LitresClient._absolute(art.get("cover_url"), COVER_BASE),
+            "url": LitresClient._absolute(art.get("url"), DOWNLOAD_BASE),
             "purchased_at": art.get("purchased_at"),
             "date_written_at": art.get("date_written_at"),
-            "available_from": art.get("available_from"),
             "last_released_at": art.get("last_released_at"),
             "last_updated_at": art.get("last_updated_at"),
             "symbols_count": art.get("symbols_count"),
             "is_drm": bool(art.get("is_drm")),
             "is_adult_content": bool(art.get("is_adult_content")),
-            "is_free": bool(art.get("is_free")),
             "is_archived": bool(art.get("is_archived")),
-            "labels": {
-                "is_bestseller": bool(labels.get("is_bestseller")),
-                "is_new": bool(labels.get("is_new")),
-                "is_sales_hit": bool(labels.get("is_sales_hit")),
-                "is_litres_exclusive": bool(labels.get("is_litres_exclusive")),
-            },
             "rating_avg": rating.get("rated_avg"),
-            "rating_count": rating.get("rated_total_count"),
-            "prices": {
-                "final_price": prices.get("final_price"),
-                "full_price": prices.get("full_price"),
-                "currency": prices.get("currency"),
-                "discount_percent": prices.get("discount_percent"),
-            }
-            if prices
-            else None,
-            "synchronized_art_ids": [
-                a.get("id") for a in (art.get("synchronized_arts") or []) if a.get("id") is not None
-            ],
-            "alternative_versions": [
-                {"id": a.get("id"), "art_type": a.get("art_type"), "link_type": a.get("link_type")}
-                for a in (art.get("alternative_versions") or [])
-                if a.get("id") is not None
-            ],
-            "read_percent": art.get("read_percent"),
-            "my_art_status": art.get("my_art_status"),
-            "release_file_id": art.get("release_file_id"),
         }
 
     def get_files(self, art_id, should_cancel=None) -> list:
