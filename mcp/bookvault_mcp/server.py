@@ -37,6 +37,11 @@ mcp = FastMCP("bookvault")
 
 DOWNLOAD_DIR = Path(os.environ.get("LITRES_DOWNLOAD_DIR", str(Path.home() / "Downloads" / "litres-library")))
 
+# Ceiling on how many titles list_library will return in one call. The result
+# goes straight into the caller's context window, so an unbounded listing of a
+# large account is a real failure mode, not a theoretical one.
+MAX_LIST_LIMIT = 500
+
 
 async def _ensure_logged_in() -> None:
     if session.current_client() is None:
@@ -89,17 +94,25 @@ async def list_library(limit: int = 50) -> list:
     layout data (cover dimensions) and internal ids are omitted, since this
     result goes into the caller's context window. Detail-only fields such as
     ISBN, genres and the HTML annotation aren't on the listing endpoint at all.
+
+    `limit` is clamped to 1..MAX_LIST_LIMIT.
     """
     await _ensure_logged_in()
     client = session.current_client()
 
+    # A model can pass anything here. Clamp rather than trusting it: 0 or a
+    # negative would otherwise still yield one item (the bound is checked
+    # after the first append) *and* send `?limit=0` upstream, and an
+    # unbounded value would page the entire library into a context window.
+    wanted = max(1, min(int(limit), MAX_LIST_LIMIT))
+
     def _sync():
         items = []
-        # `limit` here is the caller's item budget; cap the page size so a
-        # large request doesn't turn into one enormous listing call.
-        for art in client.iter_library(limit=min(limit, 100)):
+        # The per-page size sent to litres.ru, capped so one call can't turn
+        # into an enormous listing request.
+        for art in client.iter_library(limit=min(wanted, 100)):
             items.append(LitresClient.normalize_library_item(art))
-            if len(items) >= limit:
+            if len(items) >= wanted:
                 break
         return items
 
