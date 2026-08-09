@@ -1,6 +1,11 @@
 # Changelog
 
-## [Unreleased]
+## [1.3.0] - Choose where your zip is saved
+
+The finished archive now lands in a folder you pick — your system Downloads
+folder by default — instead of a temp directory reachable only through the
+browser's download button. Also bumps the linter and the CI actions, and
+checks in the contributor/AI-development setup.
 
 ### Added
 - **Choose where the zip is saved.** A 📁 folder box in the toolbar sets where a
@@ -19,6 +24,15 @@
   once the build succeeds, so a crashed or empty build never leaves a
   half-written `.zip` behind. If the folder turns out to be unwritable, the zip
   stays in temp and remains downloadable rather than being discarded.
+- **Dependencies:** ruff 0.15.21 → 0.16.1, pip-audit 2.9.0 → 2.10.1, and the
+  GitHub actions (`checkout`, `upload-artifact`, `setup-python`) to v7. Ruff
+  0.16 widened its default rule set, so the codebase was modernised to match
+  (PEP 604/585 annotations, sorted imports); several silent `except: pass`
+  blocks now log at debug level, and the intentional broad handlers in the
+  anti-bot paths are annotated in place with their reasons.
+- **For contributors:** added `CONTRIBUTING.md`, PR/issue templates, and a
+  checked-in Claude Code setup (`.claude/`) with per-area agent roles and
+  skills for the repeatable workflows.
 
 ### Fixed
 - Starting a new build no longer deletes the *parent directory* of the previous
