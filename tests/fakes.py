@@ -84,9 +84,10 @@ class FakeLitresClient:
     web routes, session, mcp tools) that doesn't care about HTTP-layer
     details, just the client's public behavior/failure modes."""
 
-    def __init__(self, library=None, files_by_id=None, fail_downloads=None):
+    def __init__(self, library=None, files_by_id=None, fail_downloads=None, arts_by_id=None):
         self.library = library if library is not None else []
         self.files_by_id = files_by_id or {}
+        self.arts_by_id = arts_by_id or {}
         # What account_login() returns -- the identity recovered from the live
         # session (/users/me). None by default: a cookie-only restore with no
         # keychain/env name then legitimately has nothing to display.
@@ -107,6 +108,7 @@ class FakeLitresClient:
         self.saved_state_path = None
         self.login_calls = []
         self.download_calls = []
+        self.get_art_calls = []
 
     def login(self, login, password):
         self.login_calls.append((login, password))
@@ -136,6 +138,15 @@ class FakeLitresClient:
     def iter_library(self, limit: int = 100):
         yield from self.library
 
+    def get_art(self, art_id, should_cancel=None):
+        self.get_art_calls.append(art_id)
+        if art_id in self.arts_by_id:
+            return self.arts_by_id[art_id]
+        for art in self.library:
+            if art.get("id") == art_id:
+                return art
+        raise LitresAuthError(f"Could not fetch art {art_id}: empty payload")
+
     def get_files(self, art_id, should_cancel=None):
         return self.files_by_id.get(art_id, [])
 
@@ -148,6 +159,14 @@ class FakeLitresClient:
     @staticmethod
     def file_extension(file_entry):
         return LitresClient.file_extension(file_entry)
+
+    @staticmethod
+    def normalize_library_item(art):
+        return LitresClient.normalize_library_item(art)
+
+    @staticmethod
+    def normalize_art_details(art, files=None):
+        return LitresClient.normalize_art_details(art, files)
 
     def download_file(self, art_id, release_file_id, filename, dest, subscr=False,
                       should_cancel=None, on_progress=None):

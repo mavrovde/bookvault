@@ -26,6 +26,8 @@ def isolated_module_state(tmp_path, monkeypatch):
     any) out of the test environment entirely."""
     monkeypatch.delenv("LITRES_LOGIN", raising=False)
     monkeypatch.delenv("LITRES_PASSWORD", raising=False)
+    monkeypatch.delenv("LITRES_LIBRARY_DIR", raising=False)
+    monkeypatch.delenv("LITRES_AUTOSYNC", raising=False)
     monkeypatch.setattr(session, "SESSION_STATE_PATH", tmp_path / ".litres_session.json")
     monkeypatch.setattr(cache, "CACHE_PATH", tmp_path / ".litres_cache.json")
     monkeypatch.setattr(prefs, "STATE_PATH", tmp_path / ".litres_state.json")

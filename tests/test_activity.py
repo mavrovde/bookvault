@@ -996,3 +996,46 @@ def test_friendly_error_maps_common_statuses():
     }
     for raw, expected in cases.items():
         assert expected in activity._friendly_error(Exception(raw)), raw
+
+
+# ==========================================================================
+# SYNCING -- on-disk ABS library
+# ==========================================================================
+
+
+def test_start_sync_requires_library_dir(monkeypatch, tmp_path):
+    client = _make_client(
+        (
+            {
+                "id": 1,
+                "title": "Audio One",
+                "art_type": 1,
+                "persons": [{"full_name": "Author A", "role": "author"}],
+                "last_released_at": "2024-01-01",
+            },
+            [{"id": 100, "extension": "m4b", "file_type": "mobile_version_mp4", "is_additional": False, "size": 8}],
+        )
+    )
+    monkeypatch.delenv("LITRES_LIBRARY_DIR", raising=False)
+    assert activity.start_sync(client) is False
+
+
+def test_start_sync_writes_library(monkeypatch, tmp_path):
+    lib = tmp_path / "lib"
+    monkeypatch.setenv("LITRES_LIBRARY_DIR", str(lib))
+    client = _make_client(
+        (
+            {
+                "id": 1,
+                "title": "Audio One",
+                "art_type": 1,
+                "persons": [{"full_name": "Author A", "role": "author"}],
+                "last_released_at": "2024-01-01",
+            },
+            [{"id": 100, "extension": "m4b", "file_type": "mobile_version_mp4", "is_additional": False, "size": 8}],
+        )
+    )
+    assert activity.start_sync(client, audio_only=True) is True
+    snap = wait_until_idle(timeout=5.0)
+    assert snap["result"] == "done"
+    assert (lib / "Author A" / "Audio One" / "metadata.json").exists()

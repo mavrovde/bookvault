@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -54,6 +55,8 @@ except Exception:  # noqa: BLE001  # pragma: no cover - exercised only where cur
     _CURL_CFFI_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+_HTML_RE = re.compile(r"<[^>]+>")
 
 # These are facts about litres.ru itself, not settings -- not configurable.
 API_BASE = "https://api.litres.ru/foundation/api"
@@ -571,6 +574,79 @@ class LitresClient:
             "is_archived": bool(art.get("is_archived")),
             "rating_avg": rating.get("rated_avg"),
         }
+
+    @staticmethod
+    def normalize_art_details(art: dict, files: list | None = None) -> dict:
+        """`normalize_library_item` plus the fields that only exist on the
+        per-art detail endpoint (`GET .../arts/{id}`): the annotation, genres,
+        tags and ISBN. Used by the library sync to fill metadata.json; the
+        listing endpoint carries none of these.
+
+        Unlike list_library's payload this is fetched one art at a time and is
+        written to disk rather than into a context window, so it can afford to
+        be richer.
+        """
+        meta = LitresClient.normalize_library_item(art)
+
+        html = art.get("html_annotation") or art.get("annotation") or ""
+        description = _HTML_RE.sub("", html).strip() if html else ""
+
+        def _names(items):
+            out = []
+            for item in items or []:
+                name = item.get("name") if isinstance(item, dict) else item
+                if name:
+                    out.append(str(name))
+            return out
+
+        meta.update(
+            {
+                "isbn": art.get("isbn") or None,
+                "publication_date": art.get("publication_date") or art.get("date_written_at"),
+                "description": description or None,
+                "genres": _names(art.get("genres")),
+                "tags": _names(art.get("tags")),
+            }
+        )
+
+        if files is not None:
+            meta["files"] = [
+                {
+                    "id": f.get("id"),
+                    "filename": f.get("filename"),
+                    "extension": f.get("extension") or LitresClient.file_extension(f),
+                    "file_type": f.get("file_type"),
+                    "size": f.get("size"),
+                    "is_additional": bool(f.get("is_additional")),
+                }
+                for f in files
+            ]
+            best = LitresClient.pick_best_file(files)
+            meta["best_file"] = (
+                {
+                    "id": best.get("id"),
+                    "extension": LitresClient.file_extension(best),
+                    "file_type": best.get("file_type"),
+                    "size": best.get("size"),
+                }
+                if best is not None
+                else None
+            )
+
+        return meta
+
+    def get_art(self, art_id, should_cancel=None) -> dict:
+        """Fetch one art's detail payload from `GET .../arts/{id}`."""
+        resp = self._get_retrying(f"{API_BASE}/arts/{art_id}", should_cancel=should_cancel)
+        if not resp.ok:
+            logger.warning("Art detail fetch failed for %s: HTTP %s", art_id, resp.status)
+            raise LitresAuthError(
+                f"Could not fetch art {art_id} ({resp.status}): {resp.text()[:300]}"
+            )
+        data = (resp.json().get("payload") or {}).get("data")
+        if not data:
+            raise LitresAuthError(f"Could not fetch art {art_id}: empty payload")
+        return data
 
     def get_files(self, art_id, should_cancel=None) -> list:
         """Flat list of {id, extension, file_type, mime, size, is_additional} for one art."""

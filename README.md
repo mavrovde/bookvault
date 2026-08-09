@@ -32,6 +32,7 @@ It comes in **three flavours** that share the same backend and login/session cod
 - 🖼️ **A native desktop app** (macOS / Windows / Linux) — the web app in a real window, no browser or terminal. [Download for macOS](https://github.com/mavrovde/bookvault/releases/latest).
 - 🖥️ **A local web app** — browse your library, tick the books you want, choose a format, and download.
 - 🔌 **An MCP server** — so Claude (or any MCP client) can list your library and download titles as tools.
+- 📁 **On-disk library sync** — optional `LITRES_LIBRARY_DIR` writes an Audiobookshelf-friendly `Author/Title/metadata.json` tree (same shape as litres-downloader), via **Sync library** or background autosync.
 
 ---
 
@@ -217,7 +218,8 @@ The MCP server exposes your library to any MCP client (e.g. Claude Desktop) as t
 | `login_status()` | Whether there's an active session |
 | `login_to_litres(login, password)` | Log in and persist the session |
 | `list_library(limit)` | List your purchased titles with metadata (authors, narrators, series, dates, DRM flag) |
-| `download_book(art_id)` | Download one title to `LITRES_DOWNLOAD_DIR` |
+| `download_book(art_id)` | Download one title (into `LITRES_LIBRARY_DIR` when set, else flat `LITRES_DOWNLOAD_DIR`) |
+| `sync_library_now(audio_only)` | Sync purchased titles into `LITRES_LIBRARY_DIR` (Audiobookshelf layout) |
 
 **Install &amp; run (stdio):**
 
@@ -325,6 +327,11 @@ Credentials in `.env` are used by the **MCP server only** (it's headless and boo
 | `LITRES_SESSION_FILE` | `.litres_session.json` | Where the browser session (cookies) is cached between runs |
 | `LITRES_CACHE_FILE` | `.litres_cache.json` | Where the library/file-listing cache is stored |
 | `LITRES_STATE_FILE` | `.litres_state.json` | Where the shared UI state (selected books + format prefs) is stored, so every browser sees the same view (**web app only**) |
+| `LITRES_LIBRARY_DIR` | *(unset)* | Enables the on-disk library sync and sets its root. Unset means the feature is **off** — nothing is mirrored to disk |
+| `LITRES_AUTOSYNC` | `0` | Set to `1` for a periodic background sync into `LITRES_LIBRARY_DIR` (web app; requires the var above) |
+| `LITRES_AUTOSYNC_INTERVAL` | `21600` (6 h) | Seconds between autosync ticks, ±10% jitter. Floored at 15 min — a library only changes when you buy something |
+| `LITRES_AUTOSYNC_AUDIO_ONLY` | `1` | Sync only audiobooks (the case Audiobookshelf cares about). `0` syncs ebooks too |
+| `LITRES_AUTOSYNC_ON_START` | `1` | Run one sync shortly after the app boots |
 | `LITRES_LIBRARY_CACHE_TTL` | `900` (15 min) | How long the cached library listing stays fresh |
 | `LITRES_FILES_CACHE_TTL` | `604800` (7 days) | How long a book's cached file listing stays fresh |
 | `LITRES_DOWNLOAD_TIMEOUT_MS` | `300000` (5 min) | Per-file download timeout (audiobook bundles can be ~2GB) |

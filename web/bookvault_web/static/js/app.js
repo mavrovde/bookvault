@@ -1,8 +1,8 @@
 // The frontend is a thin renderer. It owns no activity/progress logic: the
 // backend runs a single state machine (see bookvault_web/activity.py) with states
-// idle | refreshing | checking | preparing | stopping and a terminal
+// idle | refreshing | checking | preparing | syncing | stopping and a terminal
 // `result` (done | cancelled | error). This file just:
-//   1. dispatches user actions to the backend (refresh / prepare / cancel),
+//   1. dispatches user actions to the backend (refresh / prepare / sync / cancel),
 //   2. polls GET /activity and paints whatever state it reports,
 //   3. renders the book list / filters / selection (pure display state).
 // Every enable/disable/label rule below is a pure function of the backend's
@@ -13,8 +13,9 @@ const state = { books: [], selected: new Set(), filter: '', typeFilter: 'all', s
 // this (plus, for Prepare, the selection count), so it's cached here for the
 // selection handlers that re-evaluate buttons between polls.
 let currentState = 'idle';
+let librarySyncEnabled = false;
 
-const BUSY_STATES = new Set(['refreshing', 'checking', 'preparing', 'stopping']);
+const BUSY_STATES = new Set(['refreshing', 'checking', 'preparing', 'syncing', 'stopping']);
 
 // Every button's enabled/label state is a pure function of the backend
 // `state` (plus selection count for Prepare) -- recomputed as a whole rather
@@ -23,9 +24,14 @@ function updateButtons() {
   const busy = BUSY_STATES.has(currentState);
   document.getElementById('refresh-library').disabled = busy;
   document.getElementById('start-download').disabled = busy || state.selected.size === 0;
+  const syncBtn = document.getElementById('sync-library');
+  if (syncBtn) {
+    syncBtn.style.display = librarySyncEnabled ? '' : 'none';
+    syncBtn.disabled = busy || !librarySyncEnabled;
+  }
 
   const cancelBtn = document.getElementById('cancel-download');
-  const stoppable = currentState === 'checking' || currentState === 'preparing';
+  const stoppable = currentState === 'checking' || currentState === 'preparing' || currentState === 'syncing';
   cancelBtn.disabled = !stoppable;
   cancelBtn.textContent = currentState === 'stopping' ? 'Stopping…' : 'Stop';
 }
@@ -190,6 +196,7 @@ const BADGE = {
   refreshing: ['Refreshing…', 'badge-running'],
   checking: ['Checking sizes…', 'badge-running'],
   preparing: ['Building zip…', 'badge-running'],
+  syncing: ['Syncing library…', 'badge-running'],
   stopping: ['Stopping…', 'badge-running'],
 };
 const RESULT_BADGE = {
@@ -348,6 +355,9 @@ async function poll() {
   }
   const prev = currentState;
   currentState = s.state;
+  if (typeof s.library_sync_enabled === 'boolean') {
+    librarySyncEnabled = s.library_sync_enabled;
+  }
 
   // A refresh reloads the library list itself -- once it leaves the
   // refreshing state, re-fetch the (now warm) /library so new titles show,
@@ -453,8 +463,27 @@ document.getElementById('start-download').addEventListener('click', async () => 
   document.getElementById('progress-section').scrollIntoView({ behavior: 'smooth' });
 });
 
+const syncLibraryBtn = document.getElementById('sync-library');
+if (syncLibraryBtn) {
+  syncLibraryBtn.addEventListener('click', async () => {
+    if (!librarySyncEnabled || BUSY_STATES.has(currentState)) return;
+    currentState = 'syncing';
+    updateButtons();
+    const data = await startActivity('/activity/sync', {
+      audio_only: true,
+      ebook_format: document.getElementById('ebook-format').value,
+      audiobook_format: document.getElementById('audiobook-format').value,
+    });
+    if (data && data.ok === false) {
+      alert('Could not start library sync: ' + (data.error || 'unknown error'));
+      return;
+    }
+    document.getElementById('progress-section').scrollIntoView({ behavior: 'smooth' });
+  });
+}
+
 document.getElementById('cancel-download').addEventListener('click', () => {
-  if (currentState !== 'checking' && currentState !== 'preparing') return;
+  if (currentState !== 'checking' && currentState !== 'preparing' && currentState !== 'syncing') return;
   // Optimistically show "Stopping…" so the click feels responsive even
   // though cancellation only takes effect between books/size fetches (see
   // bookvault_web/activity.py); the next poll confirms the real state.
