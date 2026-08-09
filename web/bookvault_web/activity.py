@@ -44,7 +44,12 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from bookvault_core import cache, session
-from bookvault_core.client import DownloadCancelled, LitresBlocked, LitresClient
+from bookvault_core.client import (
+    COVER_BASE,
+    DownloadCancelled,
+    LitresBlocked,
+    LitresClient,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,18 +126,24 @@ def _update(**changes) -> None:
 
 def build_books(client: LitresClient) -> list:
     """Turn the raw litres.ru library listing into the flat book shape the
-    web UI renders (id/title/authors/is_audio/cover_url)."""
+    web UI renders (id/title/authors/is_audio/cover_url).
+
+    Deliberately builds these five fields directly rather than going through
+    `normalize_library_item` and discarding the rest: this runs on the single
+    Playwright worker thread for every title on every refresh, and a page load
+    waits on it. The genuinely shared pieces -- the cover prefix, the
+    author-role filter, the title/id fallback -- are the helpers below, so the
+    two surfaces still can't drift on the rules that matter.
+    """
     books = []
     for art in client.iter_library():
-        authors = [p.get("full_name") for p in (art.get("persons") or []) if p.get("role") == "author"]
-        cover_url = art.get("cover_url")
         books.append(
             {
                 "id": art.get("id"),
-                "title": art.get("title") or str(art.get("id")),
-                "authors": ", ".join(a for a in authors if a),
+                "title": LitresClient.title_or_id(art),
+                "authors": ", ".join(LitresClient.person_names(art, "author")),
                 "is_audio": art.get("art_type") == 1,
-                "cover_url": f"https://static.litres.ru{cover_url}" if cover_url else None,
+                "cover_url": LitresClient._absolute(art.get("cover_url"), COVER_BASE),
             }
         )
     return books
