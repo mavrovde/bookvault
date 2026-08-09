@@ -423,6 +423,8 @@ There's also an **opt-in live smoke suite** (`tests/test_smoke_live.py`) that hi
 # or point it elsewhere: BOOKVAULT_BASE_URL=http://127.0.0.1:8420 pytest -m live
 ```
 
+Contributing? See **[`CONTRIBUTING.md`](CONTRIBUTING.md)** for the setup, the rules that matter (offline tests, the single Playwright worker thread, the deliberate `LITRES_*` naming), and how AI-assisted PRs are reviewed. This repo checks in its [Claude Code configuration](.claude/README.md) — per-area agent roles and skills for the repeatable workflows — so everyone gets the same setup.
+
 ---
 
 ## ⚖️ Legal &amp; fair use
