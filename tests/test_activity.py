@@ -17,6 +17,7 @@ import zipfile
 from bookvault_core import cache
 from bookvault_core.client import DownloadCancelled
 from bookvault_web import activity
+
 from tests.fakes import FakeLitresClient
 
 TEXT_FILES = [{"id": 100, "extension": "epub", "is_additional": False, "size": 1_000_000}]  # 1.0 MB
@@ -808,6 +809,131 @@ def test_a_build_with_no_successes_leaves_no_workdir_behind(monkeypatch):
     assert made and not pathlib.Path(made[0]).exists()
 
 
+# ==========================================================================
+# Auto-saving the finished archive into the configured folder
+# ==========================================================================
+
+
+def test_finished_archive_is_moved_into_the_destination_folder(tmp_path):
+    dest = tmp_path / "MyBooks"
+    client = _make_client(_book(1, "Book A", TEXT_FILES))
+    activity.prepare(client, dest_dir=dest)
+    snap = wait_until_idle()
+
+    saved = list(dest.glob("litres-library-*.zip"))
+    assert len(saved) == 1
+    # Both the download route and the "Saved to ..." line point at it.
+    assert snap["zip_path"] == str(saved[0])
+    assert snap["saved_path"] == str(saved[0])
+    with zipfile.ZipFile(saved[0]) as zf:
+        assert zf.namelist() == ["Book A.epub"]
+
+
+def test_the_destination_folder_is_created_if_missing(tmp_path):
+    dest = tmp_path / "nested" / "deeper"
+    client = _make_client(_book(1, "Book A", TEXT_FILES))
+    activity.prepare(client, dest_dir=dest)
+    wait_until_idle()
+    assert list(dest.glob("*.zip"))
+
+
+def test_saving_moves_the_zip_out_and_removes_the_workdir(tmp_path):
+    """Once the archive is in the user's folder the temp workdir holds
+    nothing worth keeping -- it must go immediately, not at the next build."""
+    dest = tmp_path / "out"
+    client = _make_client(_book(1, "Book A", TEXT_FILES))
+    activity.prepare(client, dest_dir=dest)
+    wait_until_idle()
+    assert activity._state["workdir"] is None
+    assert not list(tmp_path.glob("litres-*/"))  # nothing staged left behind
+
+
+def test_a_new_build_never_deletes_the_users_download_folder(tmp_path):
+    """Regression: prepare() used to rmtree Path(previous_zip).parent, which
+    once the archive lives in the user's own folder would delete that folder
+    and everything else in it."""
+    dest = tmp_path / "Downloads"
+    dest.mkdir()
+    bystander = dest / "tax-return.pdf"
+    bystander.write_bytes(b"important")
+
+    client = _make_client(_book(1, "Book A", TEXT_FILES))
+    activity.prepare(client, dest_dir=dest)
+    first = pathlib.Path(wait_until_idle()["saved_path"])
+
+    activity.prepare(client, dest_dir=dest)
+    wait_until_idle()
+
+    assert dest.exists()
+    assert bystander.read_bytes() == b"important"
+    assert first.exists()  # the previous archive is the user's to keep
+
+
+def test_two_builds_in_the_same_second_do_not_collide(tmp_path, monkeypatch):
+    """The name is timestamped to the second, so two quick builds would
+    otherwise land on the same filename."""
+    monkeypatch.setattr(activity.time, "strftime", lambda fmt: "20260809-120000")
+    dest = tmp_path / "out"
+    client = _make_client(_book(1, "Book A", TEXT_FILES))
+    for _ in range(2):
+        activity.prepare(client, dest_dir=dest)
+        wait_until_idle()
+
+    names = sorted(p.name for p in dest.glob("*.zip"))
+    assert names == ["litres-library-20260809-120000 (2).zip", "litres-library-20260809-120000.zip"]
+
+
+def test_an_unwritable_destination_keeps_the_archive_downloadable(tmp_path):
+    """A build can take hours -- if the folder turns out to be unusable, the
+    archive stays in temp and is still offered rather than being thrown away."""
+    blocker = tmp_path / "not-a-folder"
+    blocker.write_text("I am a file")  # mkdir(parents=True) will raise
+
+    client = _make_client(_book(1, "Book A", TEXT_FILES))
+    activity.prepare(client, dest_dir=blocker / "sub")
+    snap = wait_until_idle()
+
+    assert snap["saved_path"] is None
+    assert snap["zip_path"] and pathlib.Path(snap["zip_path"]).exists()
+    assert "Couldn't save" in snap["message"]
+    # Still tracked, so the next prepare() cleans it up.
+    assert activity._state["workdir"] == str(pathlib.Path(snap["zip_path"]).parent)
+
+
+def test_a_failed_build_writes_nothing_into_the_destination(tmp_path):
+    """Nothing is ever put in the user's folder until a build succeeds."""
+    dest = tmp_path / "out"
+    client = _make_client(_book(1, "Book A", TEXT_FILES))
+    client.fail_downloads = {1}
+    activity.prepare(client, dest_dir=dest)
+    snap = wait_until_idle()
+
+    assert snap["zip_path"] is None and snap["saved_path"] is None
+    assert not dest.exists()
+
+
+def test_without_a_destination_the_archive_stays_in_temp(tmp_path):
+    """dest_dir=None is the opt-out: unchanged pre-existing behaviour."""
+    client = _make_client(_book(1, "Book A", TEXT_FILES))
+    activity.prepare(client, dest_dir=None)
+    snap = wait_until_idle()
+
+    assert snap["saved_path"] is None
+    assert pathlib.Path(snap["zip_path"]).exists()
+
+
+def test_saved_path_survives_a_later_size_check(tmp_path):
+    """Same durability guarantee as zip_path -- the "Saved to ..." line must
+    survive the sweep that fires on the next page load."""
+    dest = tmp_path / "out"
+    client = _make_client(_book(1, "Book A", TEXT_FILES))
+    activity.prepare(client, dest_dir=dest)
+    saved = wait_until_idle()["saved_path"]
+
+    activity.check_sizes(client, live=False)
+    assert wait_until_idle()["saved_path"] == saved
+
+
 def test_a_crashed_build_removes_its_workdir(monkeypatch):
     import tempfile as tempfile_mod
 
@@ -870,3 +996,46 @@ def test_friendly_error_maps_common_statuses():
     }
     for raw, expected in cases.items():
         assert expected in activity._friendly_error(Exception(raw)), raw
+
+
+# ==========================================================================
+# SYNCING -- on-disk ABS library
+# ==========================================================================
+
+
+def test_start_sync_requires_library_dir(monkeypatch, tmp_path):
+    client = _make_client(
+        (
+            {
+                "id": 1,
+                "title": "Audio One",
+                "art_type": 1,
+                "persons": [{"full_name": "Author A", "role": "author"}],
+                "last_released_at": "2024-01-01",
+            },
+            [{"id": 100, "extension": "m4b", "file_type": "mobile_version_mp4", "is_additional": False, "size": 8}],
+        )
+    )
+    monkeypatch.delenv("LITRES_LIBRARY_DIR", raising=False)
+    assert activity.start_sync(client) is False
+
+
+def test_start_sync_writes_library(monkeypatch, tmp_path):
+    lib = tmp_path / "lib"
+    monkeypatch.setenv("LITRES_LIBRARY_DIR", str(lib))
+    client = _make_client(
+        (
+            {
+                "id": 1,
+                "title": "Audio One",
+                "art_type": 1,
+                "persons": [{"full_name": "Author A", "role": "author"}],
+                "last_released_at": "2024-01-01",
+            },
+            [{"id": 100, "extension": "m4b", "file_type": "mobile_version_mp4", "is_additional": False, "size": 8}],
+        )
+    )
+    assert activity.start_sync(client, audio_only=True) is True
+    snap = wait_until_idle(timeout=5.0)
+    assert snap["result"] == "done"
+    assert (lib / "Author A" / "Audio One" / "metadata.json").exists()

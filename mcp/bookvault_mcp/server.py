@@ -22,11 +22,12 @@ import os
 from pathlib import Path
 
 import anyio
-from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
-
 from bookvault_core import session
 from bookvault_core.client import LitresAuthError, LitresClient
+from bookvault_core.library_fs import library_root_from_env
+from bookvault_core.library_sync import sync_library, sync_one
+from dotenv import load_dotenv
+from mcp.server.fastmcp import FastMCP
 
 load_dotenv()
 
@@ -35,6 +36,11 @@ logger = logging.getLogger(__name__)
 mcp = FastMCP("bookvault")
 
 DOWNLOAD_DIR = Path(os.environ.get("LITRES_DOWNLOAD_DIR", str(Path.home() / "Downloads" / "litres-library")))
+
+# Ceiling on how many titles list_library will return in one call. The result
+# goes straight into the caller's context window, so an unbounded listing of a
+# large account is a real failure mode, not a theoretical one.
+MAX_LIST_LIMIT = 500
 
 
 async def _ensure_logged_in() -> None:
@@ -77,21 +83,36 @@ async def login_to_litres(login: str, password: str) -> dict:
 
 @mcp.tool()
 async def list_library(limit: int = 50) -> list:
-    """List up to `limit` purchased litres.ru items with full library metadata.
+    """List up to `limit` purchased litres.ru items with their metadata.
 
-    Each item is shaped by `LitresClient.normalize_library_item` and includes
-    id/title/authors/narrators/series/cover/url/is_audio/purchased_at/dates/
-    language/rating/DRM flags and related fields available on the library
-    listing endpoint (not detail-only fields like ISBN or HTML annotation).
+    Each item is shaped by `LitresClient.normalize_library_item`: id, uuid,
+    title, subtitle, authors, narrators, series, is_audio, language_code,
+    cover_url, url, purchase/release dates, symbols_count, DRM and archived
+    flags, and the average rating.
+
+    Deliberately not the full API record -- storefront data (prices, labels),
+    layout data (cover dimensions) and internal ids are omitted, since this
+    result goes into the caller's context window. Detail-only fields such as
+    ISBN, genres and the HTML annotation aren't on the listing endpoint at all.
+
+    `limit` is clamped to 1..MAX_LIST_LIMIT.
     """
     await _ensure_logged_in()
     client = session.current_client()
 
+    # A model can pass anything here. Clamp rather than trusting it: 0 or a
+    # negative would otherwise still yield one item (the bound is checked
+    # after the first append) *and* send `?limit=0` upstream, and an
+    # unbounded value would page the entire library into a context window.
+    wanted = max(1, min(int(limit), MAX_LIST_LIMIT))
+
     def _sync():
         items = []
-        for art in client.iter_library(limit=limit):
+        # The per-page size sent to litres.ru, capped so one call can't turn
+        # into an enormous listing request.
+        for art in client.iter_library(limit=min(wanted, 100)):
             items.append(LitresClient.normalize_library_item(art))
-            if len(items) >= limit:
+            if len(items) >= wanted:
                 break
         return items
 
@@ -100,12 +121,55 @@ async def list_library(limit: int = 50) -> list:
 
 @mcp.tool()
 async def download_book(art_id: int) -> dict:
-    """Download one purchased book/audiobook by its art id to a local
-    folder (~/Downloads/litres-library), returning the saved file path."""
+    """Download one purchased book/audiobook by its art id.
+
+    When LITRES_LIBRARY_DIR is set, installs into the ABS-compatible
+    Author/Title library (with metadata.json). Otherwise saves a flat file
+    under LITRES_DOWNLOAD_DIR (default ~/Downloads/litres-library).
+    """
     await _ensure_logged_in()
     client = session.current_client()
+    library_root = library_root_from_env()
 
     def _sync():
+        if library_root is not None:
+            # One detail request, not a walk of the whole library. The previous
+            # shape paged through every purchased title looking for this id --
+            # for a large account that's a run of listing requests before a
+            # single byte is downloaded, which is exactly the cadence the
+            # anti-bot layer notices. The listing row is only used as a
+            # fallback if the detail endpoint has nothing.
+            art = None
+            try:
+                art = client.get_art(art_id)
+            except Exception as exc:  # noqa: BLE001 -- fall back to the listing below
+                logger.info("Art detail lookup failed for %s, falling back to the listing: %s", art_id, exc)
+            if art is None:
+                art = next(
+                    (item for item in client.iter_library() if item.get("id") == art_id),
+                    None,
+                )
+            if art is None:
+                logger.warning("Art %s not found in the library or via the detail endpoint", art_id)
+                return {"ok": False, "error": f"Could not look up art {art_id} on litres.ru."}
+            row = sync_one(client, library_root, art)
+            if row.get("status") == "done":
+                return {
+                    "ok": True,
+                    "path": row.get("path"),
+                    "status": "done",
+                    "layout": "library",
+                }
+            if row.get("status") == "skipped":
+                return {
+                    "ok": True,
+                    "path": row.get("path"),
+                    "status": "skipped",
+                    "reason": row.get("reason"),
+                    "layout": "library",
+                }
+            return {"ok": False, "error": row.get("error") or row.get("reason") or "download failed"}
+
         files = client.get_files(art_id)
         best = client.pick_best_file(files)
         if best is None:
@@ -114,7 +178,29 @@ async def download_book(art_id: int) -> dict:
         DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
         dest = DOWNLOAD_DIR / f"{art_id}.{ext}"
         client.download_file(art_id, best["id"], dest.name, dest)
-        return {"ok": True, "path": str(dest), "size_bytes": dest.stat().st_size}
+        return {"ok": True, "path": str(dest), "size_bytes": dest.stat().st_size, "layout": "flat"}
+
+    return await session.run_async(_sync)
+
+
+@mcp.tool()
+async def sync_library_now(audio_only: bool = True) -> dict:
+    """Sync purchased titles into LITRES_LIBRARY_DIR (ABS Author/Title layout).
+
+    Requires LITRES_LIBRARY_DIR. Returns counts and a per-title log.
+    """
+    root = library_root_from_env()
+    if root is None:
+        return {
+            "ok": False,
+            "error": "LITRES_LIBRARY_DIR is not set — configure an on-disk library path first.",
+        }
+    await _ensure_logged_in()
+    client = session.current_client()
+
+    def _sync():
+        summary = sync_library(client, root, audio_only=audio_only)
+        return {"ok": True, **summary}
 
     return await session.run_async(_sync)
 

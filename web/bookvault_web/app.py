@@ -10,9 +10,15 @@ import logging
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
-from typing import List, Optional
 
 import anyio
+from bookvault_core import cache, session
+from bookvault_core.client import (
+    AUDIOBOOK_FILE_TYPES,
+    EBOOK_EXTENSIONS,
+    LitresAuthError,
+)
+from bookvault_core.library_fs import library_root_from_env
 from fastapi import FastAPI, Form
 from fastapi.requests import Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -20,10 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from bookvault_core import cache, session
-from bookvault_core.client import AUDIOBOOK_FILE_TYPES, EBOOK_EXTENSIONS, LitresAuthError
-
-from . import activity, prefs
+from . import activity, autosync, prefs
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +44,12 @@ async def lifespan(app: FastAPI):
     # keychain), and otherwise shows its login form. LITRES_LOGIN/PASSWORD
     # in .env are for the headless MCP server only (see session.py).
     await anyio.to_thread.run_sync(partial(session.restore_session, allow_env_login=False))
-    yield
-    await anyio.to_thread.run_sync(session.shutdown)
+    autosync.start_background_scheduler(session.current_client, prefs.snapshot)
+    try:
+        yield
+    finally:
+        autosync.stop_background_scheduler()
+        await anyio.to_thread.run_sync(session.shutdown)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -51,6 +58,8 @@ app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
+    saved = prefs.snapshot()
+    library_root = library_root_from_env()
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -60,10 +69,14 @@ def index(request: Request):
             "error": None,
             "ebook_formats": EBOOK_EXTENSIONS,
             "audiobook_formats": AUDIOBOOK_FILE_TYPES,
-            # Server-side format prefs, so the initial HTML already shows the
-            # saved choices (no flash before app.js hydrates the rest).
-            "ebook_format": prefs.snapshot()["ebook_format"],
-            "audiobook_format": prefs.snapshot()["audiobook_format"],
+            # Server-side prefs, so the initial HTML already shows the saved
+            # choices (no flash before app.js hydrates the rest).
+            "ebook_format": saved["ebook_format"],
+            "audiobook_format": saved["audiobook_format"],
+            "download_dir": saved["download_dir"],
+            "download_dir_effective": saved["download_dir_effective"],
+            "library_sync_enabled": library_root is not None,
+            "library_dir": str(library_root) if library_root else None,
         },
     )
 
@@ -113,7 +126,7 @@ def get_library(refresh: bool = False):
                 return {"ok": True, "books": stale}
     try:
         books = session.run(activity.build_books, client)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- any backend failure must surface as a clean 503, never a raw traceback
         # A transient network blip, an anti-bot block, or a session that
         # was replaced (logout/re-login) mid-request should surface as a
         # clean error the frontend can retry -- not a raw 500 with a
@@ -144,7 +157,7 @@ def get_book_size(art_id: int):
         return {"ok": True, "size_mb": activity.size_of_files(cached_files), "cached": True}
     try:
         size_mb, files = session.run(activity.fetch_size, client, art_id)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- a failed size fetch just leaves that book's size unknown
         # Best-effort -- a failed size fetch just leaves that book's size
         # unknown; a clean error here is enough, no need to retry serverside.
         logger.info("Size fetch failed for art %s: %s", art_id, exc)
@@ -162,17 +175,17 @@ def get_book_size(art_id: int):
 
 
 class PrepareRequest(BaseModel):
-    art_ids: Optional[List[int]] = None
-    ebook_format: Optional[str] = None
-    audiobook_format: Optional[str] = None
+    art_ids: list[int] | None = None
+    ebook_format: str | None = None
+    audiobook_format: str | None = None
     # Ids to resolve first during the size sweep that follows a refresh --
     # normally the user's current checkbox selection, so a selected book
     # isn't stuck behind a whole library's worth of others.
-    selected: Optional[List[int]] = None
+    selected: list[int] | None = None
 
 
 class SweepRequest(BaseModel):
-    selected: Optional[List[int]] = None
+    selected: list[int] | None = None
     # False = cache-only sweep (resolve sizes already on disk, no litres.ru
     # calls). The frontend's automatic on-load sweep sends False so merely
     # opening the app never fires a library's worth of size requests; the
@@ -183,9 +196,12 @@ class SweepRequest(BaseModel):
 class PrefsUpdate(BaseModel):
     # All optional: a caller pushes just the field(s) that changed (the
     # selection, or one format) without clobbering the others.
-    selected: Optional[List[int]] = None
-    ebook_format: Optional[str] = None
-    audiobook_format: Optional[str] = None
+    selected: list[int] | None = None
+    ebook_format: str | None = None
+    audiobook_format: str | None = None
+    # Folder a finished archive is saved into. "" clears it back to the
+    # LITRES_DOWNLOAD_DIR default (None here means "leave alone", as above).
+    download_dir: str | None = None
 
 
 @app.get("/activity")
@@ -193,7 +209,13 @@ def get_activity():
     # Fold the shared UI state (selection + formats) into the poll response the
     # frontend already fetches, so every open browser converges on the same
     # ticked books and format choices -- not just the same progress.
-    return {**activity.snapshot(), "prefs": prefs.snapshot()}
+    root = library_root_from_env()
+    return {
+        **activity.snapshot(),
+        "prefs": prefs.snapshot(),
+        "library_sync_enabled": root is not None,
+        "library_dir": str(root) if root else None,
+    }
 
 
 @app.get("/prefs")
@@ -203,11 +225,21 @@ def get_prefs():
 
 @app.post("/prefs")
 def set_prefs(req: PrefsUpdate):
-    updated = prefs.update(
-        selected=req.selected,
-        ebook_format=req.ebook_format,
-        audiobook_format=req.audiobook_format,
-    )
+    try:
+        updated = prefs.update(
+            selected=req.selected,
+            ebook_format=req.ebook_format,
+            audiobook_format=req.audiobook_format,
+            download_dir=req.download_dir,
+        )
+    except prefs.InvalidDownloadDir as exc:
+        # An unusable destination folder. Reject it now, while the user is
+        # looking at the field -- not at the end of a multi-gigabyte build.
+        # The message is looked up from a fixed table rather than taken from
+        # the exception, so no internal/filesystem detail can leak into the
+        # response (CodeQL py/stack-trace-exposure).
+        message = prefs.DOWNLOAD_DIR_ERRORS.get(exc.code, "That folder can't be used.")
+        return JSONResponse({"ok": False, "error": message}, status_code=400)
     return {"ok": True, **updated}
 
 
@@ -229,6 +261,42 @@ def check_activity(req: SweepRequest):
     return {"ok": True, "started": started}
 
 
+class SyncRequest(BaseModel):
+    audio_only: bool = True
+    ebook_format: str | None = None
+    audiobook_format: str | None = None
+    # Optional subset; None = entire library (subject to audio_only).
+    art_ids: list[int] | None = None
+
+
+@app.post("/activity/sync")
+def sync_activity(req: SyncRequest):
+    client = session.current_client()
+    if client is None:
+        return JSONResponse({"ok": False, "error": "Not logged in"}, status_code=401)
+    if library_root_from_env() is None:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "LITRES_LIBRARY_DIR is not configured — set it to an on-disk library path.",
+            },
+            status_code=400,
+        )
+    art_ids = set(req.art_ids) if req.art_ids is not None else None
+    # Prefer explicit request formats, else server prefs.
+    p = prefs.snapshot()
+    started = activity.start_sync(
+        client,
+        audio_only=req.audio_only,
+        preferred_ext=req.ebook_format if req.ebook_format is not None else p.get("ebook_format"),
+        preferred_file_type=req.audiobook_format
+        if req.audiobook_format is not None
+        else p.get("audiobook_format"),
+        art_ids=art_ids,
+    )
+    return {"ok": True, "started": started}
+
+
 @app.post("/activity/prepare")
 def prepare_activity(req: PrepareRequest):
     client = session.current_client()
@@ -240,7 +308,13 @@ def prepare_activity(req: PrepareRequest):
     if req.art_ids is not None and len(req.art_ids) == 0:
         return JSONResponse({"ok": False, "error": "No books selected"}, status_code=400)
     art_ids = set(req.art_ids) if req.art_ids is not None else None
-    started = activity.prepare(client, art_ids, req.ebook_format, req.audiobook_format)
+    # Resolved here rather than inside activity.py, so the state machine stays
+    # free of prefs -- same as the two format preferences, which the frontend
+    # sends along with the request.
+    started = activity.prepare(
+        client, art_ids, req.ebook_format, req.audiobook_format,
+        dest_dir=prefs.resolve_download_dir(),
+    )
     return {"ok": True, "started": started}
 
 

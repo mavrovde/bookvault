@@ -14,14 +14,16 @@ module makes that implicit constraint the explicit contract:
     IDLE -> REFRESHING  -> (CHECKING) -> IDLE     (reload the library list)
     IDLE -> CHECKING                  -> IDLE     (paced per-book size sweep)
     IDLE -> PREPARING                 -> IDLE     (build the download zip)
-    CHECKING/PREPARING -> STOPPING    -> IDLE     (cancel the current activity)
+    IDLE -> SYNCING                   -> IDLE     (on-disk ABS library sync)
+    CHECKING/PREPARING/SYNCING -> STOPPING -> IDLE (cancel the current activity)
 
-Only one activity may be in flight; `refresh`/`check_sizes`/`prepare` all
-no-op (return False) if the state isn't IDLE. When an activity finishes it
-returns to IDLE and records the outcome in `result` (done | cancelled |
-error) plus a human `message`, so the UI can show "what just happened"
-while sitting idle. The frontend polls `snapshot()` and renders whatever
-state it reports -- it owns no activity logic of its own.
+Only one activity may be in flight; `refresh`/`check_sizes`/`prepare`/
+`start_sync` all no-op (return False) if the state isn't IDLE. When an
+activity finishes it returns to IDLE and records the outcome in `result`
+(done | cancelled | error) plus a human `message`, so the UI can show
+"what just happened" while sitting idle. The frontend polls `snapshot()`
+and renders whatever state it reports -- it owns no activity logic of its
+own.
 
 Cancellation is cooperative. Between books/size fetches the loop checks the
 cancel event, and *within* a download `client.download_file` polls it
@@ -42,10 +44,16 @@ import threading
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
-from typing import Optional
 
 from bookvault_core import cache, session
-from bookvault_core.client import DownloadCancelled, LitresBlocked, LitresClient
+from bookvault_core.client import (
+    COVER_BASE,
+    DownloadCancelled,
+    LitresBlocked,
+    LitresClient,
+)
+from bookvault_core.library_fs import library_root_from_env
+from bookvault_core.library_sync import sync_library
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +65,7 @@ IDLE = "idle"
 REFRESHING = "refreshing"
 CHECKING = "checking"
 PREPARING = "preparing"
+SYNCING = "syncing"
 STOPPING = "stopping"
 
 # Gap between *live* (uncached) per-book size fetches during a sweep. A
@@ -86,15 +95,22 @@ _state = {
     "error": None,          # raw-ish error line for the UI when result == "error"
     "sizes": {},            # {art_id: size_mb|None} resolved during a sweep, for the UI to paint rows
     "zip_path": None,       # path to the built zip, for the /download/file route
+    "saved_path": None,     # where the archive was auto-saved (the configured download
+                            # folder), or None when it stayed in its temp workdir. Durable
+                            # alongside zip_path so the "Saved to ..." line survives a reload.
+    "workdir": None,        # temp dir of the last build, kept ONLY so the next prepare() can
+                            # delete it. Never derive this from zip_path: once the archive is
+                            # moved into the user's folder, its parent is the USER's folder.
 }
 
 
 def snapshot() -> dict:
     """A safe copy of the current state for the UI to render. The `log` and
-    `sizes` collections are copied so a caller can't mutate the live ones."""
+    `sizes` collections are copied so a caller can't mutate the live ones;
+    `workdir` is internal bookkeeping and is not part of the wire shape."""
     with _lock:
         return {
-            **_state,
+            **{k: v for k, v in _state.items() if k != "workdir"},
             "log": list(_state["log"]),
             "results": list(_state["results"]),
             "sizes": dict(_state["sizes"]),
@@ -117,26 +133,28 @@ def build_books(client: LitresClient) -> list:
     """Turn the raw litres.ru library listing into the flat book shape the
     web UI renders (id/title/authors/is_audio/cover_url).
 
-    Built on `LitresClient.normalize_library_item` so web and MCP share one
-    metadata mapping; the UI keeps its slim card fields, while MCP returns
-    the full normalized dict.
+    Deliberately builds these five fields directly rather than going through
+    `normalize_library_item` and discarding the rest: this runs on the single
+    Playwright worker thread for every title on every refresh, and a page load
+    waits on it. The genuinely shared pieces -- the cover prefix, the
+    author-role filter, the title/id fallback -- are the helpers below, so the
+    two surfaces still can't drift on the rules that matter.
     """
     books = []
     for art in client.iter_library():
-        meta = LitresClient.normalize_library_item(art)
         books.append(
             {
-                "id": meta["id"],
-                "title": meta["title"],
-                "authors": meta["authors_str"],
-                "is_audio": meta["is_audio"],
-                "cover_url": meta["cover_url"],
+                "id": art.get("id"),
+                "title": LitresClient.title_or_id(art),
+                "authors": ", ".join(LitresClient.person_names(art, "author")),
+                "is_audio": art.get("art_type") == 1,
+                "cover_url": LitresClient._absolute(art.get("cover_url"), COVER_BASE),
             }
         )
     return books
 
 
-def size_of_files(files: list) -> Optional[float]:
+def size_of_files(files: list) -> float | None:
     """MB of the best downloadable file in a listing, or None if there's no
     downloadable file at all."""
     best = LitresClient.pick_best_file(files)
@@ -144,7 +162,7 @@ def size_of_files(files: list) -> Optional[float]:
     return round(size / 1e6, 1) if size else None
 
 
-def fetch_size(client: LitresClient, art_id, should_cancel=None) -> tuple[Optional[float], list]:
+def fetch_size(client: LitresClient, art_id, should_cancel=None) -> tuple[float | None, list]:
     """Live-fetch a book's file listing and return (size_mb, files).
     `should_cancel` lets an anti-bot backoff inside get_files be interrupted
     by a Stop rather than blocking the sweep for the full retry window."""
@@ -179,14 +197,15 @@ def _begin(state: str, *, total=None, message="") -> bool:
             error=None,
             sizes={},
         )
-    # Note: `zip_path` and `results` are intentionally NOT reset here, so a
-    # finished build's download link and results view survive the size-check
-    # that fires on the next page load. Only a new prepare() replaces them.
+    # Note: `zip_path`, `saved_path` and `results` are intentionally NOT reset
+    # here, so a finished build's download link, "Saved to ..." line and
+    # results view survive the size-check that fires on the next page load.
+    # Only a new prepare() replaces them.
     _cancel_event.clear()
     return True
 
 
-def refresh(client: LitresClient, selected: Optional[list] = None) -> bool:
+def refresh(client: LitresClient, selected: list | None = None) -> bool:
     """Reload the library listing from litres.ru (REFRESHING), then sweep
     book sizes (CHECKING). Returns False if an activity is already running."""
     if not _begin(REFRESHING, message="Reloading your library list from litres.ru…"):
@@ -196,7 +215,7 @@ def refresh(client: LitresClient, selected: Optional[list] = None) -> bool:
     return True
 
 
-def check_sizes(client: LitresClient, selected: Optional[list] = None, live: bool = True) -> bool:
+def check_sizes(client: LitresClient, selected: list | None = None, live: bool = True) -> bool:
     """Sweep the cached library's book sizes (CHECKING), paced to be gentle
     on litres.ru. `selected` ids, if given, are checked first. When
     `live` is False the sweep is *cache-only*: it resolves sizes already on
@@ -214,13 +233,17 @@ def check_sizes(client: LitresClient, selected: Optional[list] = None, live: boo
 
 def prepare(
     client: LitresClient,
-    art_ids: Optional[set] = None,
-    preferred_ext: Optional[str] = None,
-    preferred_file_type: Optional[str] = None,
+    art_ids: set | None = None,
+    preferred_ext: str | None = None,
+    preferred_file_type: str | None = None,
+    dest_dir: Path | None = None,
 ) -> bool:
     """Build a zip of the selected books in the background (PREPARING).
     `art_ids` None/empty means "everything"; a specific set restricts the
-    zip to those ids. Returns False if an activity is already running."""
+    zip to those ids. `dest_dir`, when given, is the folder a *successful*
+    archive is moved into (see prefs.resolve_download_dir); None leaves it in
+    its temp workdir, reachable only via /download/file. Returns False if an
+    activity is already running."""
     total = len(art_ids) if art_ids is not None else None
     if not _begin(PREPARING, total=total):
         return False
@@ -228,29 +251,143 @@ def prepare(
     # download link (_begin leaves both untouched so they survive size-checks,
     # so clear them explicitly here for the fresh build).
     with _lock:
-        previous_zip = _state["zip_path"]
-        _state.update(results=[], zip_path=None)
-    # Each build gets its own mkdtemp workdir; once superseded, the previous
-    # build's zip (potentially many GB) is unreachable -- delete its whole
-    # workdir rather than leaking it until the OS cleans the temp dir.
-    if previous_zip:
-        shutil.rmtree(Path(previous_zip).parent, ignore_errors=True)
+        previous_workdir = _state["workdir"]
+        _state.update(results=[], zip_path=None, saved_path=None, workdir=None)
+    # Each build gets its own mkdtemp workdir; once superseded, whatever is
+    # left in the previous one (potentially a many-GB zip) is unreachable --
+    # delete it rather than leaking it until the OS cleans the temp dir.
+    # Deliberately the recorded workdir, NOT Path(previous_zip).parent: an
+    # auto-saved archive lives in the user's own folder, and rmtree-ing its
+    # parent would delete that folder and everything else in it.
+    if previous_workdir:
+        shutil.rmtree(previous_workdir, ignore_errors=True)
     logger.info(
-        "Starting zip build: %s, ebook_format=%s, audiobook_format=%s",
+        "Starting zip build: %s, ebook_format=%s, audiobook_format=%s, dest=%s",
         f"{len(art_ids)} selected book(s)" if art_ids is not None else "entire library",
         preferred_ext,
         preferred_file_type,
+        dest_dir or "(temp only)",
     )
-    session.submit(_run_prepare, client, art_ids, preferred_ext, preferred_file_type)
+    session.submit(_run_prepare, client, art_ids, preferred_ext, preferred_file_type, dest_dir)
     return True
+
+
+def start_sync(
+    client: LitresClient,
+    *,
+    audio_only: bool = True,
+    preferred_ext: str | None = None,
+    preferred_file_type: str | None = None,
+    art_ids: set | None = None,
+) -> bool:
+    """Sync purchased titles into LITRES_LIBRARY_DIR (SYNCING).
+
+    Returns False if library dir is unset or another activity is running.
+    """
+    root = library_root_from_env()
+    if root is None:
+        logger.info("start_sync ignored -- LITRES_LIBRARY_DIR is not set")
+        return False
+    if not _begin(SYNCING, message="Syncing library to disk…"):
+        return False
+    logger.info(
+        "Starting on-disk library sync into %s (audio_only=%s)",
+        root,
+        audio_only,
+    )
+    session.submit(
+        _run_sync,
+        client,
+        root,
+        audio_only,
+        preferred_ext,
+        preferred_file_type,
+        art_ids,
+    )
+    return True
+
+
+def _run_sync(
+    client: LitresClient,
+    root,
+    audio_only: bool,
+    preferred_ext: str | None,
+    preferred_file_type: str | None,
+    art_ids: set | None,
+) -> None:
+    try:
+        def on_progress(title, done, total):
+            _update(
+                current_title=title or None,
+                done=done,
+                total=total if total else None,
+                message=f"Syncing “{title}”…" if title else "Finishing library sync…",
+            )
+
+        summary = sync_library(
+            client,
+            root,
+            audio_only=audio_only,
+            preferred_ext=preferred_ext,
+            preferred_file_type=preferred_file_type,
+            should_cancel=_cancel_event.is_set,
+            on_progress=on_progress,
+            art_ids=art_ids,
+        )
+        cancelled = bool(summary.get("cancelled")) or _cancel_event.is_set()
+        done = summary.get("done", 0)
+        skipped = summary.get("skipped", 0)
+        failed = summary.get("failed", 0)
+        if cancelled:
+            message = (
+                f"Stopped library sync — saved {done}, skipped {skipped}, "
+                f"failed {failed}."
+            )
+        else:
+            message = (
+                f"Library sync finished — saved {done}, skipped {skipped}, "
+                f"failed {failed}."
+            )
+        with _lock:
+            _state.update(
+                state=IDLE,
+                result="cancelled" if cancelled else "done",
+                message=message,
+                current_title=None,
+                current_downloaded=None,
+                current_total=None,
+                log=list(summary.get("log") or []),
+                results=list(summary.get("log") or []),
+                done=done,
+                total=summary.get("total"),
+            )
+        logger.info(
+            "Library sync %s: done=%s skipped=%s failed=%s root=%s",
+            "cancelled" if cancelled else "finished",
+            done,
+            skipped,
+            failed,
+            root,
+        )
+    except Exception as exc:
+        logger.exception("Library sync crashed")
+        _update(
+            state=IDLE,
+            result="error",
+            error=_friendly_error(exc),
+            current_title=None,
+            current_downloaded=None,
+            current_total=None,
+            message="",
+        )
 
 
 def cancel() -> bool:
     """Ask the running activity to stop before its next book/size fetch.
-    Only CHECKING and PREPARING are cancellable. Returns False if there's
+    CHECKING, PREPARING, and SYNCING are cancellable. Returns False if there's
     nothing stoppable in progress."""
     with _lock:
-        if _state["state"] not in (CHECKING, PREPARING):
+        if _state["state"] not in (CHECKING, PREPARING, SYNCING):
             return False
         _state["state"] = STOPPING
     logger.info("Cancellation requested")
@@ -264,7 +401,7 @@ def cancel() -> bool:
 # --------------------------------------------------------------------------
 
 
-def _pending_size_ids(books: list, selected: Optional[list]) -> list:
+def _pending_size_ids(books: list, selected: list | None) -> list:
     """Ids of books still needing a size, selected ones first so checking a
     box doesn't mean waiting behind a whole library's worth of others."""
     ids = [b["id"] for b in books]
@@ -276,7 +413,7 @@ def _pending_size_ids(books: list, selected: Optional[list]) -> list:
     return ids
 
 
-def _sweep_sizes(client: LitresClient, books: list, selected: Optional[list], do_live: bool = True) -> None:
+def _sweep_sizes(client: LitresClient, books: list, selected: list | None, do_live: bool = True) -> None:
     """The paced per-book size loop. Assumes the machine is already in
     CHECKING (or will be moved to STOPPING by cancel()). Always lands back
     at IDLE with a result of done or cancelled.
@@ -304,7 +441,7 @@ def _sweep_sizes(client: LitresClient, books: list, selected: Optional[list], do
                 size_mb, files = fetch_size(client, art_id, should_cancel=_cancel_event.is_set)
                 cache.set_files(art_id, files)
                 live = True
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 -- one book's size failing must not abort the whole sweep
                 # Best-effort, same as the old frontend loop: leave this row's
                 # size blank and move on rather than aborting the whole sweep.
                 logger.info("Size fetch failed for art %s: %s", art_id, exc)
@@ -337,7 +474,7 @@ def _sweep_sizes(client: LitresClient, books: list, selected: Optional[list], do
     )
 
 
-def _run_check(client: LitresClient, selected: Optional[list], live: bool = True) -> None:
+def _run_check(client: LitresClient, selected: list | None, live: bool = True) -> None:
     try:
         books = cache.get_library() or []
         _sweep_sizes(client, books, selected, do_live=live)
@@ -346,11 +483,11 @@ def _run_check(client: LitresClient, selected: Optional[list], live: bool = True
         _update(state=IDLE, result="error", error=_friendly_error(exc), message="")
 
 
-def _run_refresh(client: LitresClient, selected: Optional[list]) -> None:
+def _run_refresh(client: LitresClient, selected: list | None) -> None:
     try:
         books = build_books(client)
         cache.set_library(books)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- a refresh failing must leave the machine IDLE, not wedged
         # A transient blip / anti-bot block / stale client after a
         # login-logout race shouldn't crash the machine -- surface a clean,
         # retryable message and go back to idle.
@@ -421,11 +558,31 @@ def _add_to_zip(zf: zipfile.ZipFile, dest: Path, safe_title: str, is_audio: bool
         zf.write(dest, arcname=dest.name, compress_type=zipfile.ZIP_STORED)
 
 
+def _save_archive(zip_path: Path, dest_dir: Path) -> Path:
+    """Move a finished archive out of its temp workdir into the user's chosen
+    folder, under a timestamped name. Timestamped rather than fixed so a new
+    build never silently overwrites an archive the user still wants; the
+    numeric suffix settles the (unlikely) same-second collision. Returns the
+    saved path. Raises OSError if the folder can't be written."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"litres-library-{time.strftime('%Y%m%d-%H%M%S')}"
+    target = dest_dir / f"{stem}.zip"
+    n = 2
+    while target.exists():
+        target = dest_dir / f"{stem} ({n}).zip"
+        n += 1
+    # shutil.move, not os.replace: the download folder is very often on a
+    # different filesystem than the temp dir (external drive, network share).
+    shutil.move(str(zip_path), str(target))
+    return target
+
+
 def _run_prepare(
     client: LitresClient,
-    art_ids: Optional[set],
-    preferred_ext: Optional[str],
-    preferred_file_type: Optional[str],
+    art_ids: set | None,
+    preferred_ext: str | None,
+    preferred_file_type: str | None,
+    dest_dir: Path | None = None,
 ) -> None:
     workdir = Path(tempfile.mkdtemp(prefix="litres-"))
     zip_path = workdir / "litres-library.zip"
@@ -491,8 +648,12 @@ def _run_prepare(
                     client.download_file(
                         art_id, best["id"], dest.name, dest,
                         should_cancel=_cancel_event.is_set,
-                        on_progress=lambda written, total: _update(
-                            current_downloaded=written, current_total=total or best_size
+                        # `best_size` is bound as a default rather than captured
+                        # from the enclosing loop: the callback is only ever
+                        # invoked during this iteration, but binding makes that
+                        # guarantee explicit instead of relying on it.
+                        on_progress=lambda written, total, fallback=best_size: _update(
+                            current_downloaded=written, current_total=total or fallback
                         ),
                     )
                     elapsed = time.monotonic() - started_at
@@ -508,7 +669,7 @@ def _run_prepare(
                     # book is neither "done" nor an error, just not included).
                     cancelled = True
                     break
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001 -- one book failing must not sink a multi-hour zip build
                     # One book failing (a stalled/timed-out transfer, an
                     # anti-bot block, ...) shouldn't sink the whole job --
                     # log the raw detail and show a friendly message + reason
@@ -531,7 +692,29 @@ def _run_prepare(
                         {"title": title, "ext": ext, "size_mb": size_mb, "status": "done"}
                     )
         with _lock:
-            done, total_logged = _state["done"], len(_state["log"])
+            done = _state["done"]
+
+        # Move the finished archive into the user's folder, if they configured
+        # one. Deliberately after the build, never during: a crashed or empty
+        # build must not leave a half-written .zip sitting in their folder.
+        final_zip, saved_path, save_error = zip_path, None, None
+        if done > 0 and dest_dir is not None:
+            try:
+                final_zip = _save_archive(zip_path, dest_dir)
+                saved_path = str(final_zip)
+                logger.info("Archive saved to %s", final_zip)
+            except OSError as exc:
+                # Read-only folder, full disk, unplugged volume... Keep the
+                # archive in the workdir so it's still downloadable rather
+                # than throwing away a build that may have taken hours.
+                logger.warning("Could not save the archive to %s: %s", dest_dir, exc)
+                save_error = (
+                    f"Couldn't save to {dest_dir} ({exc.strerror or exc}). "
+                    "The archive is still available with the button below."
+                )
+
+        with _lock:
+            total_logged = len(_state["log"])
             _state.update(
                 state=IDLE,
                 result="cancelled" if cancelled else "done",
@@ -542,20 +725,25 @@ def _run_prepare(
                 # where every book failed/was skipped produces an empty archive
                 # not worth downloading. Durable (see _begin) so the link
                 # survives a reload's size-check.
-                zip_path=str(zip_path) if done > 0 else None,
-                message="Stopped." if cancelled else "",
+                zip_path=str(final_zip) if done > 0 else None,
+                saved_path=saved_path,
+                # Keep the workdir only while it still holds the archive; once
+                # moved out, there's nothing left worth keeping.
+                workdir=None if (done == 0 or saved_path) else str(workdir),
+                message=" ".join(p for p in ("Stopped." if cancelled else "", save_error or "") if p),
                 # Preserve this build's per-book outcomes so the results view /
                 # failed filter survives the next page load's size-check.
                 results=list(_state["log"]),
             )
-        if done == 0:
-            # Nothing to offer -- don't leave the empty archive's workdir
-            # behind (the offered-zip case is cleaned by the NEXT prepare).
+        if done == 0 or saved_path:
+            # Nothing left in the workdir -- either the build produced no
+            # archive worth offering, or the archive has been moved out of it.
+            # (The still-in-temp case is cleaned by the NEXT prepare.)
             shutil.rmtree(workdir, ignore_errors=True)
         logger.info(
             "Zip build %s: %d/%d book(s) succeeded, zip=%s",
             "cancelled" if cancelled else "finished",
-            done, total_logged, zip_path,
+            done, total_logged, final_zip,
         )
     except Exception as exc:
         logger.exception("Zip build crashed")

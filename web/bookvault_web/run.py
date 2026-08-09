@@ -15,8 +15,8 @@ import logging
 import os
 from pathlib import Path
 
-from dotenv import load_dotenv
 import uvicorn
+from dotenv import load_dotenv
 
 
 def _truthy(value: str) -> bool:

@@ -32,6 +32,7 @@ It comes in **three flavours** that share the same backend and login/session cod
 - 🖼️ **A native desktop app** (macOS / Windows / Linux) — the web app in a real window, no browser or terminal. [Download for macOS](https://github.com/mavrovde/bookvault/releases/latest).
 - 🖥️ **A local web app** — browse your library, tick the books you want, choose a format, and download.
 - 🔌 **An MCP server** — so Claude (or any MCP client) can list your library and download titles as tools.
+- 📁 **On-disk library sync** — optional `LITRES_LIBRARY_DIR` writes an Audiobookshelf-friendly `Author/Title/metadata.json` tree (same shape as litres-downloader), via **Sync library** or background autosync.
 
 ---
 
@@ -58,9 +59,10 @@ It comes in **three flavours** that share the same backend and login/session cod
 - **📖 Books &amp; 🎧 audiobooks** — pick exactly which titles to back up, with cover thumbnails, authors, and file sizes.
 - **🎯 Format of your choice** — set a preferred ebook format (epub, fb2, pdf, …) and audiobook format, with sensible fallbacks per title.
 - **📦 One tidy zip** — ebooks as single files, each audiobook as a folder of its tracks; packed so macOS Archive Utility opens it cleanly.
+- **📁 Saved where you want it** — the finished archive lands in your Downloads folder by default, or any folder you point it at; timestamped, so a new build never overwrites the last one.
 - **⏳ Live progress + Stop** — a byte-level progress bar (`12.3 / 45.0 MB`) and a Stop button that interrupts even a mid-transfer download.
 - **✅ Results at a glance** — when a build finishes, a summary shows `✓ done · ! skipped · ✗ failed` as clickable filters, so a single rights-limited title never hides among hundreds of successes. The results and the download link survive a page reload.
-- **🔄 Same view in every browser** — your selection, format choices, and live progress live on the server (not per-browser), so a second browser or tab — or another device on your machine — shows exactly the same thing.
+- **🔄 Same view in every browser** — your selection, format choices, save folder, and live progress live on the server (not per-browser), so a second browser or tab — or another device on your machine — shows exactly the same thing.
 - **🛡️ Anti-bot resilient** — matches the browser's TLS fingerprint on downloads and retries transient DDoS-Guard blocks automatically (details [below](#-how-it-works)).
 - **⚡ Smart caching** — your library and file listings are cached on disk, so reloads and restarts stay fast and gentle on litres.ru.
 - **🔒 Local &amp; private** — your password lives in your OS keychain (or nowhere, in Docker); nothing is sent anywhere but litres.ru.
@@ -115,11 +117,14 @@ Then open **http://127.0.0.1:8420** and log in. Your password is remembered in y
 2. **Browse &amp; filter** your library — search by title/author, filter books vs. audiobooks, sort by title/author/size.
 3. **Select** the titles you want (nothing is pre-selected, so you never start a huge download by accident).
 4. **Pick a format** (optional) — your preferred ebook and audiobook formats, used when available.
-5. **Prepare zip** — watch the live progress bar; hit **Stop** anytime.
-6. **Review results** — the summary tallies `✓ done · ! skipped · ✗ failed`; click a pill to filter to just those (e.g. the one rights-limited title that couldn't be downloaded).
-7. **Download** the zip when it's ready.
+5. **Pick a save folder** (optional) — the 📁 box in the toolbar. Leave it empty to use your system **Downloads** folder.
+6. **Prepare zip** — watch the live progress bar; hit **Stop** anytime.
+7. **Review results** — the summary tallies `✓ done · ! skipped · ✗ failed`; click a pill to filter to just those (e.g. the one rights-limited title that couldn't be downloaded).
+8. **Find your zip** — it's saved to that folder automatically (the path is shown under the progress bar), and **💾 Save zip file** still downloads it through the browser if you'd rather.
 
-> Your selection, format choices, and progress are kept **on the server**, so opening the app in another browser/tab shows the same view — and the results and download link stick around after a reload.
+> Your selection, format choices, save folder, and progress are kept **on the server**, so opening the app in another browser/tab shows the same view — and the results and download link stick around after a reload.
+
+> The archive is named `litres-library-<date>-<time>.zip`, so a new build never overwrites one you still want. Nothing is written to your folder until a build actually succeeds; if the folder turns out to be unwritable, the zip stays available via the download button instead of being lost.
 
 > **Opening the zip:** double-click it (Finder / Archive Utility) or any modern tool.
 > ⚠️ macOS's built-in Terminal `unzip` garbles Cyrillic filenames — extract via Finder, or run
@@ -212,8 +217,9 @@ The MCP server exposes your library to any MCP client (e.g. Claude Desktop) as t
 |---|---|
 | `login_status()` | Whether there's an active session |
 | `login_to_litres(login, password)` | Log in and persist the session |
-| `list_library(limit)` | List your purchased titles |
-| `download_book(art_id)` | Download one title to `LITRES_DOWNLOAD_DIR` |
+| `list_library(limit)` | List your purchased titles with metadata (authors, narrators, series, dates, DRM flag) |
+| `download_book(art_id)` | Download one title (into `LITRES_LIBRARY_DIR` when set, else flat `LITRES_DOWNLOAD_DIR`) |
+| `sync_library_now(audio_only)` | Sync purchased titles into `LITRES_LIBRARY_DIR` (Audiobookshelf layout) |
 
 **Install &amp; run (stdio):**
 
@@ -317,10 +323,15 @@ Credentials in `.env` are used by the **MCP server only** (it's headless and boo
 | `LITRES_RELOAD` | `1` | Auto-reload the web server on code changes (dev). The Docker image sets `0` |
 | `LITRES_MCP_TRANSPORT` | `stdio` | MCP transport: `stdio` (client-launched) or `streamable-http` (the container's networked service) |
 | `LITRES_MCP_HOST` / `LITRES_MCP_PORT` | `127.0.0.1` / `8421` | Bind host/port for the MCP `streamable-http` transport |
-| `LITRES_DOWNLOAD_DIR` | `~/Downloads/litres-library` | Where the MCP server's `download_book` saves files |
+| `LITRES_DOWNLOAD_DIR` | system Downloads folder | **Default** save folder for a finished zip (web/desktop) and for the MCP server's `download_book`. In the web/desktop app the folder chosen in the toolbar overrides it |
 | `LITRES_SESSION_FILE` | `.litres_session.json` | Where the browser session (cookies) is cached between runs |
 | `LITRES_CACHE_FILE` | `.litres_cache.json` | Where the library/file-listing cache is stored |
 | `LITRES_STATE_FILE` | `.litres_state.json` | Where the shared UI state (selected books + format prefs) is stored, so every browser sees the same view (**web app only**) |
+| `LITRES_LIBRARY_DIR` | *(unset)* | Enables the on-disk library sync and sets its root. Unset means the feature is **off** — nothing is mirrored to disk |
+| `LITRES_AUTOSYNC` | `0` | Set to `1` for a periodic background sync into `LITRES_LIBRARY_DIR` (web app; requires the var above) |
+| `LITRES_AUTOSYNC_INTERVAL` | `21600` (6 h) | Seconds between autosync ticks, ±10% jitter. Floored at 15 min — a library only changes when you buy something |
+| `LITRES_AUTOSYNC_AUDIO_ONLY` | `1` | Sync only audiobooks (the case Audiobookshelf cares about). `0` syncs ebooks too |
+| `LITRES_AUTOSYNC_ON_START` | `1` | Run one sync shortly after the app boots |
 | `LITRES_LIBRARY_CACHE_TTL` | `900` (15 min) | How long the cached library listing stays fresh |
 | `LITRES_FILES_CACHE_TTL` | `604800` (7 days) | How long a book's cached file listing stays fresh |
 | `LITRES_DOWNLOAD_TIMEOUT_MS` | `300000` (5 min) | Per-file download timeout (audiobook bundles can be ~2GB) |
@@ -422,6 +433,8 @@ There's also an **opt-in live smoke suite** (`tests/test_smoke_live.py`) that hi
 .venv/bin/python -m pytest -m live        # defaults to http://127.0.0.1:8420
 # or point it elsewhere: BOOKVAULT_BASE_URL=http://127.0.0.1:8420 pytest -m live
 ```
+
+Contributing? See **[`CONTRIBUTING.md`](CONTRIBUTING.md)** for the setup, the rules that matter (offline tests, the single Playwright worker thread, the deliberate `LITRES_*` naming), and how AI-assisted PRs are reviewed. This repo checks in its [Claude Code configuration](.claude/README.md) — per-area agent roles and skills for the repeatable workflows — so everyone gets the same setup.
 
 ---
 

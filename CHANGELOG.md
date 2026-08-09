@@ -1,5 +1,68 @@
 # Changelog
 
+## [1.3.1] - Audiobookshelf library sync
+
+Adds an optional on-disk library: point `LITRES_LIBRARY_DIR` at a folder and
+BookVault mirrors purchased titles into an Audiobookshelf-compatible
+`Author/Title/` tree, instead of only producing a one-shot zip. Off unless you
+configure it.
+
+Both features in this release were contributed by
+[@yuri-tceretian](https://github.com/yuri-tceretian) — thank you.
+
+### Added
+- **On-disk library sync (ABS / litres-downloader layout).** Set
+  `LITRES_LIBRARY_DIR` to a folder; BookVault can download purchased titles into
+  `{Author}/{Title}/` with a compatible `metadata.json` (including
+  `last_release` for idempotent re-syncs). Audiobook `zip_with_mp3` bundles are
+  extracted to tracks. Wire-up:
+  - Web: **Sync library** button + `POST /activity/sync` (new `SYNCING` activity).
+  - Optional autosync: `LITRES_AUTOSYNC=1` (+ interval / audio-only flags).
+  - MCP: `sync_library_now`, and `download_book` writes into the library when
+    `LITRES_LIBRARY_DIR` is set (otherwise keeps the flat `LITRES_DOWNLOAD_DIR`
+    layout).
+- Client helpers `normalize_library_item`, `normalize_art_details`, and `get_art`
+  for richer metadata (ISBN, description, genres) used by the library writer.
+## [1.3.0] - Choose where your zip is saved
+
+The finished archive now lands in a folder you pick — your system Downloads
+folder by default — instead of a temp directory reachable only through the
+browser's download button. Also bumps the linter and the CI actions, and
+checks in the contributor/AI-development setup.
+
+### Added
+- **Choose where the zip is saved.** A 📁 folder box in the toolbar sets where a
+  finished archive is written. Leave it empty and it goes to your **system
+  Downloads folder** (XDG-aware on Linux), so the archive always lands somewhere
+  findable instead of a temp directory. Like the other preferences it lives on
+  the server, so every browser/tab agrees on it and it survives a restart.
+- Archives are named `litres-library-<date>-<time>.zip` — a new build never
+  overwrites one you still want.
+- `LITRES_DOWNLOAD_DIR` now sets the **default** folder for the web/desktop app
+  too, not just the MCP server's `download_book`. The folder chosen in the UI
+  wins over it.
+
+### Changed
+- The archive is still built in a temp workdir and only moved into your folder
+  once the build succeeds, so a crashed or empty build never leaves a
+  half-written `.zip` behind. If the folder turns out to be unwritable, the zip
+  stays in temp and remains downloadable rather than being discarded.
+- **Dependencies:** ruff 0.15.21 → 0.16.1, pip-audit 2.9.0 → 2.10.1, and the
+  GitHub actions (`checkout`, `upload-artifact`, `setup-python`) to v7. Ruff
+  0.16 widened its default rule set, so the codebase was modernised to match
+  (PEP 604/585 annotations, sorted imports); several silent `except: pass`
+  blocks now log at debug level, and the intentional broad handlers in the
+  anti-bot paths are annotated in place with their reasons.
+- **For contributors:** added `CONTRIBUTING.md`, PR/issue templates, and a
+  checked-in Claude Code setup (`.claude/`) with per-area agent roles and
+  skills for the repeatable workflows.
+
+### Fixed
+- Starting a new build no longer deletes the *parent directory* of the previous
+  archive. Harmless while every zip lived in its own temp dir, but with the
+  archive now saved into a folder of your choosing it would have deleted that
+  folder and its contents.
+
 ## [1.2.0] - Linux installer (AppImage)
 
 Adds a Linux **AppImage**, completing the desktop trio (macOS / Windows / Linux).

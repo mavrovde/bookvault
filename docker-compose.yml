@@ -24,6 +24,14 @@ services:
       - litres-data:/data
     environment:
       LITRES_LOG_LEVEL: ${LITRES_LOG_LEVEL:-INFO}
+      # Optional on-disk library (ABS layout). Mount a host folder at /library
+      # and uncomment to enable Sync library / autosync.
+      # LITRES_LIBRARY_DIR: /library
+      # LITRES_AUTOSYNC: ${LITRES_AUTOSYNC:-0}
+      # LITRES_AUTOSYNC_INTERVAL: ${LITRES_AUTOSYNC_INTERVAL:-600}
+      # LITRES_AUTOSYNC_AUDIO_ONLY: ${LITRES_AUTOSYNC_AUDIO_ONLY:-1}
+    # volumes:
+    #   - ./library:/library
     restart: unless-stopped
 
   mcp:
@@ -41,6 +49,9 @@ services:
       # logging in via the web app. Leave unset to rely on the shared session.
       LITRES_LOGIN: ${LITRES_LOGIN:-}
       LITRES_PASSWORD: ${LITRES_PASSWORD:-}
+      # LITRES_LIBRARY_DIR: /library
+    # volumes extra:
+    #   - ./library:/library
     restart: unless-stopped
 
 volumes:

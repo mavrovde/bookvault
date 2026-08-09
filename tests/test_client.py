@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import httpx
 import pytest
-
 from bookvault_core import client as client_mod
-from bookvault_core.client import DownloadCancelled, LitresAuthError, LitresBlocked, LitresClient
+from bookvault_core.client import (
+    DownloadCancelled,
+    LitresAuthError,
+    LitresBlocked,
+    LitresClient,
+)
+
 from tests.fakes import FakeAPIResponse, make_bare_client
 
 # --------------------------------------------------------------------------
@@ -752,21 +757,55 @@ def test_normalize_library_item_full_shape():
     assert meta["is_audio"] is True
     assert meta["authors"] == ["Author A"]
     assert meta["narrators"] == ["Reader R"]
-    assert meta["authors_str"] == "Author A"
-    assert meta["narrators_str"] == "Reader R"
     assert meta["cover_url"] == "https://static.litres.ru/pub/c/cover/42.jpg"
     assert meta["url"] == "https://www.litres.ru/audiobook/author/the-book-42/"
     assert meta["series"]["name"] == "The Saga"
     assert meta["series"]["art_order"] == 3
-    assert meta["series"]["arts_count"] == 10
     assert meta["rating_avg"] == 4.5
-    assert meta["rating_count"] == 12
-    assert meta["prices"]["final_price"] == 99.0
-    assert meta["labels"]["is_bestseller"] is True
-    assert meta["synchronized_art_ids"] == [100]
-    assert meta["alternative_versions"][0]["id"] == 100
-    # Non-author/reader persons are still listed under persons.
-    assert {p["role"] for p in meta["persons"]} == {"author", "reader", "editor"}
+    assert meta["language_code"] == "ru"
+    assert meta["purchased_at"] == "2026-01-01T00:00:00"
+    assert meta["last_released_at"] == "2025-06-02T00:00:00"
+    assert meta["is_drm"] is False
+    assert meta["symbols_count"] == 12345
+    # An editor is neither an author nor a narrator, so it appears in neither.
+    assert "Editor E" not in meta["authors"] + meta["narrators"]
+
+
+def test_normalize_library_item_omits_storefront_and_layout_fields():
+    """The result is handed to an MCP client and lands in an LLM's context, so
+    it carries only what someone asks a backup tool about their own library.
+    Prices in particular are meaningless here -- these are purchased items."""
+    art = {
+        "id": 1,
+        "title": "T",
+        "art_type": 0,
+        "prices": {"final_price": 99.0, "currency": "RUB"},
+        "labels": {"is_bestseller": True},
+        "cover_width": 100,
+        "cover_height": 200,
+        "synchronized_arts": [{"id": 5}],
+        "alternative_versions": [{"id": 5, "art_type": 1}],
+        "release_file_id": 555,
+        "read_percent": 10,
+        "my_art_status": 1,
+        "min_age": 16,
+    }
+    meta = LitresClient.normalize_library_item(art)
+    for dropped in (
+        "prices", "labels", "cover_width", "cover_height", "synchronized_art_ids",
+        "alternative_versions", "release_file_id", "read_percent", "my_art_status",
+        "min_age", "persons", "authors_str", "narrators_str",
+    ):
+        assert dropped not in meta, f"{dropped} should not be in the MCP payload"
+
+
+def test_normalize_library_item_leaves_an_absolute_url_alone():
+    """Guards the prefixing helper: a URL that already has a scheme must not
+    get https://static.litres.ru stuck on the front of it."""
+    meta = LitresClient.normalize_library_item(
+        {"id": 1, "art_type": 0, "cover_url": "https://cdn.example/x.jpg"}
+    )
+    assert meta["cover_url"] == "https://cdn.example/x.jpg"
 
 
 def test_normalize_library_item_handles_sparse_art():
@@ -778,4 +817,5 @@ def test_normalize_library_item_handles_sparse_art():
     assert meta["series"] is None
     assert meta["cover_url"] is None
     assert meta["url"] is None
-    assert meta["prices"] is None
+    assert meta["narrators"] == []
+    assert meta["rating_avg"] is None

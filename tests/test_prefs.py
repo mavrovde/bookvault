@@ -3,18 +3,32 @@ HTTP surface -- the selection + format prefs that make every browser show the
 same view."""
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
+from pathlib import Path
 
+import pytest
 from bookvault_core import session
 from bookvault_web import prefs
 from bookvault_web.app import app
+from fastapi.testclient import TestClient
+
 from tests.fakes import client_factory
+
+# The full default shape. `download_dir_effective` is derived (pref -> env ->
+# system Downloads); conftest pins DEFAULT_DOWNLOAD_DIR to None so tests never
+# auto-save into a real folder, which makes it None here too.
+NO_PREFS = {
+    "selected": [],
+    "ebook_format": None,
+    "audiobook_format": None,
+    "download_dir": None,
+    "download_dir_effective": None,
+}
 
 
 # -- the store itself -------------------------------------------------------
 
 def test_snapshot_defaults_when_nothing_set():
-    assert prefs.snapshot() == {"selected": [], "ebook_format": None, "audiobook_format": None}
+    assert prefs.snapshot() == NO_PREFS
 
 
 def test_update_is_partial_and_does_not_clobber_other_fields():
@@ -53,20 +67,20 @@ def test_both_formats_can_be_set_at_once():
 def test_corrupt_state_file_starts_fresh_instead_of_crashing():
     prefs.STATE_PATH.write_text("{ this is not valid json")
     prefs._state = None  # force a reload from disk
-    assert prefs.snapshot() == {"selected": [], "ebook_format": None, "audiobook_format": None}
+    assert prefs.snapshot() == NO_PREFS
 
 
 def test_unknown_keys_in_state_file_are_ignored():
     prefs.STATE_PATH.write_text('{"selected": [5], "junk": "x", "ebook_format": "fb2"}')
     prefs._state = None
-    assert prefs.snapshot() == {"selected": [5], "ebook_format": "fb2", "audiobook_format": None}
+    assert prefs.snapshot() == {**NO_PREFS, "selected": [5], "ebook_format": "fb2"}
 
 
 def test_reset_clears_state_and_removes_the_file():
     prefs.update(selected=[1], ebook_format="epub")
     assert prefs.STATE_PATH.exists()
     prefs.reset()
-    assert prefs.snapshot() == {"selected": [], "ebook_format": None, "audiobook_format": None}
+    assert prefs.snapshot() == NO_PREFS
     assert not prefs.STATE_PATH.exists()
 
 
@@ -80,6 +94,110 @@ def test_state_persists_to_disk_across_a_reload(monkeypatch, tmp_path):
     assert snap["audiobook_format"] == "mp3"
 
 
+# -- the save folder --------------------------------------------------------
+
+def test_download_dir_defaults_to_the_system_downloads_folder(monkeypatch):
+    """Nothing configured -> the archive still lands somewhere the user can
+    find, not in a temp directory."""
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", "/Users/someone/Downloads")
+    snap = prefs.snapshot()
+    assert snap["download_dir"] is None            # nothing *chosen*
+    assert snap["download_dir_effective"] == "/Users/someone/Downloads"
+    assert prefs.resolve_download_dir() == Path("/Users/someone/Downloads")
+
+
+def test_system_download_dir_honours_the_xdg_env_var(monkeypatch, tmp_path):
+    """A Linux desktop can move/rename Downloads; XDG_DOWNLOAD_DIR wins."""
+    monkeypatch.setenv("XDG_DOWNLOAD_DIR", str(tmp_path / "Téléchargements"))
+    assert prefs._system_download_dir() == str(tmp_path / "Téléchargements")
+
+
+def test_system_download_dir_reads_the_xdg_user_dirs_file(monkeypatch, tmp_path):
+    """No env var, but the desktop wrote ~/.config/user-dirs.dirs -- entries
+    there are shell-quoted and use $HOME, both of which must be expanded."""
+    monkeypatch.delenv("XDG_DOWNLOAD_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    config = tmp_path / ".config"
+    config.mkdir()
+    (config / "user-dirs.dirs").write_text(
+        'XDG_DESKTOP_DIR="$HOME/Skrivbord"\nXDG_DOWNLOAD_DIR="$HOME/Hämtningar"\n'
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert prefs._system_download_dir() == str(tmp_path / "Hämtningar")
+
+
+def test_system_download_dir_falls_back_to_home_downloads(monkeypatch, tmp_path):
+    """macOS/Windows, or a Linux box with no XDG config at all."""
+    monkeypatch.delenv("XDG_DOWNLOAD_DIR", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    assert prefs._system_download_dir() == str(tmp_path / "Downloads")
+
+
+def test_a_chosen_folder_wins_over_the_default(monkeypatch):
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", "/Users/someone/Downloads")
+    prefs.update(download_dir="/Volumes/Backup/books")
+    assert prefs.resolve_download_dir() == Path("/Volumes/Backup/books")
+
+
+def test_clearing_the_folder_falls_back_to_the_default(monkeypatch):
+    """`None` means "leave alone", so "" is the only way to express a reset."""
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", "/Users/someone/Downloads")
+    prefs.update(download_dir="/Volumes/Backup/books")
+    prefs.update(download_dir="")
+    assert prefs.snapshot()["download_dir"] is None
+    assert prefs.resolve_download_dir() == Path("/Users/someone/Downloads")
+
+
+def test_a_tilde_path_is_expanded_before_it_is_stored():
+    prefs.update(download_dir="~/Books")
+    stored = prefs.snapshot()["download_dir"]
+    assert stored == str(Path.home() / "Books")
+    assert "~" not in stored
+
+
+def test_surrounding_whitespace_is_trimmed():
+    prefs.update(download_dir="  /tmp/books  ")
+    assert prefs.snapshot()["download_dir"] == "/tmp/books"
+
+
+def test_a_relative_path_is_rejected():
+    """Relative to *what*? The worker thread's CWD isn't something the user
+    can reason about -- reject it while they're looking at the field."""
+    with pytest.raises(ValueError):
+        prefs.update(download_dir="books/mine")
+
+
+def test_rejections_carry_a_code_not_a_message():
+    """The route answers with a string looked up from DOWNLOAD_DIR_ERRORS, never
+    with text derived from the exception -- otherwise internal/filesystem detail
+    could leak into an HTTP response (CodeQL py/stack-trace-exposure)."""
+    with pytest.raises(prefs.InvalidDownloadDir) as caught:
+        prefs.update(download_dir="books/mine")
+    assert caught.value.code == "not_absolute"
+    assert caught.value.code in prefs.DOWNLOAD_DIR_ERRORS
+
+
+def test_a_path_that_is_actually_a_file_is_rejected(tmp_path):
+    a_file = tmp_path / "notes.txt"
+    a_file.write_text("hi")
+    with pytest.raises(ValueError):
+        prefs.update(download_dir=str(a_file))
+
+
+def test_a_rejected_folder_does_not_half_apply_the_rest_of_the_update():
+    """Validation happens before anything is mutated."""
+    prefs.update(ebook_format="epub")
+    with pytest.raises(ValueError):
+        prefs.update(ebook_format="fb2", download_dir="nope/relative")
+    assert prefs.snapshot()["ebook_format"] == "epub"
+
+
+def test_download_dir_persists_across_a_reload():
+    prefs.update(download_dir="/tmp/books")
+    prefs._state = None  # simulate a fresh process
+    assert prefs.snapshot()["download_dir"] == "/tmp/books"
+
+
 # -- the HTTP surface -------------------------------------------------------
 
 def test_get_prefs_returns_current_state():
@@ -87,7 +205,7 @@ def test_get_prefs_returns_current_state():
     with TestClient(app) as client:
         resp = client.get("/prefs")
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "selected": [1, 2], "ebook_format": "fb2", "audiobook_format": None}
+    assert resp.json() == {"ok": True, **NO_PREFS, "selected": [1, 2], "ebook_format": "fb2"}
 
 
 def test_post_prefs_updates_and_persists():
@@ -96,7 +214,7 @@ def test_post_prefs_updates_and_persists():
         assert r1.json()["selected"] == [4, 5]
         r2 = client.post("/prefs", json={"ebook_format": "epub"})
         # partial update keeps the selection
-        assert r2.json() == {"ok": True, "selected": [4, 5], "ebook_format": "epub", "audiobook_format": None}
+        assert r2.json() == {"ok": True, **NO_PREFS, "selected": [4, 5], "ebook_format": "epub"}
 
 
 def test_activity_snapshot_embeds_prefs_for_cross_browser_sync(monkeypatch):
@@ -108,7 +226,7 @@ def test_activity_snapshot_embeds_prefs_for_cross_browser_sync(monkeypatch):
         resp = client.get("/activity")
     body = resp.json()
     assert "state" in body  # still the activity snapshot
-    assert body["prefs"] == {"selected": [7], "ebook_format": "pdf", "audiobook_format": None}
+    assert body["prefs"] == {**NO_PREFS, "selected": [7], "ebook_format": "pdf"}
 
 
 def test_selection_set_in_one_client_is_visible_to_another(monkeypatch):
@@ -133,7 +251,38 @@ def test_post_prefs_with_empty_body_is_a_noop():
     prefs.update(selected=[1], ebook_format="epub")
     with TestClient(app) as client:
         resp = client.post("/prefs", json={})
-    assert resp.json() == {"ok": True, "selected": [1], "ebook_format": "epub", "audiobook_format": None}
+    assert resp.json() == {"ok": True, **NO_PREFS, "selected": [1], "ebook_format": "epub"}
+
+
+def test_post_prefs_accepts_a_save_folder_and_echoes_the_effective_one(monkeypatch):
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", "/Users/someone/Downloads")
+    with TestClient(app) as client:
+        resp = client.post("/prefs", json={"download_dir": "/Volumes/Backup"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["download_dir"] == "/Volumes/Backup"
+    assert body["download_dir_effective"] == "/Volumes/Backup"
+
+
+def test_post_prefs_rejects_a_bad_save_folder_with_400():
+    """The UI shows this inline; the user must not discover a bad path only
+    after a multi-gigabyte build finishes."""
+    with TestClient(app) as client:
+        resp = client.post("/prefs", json={"download_dir": "books/mine"})
+        assert resp.status_code == 400
+        assert resp.json()["ok"] is False
+        # Exactly the canned string for that code -- nothing exception-derived.
+        assert resp.json()["error"] == prefs.DOWNLOAD_DIR_ERRORS["not_absolute"]
+        # ...and nothing was stored.
+        assert client.get("/prefs").json()["download_dir"] is None
+
+
+def test_the_save_folder_is_shared_across_browsers(monkeypatch):
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", None)
+    with TestClient(app) as browser_a:
+        browser_a.post("/prefs", json={"download_dir": "/tmp/shared-books"})
+    with TestClient(app) as browser_b:
+        assert browser_b.get("/prefs").json()["download_dir"] == "/tmp/shared-books"
 
 
 def test_save_is_atomic_and_leaves_no_tmp_file_behind():

@@ -15,7 +15,6 @@ This keeps the container's posture strictly no-secret-at-rest.
 from __future__ import annotations
 
 import logging
-from typing import Optional, Tuple
 
 import keyring
 import keyring.errors
@@ -41,7 +40,7 @@ def save(login: str, password: str) -> None:
         logger.info("No OS keyring available -- not persisting credentials (session-only): %s", exc)
 
 
-def load_last() -> Optional[Tuple[str, str]]:
+def load_last() -> tuple[str, str] | None:
     try:
         login = keyring.get_password(SERVICE_NAME, _LAST_LOGIN_KEY)
         if not login:

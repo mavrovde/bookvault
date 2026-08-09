@@ -30,10 +30,11 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -49,15 +50,18 @@ try:
     from curl_cffi import requests as cffi_requests
 
     _CURL_CFFI_AVAILABLE = True
-except Exception:  # pragma: no cover - exercised only where curl_cffi is absent
+except Exception:  # noqa: BLE001  # pragma: no cover - exercised only where curl_cffi is absent
     cffi_requests = None
     _CURL_CFFI_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
+_HTML_RE = re.compile(r"<[^>]+>")
+
 # These are facts about litres.ru itself, not settings -- not configurable.
 API_BASE = "https://api.litres.ru/foundation/api"
 DOWNLOAD_BASE = "https://www.litres.ru"
+COVER_BASE = "https://static.litres.ru"
 LOGIN_PAGE = "https://www.litres.ru/auth/login"
 
 # Set LITRES_HEADLESS=0 to watch the login flow in a real Chromium window
@@ -121,7 +125,7 @@ class LitresBlocked(LitresAuthError):
     failure, but the retry layer can catch it specifically. `retry_after` is
     the server's Retry-After hint in seconds when it sent one."""
 
-    def __init__(self, message: str, retry_after: Optional[float] = None):
+    def __init__(self, message: str, retry_after: float | None = None):
         super().__init__(message)
         self.retry_after = retry_after
 
@@ -139,7 +143,7 @@ def _is_ddos_guard(headers, body: bytes = b"") -> bool:
     server = ""
     try:
         server = (headers.get("server") or headers.get("Server") or "").lower()
-    except Exception:
+    except Exception:  # noqa: BLE001 -- header access on a foreign response object must never throw
         server = ""
     if "ddos-guard" in server:
         return True
@@ -157,11 +161,11 @@ def _is_block(status: int, headers=None, body: bytes = b"") -> bool:
     return False
 
 
-def _retry_after_seconds(headers) -> Optional[float]:
+def _retry_after_seconds(headers) -> float | None:
     """Parse a Retry-After header (delta-seconds form) into a float, or None."""
     try:
         raw = headers.get("retry-after") or headers.get("Retry-After")
-    except Exception:
+    except Exception:  # noqa: BLE001 -- header access on a foreign response object must never throw
         raw = None
     if not raw:
         return None
@@ -171,7 +175,7 @@ def _retry_after_seconds(headers) -> Optional[float]:
         return None  # HTTP-date form is rare here; fall back to our own backoff
 
 
-def _backoff_delay(attempt: int, retry_after: Optional[float]) -> float:
+def _backoff_delay(attempt: int, retry_after: float | None) -> float:
     """Delay before retry `attempt` (0-based): honor Retry-After if given,
     else exponential (RETRY_BASE_DELAY * 2**attempt) capped at RETRY_MAX_DELAY,
     plus jitter. Jitter matters twice over: it avoids a thundering-herd retry
@@ -236,7 +240,7 @@ class LitresClient:
     are *not* persisted -- they're cheap to recapture and may rotate.
     """
 
-    def __init__(self, storage_state_path: Optional[Path] = None):
+    def __init__(self, storage_state_path: Path | None = None):
         self._pw = sync_playwright().start()
         try:
             self._browser = self._pw.chromium.launch(headless=HEADLESS)
@@ -289,7 +293,7 @@ class LitresClient:
         detection / error snippets -- never raises."""
         try:
             return resp.body() or b""
-        except Exception:
+        except Exception:  # noqa: BLE001 -- best-effort body read; this helper is documented as never raising
             return b""
 
     def _get_retrying(self, url: str, *, should_cancel=None, **kwargs):
@@ -330,19 +334,19 @@ class LitresClient:
         consistent set. Best-effort: any failure just leaves the old cookies."""
         try:
             page = self.context.new_page()
-        except Exception as exc:  # tests' fake context, or a closed browser
+        except Exception as exc:  # noqa: BLE001 -- tests' fake context, or a closed browser
             logger.debug("Cookie re-warm could not open a page: %s", exc)
             return
         try:
             page.goto(LOGIN_PAGE, wait_until="networkidle", timeout=20000)
             logger.info("Re-warmed DDoS-Guard cookies via a page visit")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- Playwright navigation: unbounded error space, and a failed re-warm is not fatal
             logger.debug("Cookie re-warm navigation failed: %s", exc)
         finally:
             try:
                 page.close()
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 -- closing a page is best-effort cleanup
+                logger.debug("Closing the re-warm page failed (harmless): %s", exc)
 
     def is_logged_in(self) -> bool:
         if not self._extra_headers and not self._recapture_headers():
@@ -350,7 +354,7 @@ class LitresClient:
         resp = self._get(f"{API_BASE}/users/me")
         return resp.ok
 
-    def account_login(self) -> Optional[str]:
+    def account_login(self) -> str | None:
         """A human-readable identity for the logged-in account -- the account
         email, falling back to the litres login/nickname -- read from
         `/users/me`. Session cookies don't carry a login name, so a cookie-only
@@ -362,7 +366,7 @@ class LitresClient:
             if not resp.ok:
                 return None
             data = (resp.json().get("payload") or {}).get("data") or {}
-        except Exception:  # network/JSON hiccup -- never break restore over a label
+        except Exception:  # noqa: BLE001 -- network/JSON hiccup -- never break restore over a label
             return None
         profile = data.get("profile") or {}
         return profile.get("email") or data.get("login") or profile.get("nickname") or None
@@ -385,7 +389,7 @@ class LitresClient:
         captured = {}
         try:
             page = self.context.new_page()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- Playwright page creation; recapture failing just means we return False
             logger.debug("Header recapture could not open a page: %s", exc)
             return False
 
@@ -396,7 +400,7 @@ class LitresClient:
         page.on("request", on_request)
         try:
             page.goto(LOGIN_PAGE, wait_until="networkidle", timeout=timeout_ms)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- Playwright navigation; the headers may already have been captured
             logger.debug("Header recapture navigation failed: %s", exc)
         finally:
             page.remove_listener("request", on_request)
@@ -436,14 +440,16 @@ class LitresClient:
                 raise LitresAuthError(f"Login failed ({resp.status}): {resp.text()[:300]}")
             try:
                 page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 -- Playwright wait; the check below is what decides success
+                # Never fatal: the headers may already have been captured, and
+                # the check below is what actually decides success.
+                logger.debug("Post-login networkidle wait timed out: %s", exc)
             if not captured:
                 # The SPA didn't auto-fetch the profile this time -- force it.
                 try:
                     page.reload(wait_until="networkidle", timeout=30000)
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001 -- Playwright reload is a best-effort nudge for the SPA
+                    logger.debug("Post-login reload failed: %s", exc)
             self._extra_headers = {k: v for k, v in captured.items() if k.lower() not in _DROP_HEADERS}
         finally:
             page.remove_listener("request", on_request)
@@ -476,8 +482,7 @@ class LitresClient:
             logger.debug("Library page %d: %d item(s) (%d total so far)", page_count, len(items), item_count)
             if not items:
                 return
-            for item in items:
-                yield item
+            yield from items
             next_page = (payload.get("pagination") or {}).get("next_page")
             if not next_page:
                 logger.info("Library listing complete: %d item(s) across %d page(s)", item_count, page_count)
@@ -492,131 +497,156 @@ class LitresClient:
 
 
     @staticmethod
+    def _absolute(url, base: str):
+        """litres.ru returns site-relative paths; make them absolute, and leave
+        an already-absolute URL alone."""
+        if not url:
+            return None
+        text = str(url)
+        return text if text.startswith(("http://", "https://")) else f"{base}{text}"
+
+    @staticmethod
+    def person_names(art: dict, role: str) -> list:
+        """Full names of the people on an art with the given role."""
+        return [
+            p.get("full_name")
+            for p in (art.get("persons") or [])
+            if p.get("role") == role and p.get("full_name")
+        ]
+
+    @staticmethod
+    def title_or_id(art: dict) -> str:
+        """A title is occasionally missing/blank -- fall back to the id rather
+        than rendering an empty row."""
+        art_id = art.get("id")
+        return art.get("title") or (str(art_id) if art_id is not None else "")
+
+    @staticmethod
     def normalize_library_item(art: dict) -> dict:
-        """Shape one raw `/users/me/arts` item into stable, full metadata.
+        """Shape one raw `/users/me/arts` item into stable metadata for the MCP
+        `list_library` tool.
 
-        The library listing already carries rich fields (authors, narrators,
-        series, purchase date, cover, DRM flags, rating, ...). Detail-only
-        fields such as ISBN / HTML annotation / genres are NOT on this
-        endpoint and are left out rather than inventing empty keys.
+        Deliberately a *subset* of what the endpoint returns. This dict is
+        handed to an MCP client and lands in an LLM's context window, so every
+        key is paid for on every call, for every title. Included: what someone
+        asks a backup tool about their own library -- who wrote/read it, what
+        it's part of, when they bought it, whether it's an audiobook, whether
+        it's DRM'd.
 
-        Used by the MCP `list_library` tool and the web UI's book list so both
-        surfaces stay in lockstep.
+        Deliberately omitted: storefront and layout data that can't serve that
+        purpose -- prices (these are already-purchased items), bestseller/
+        exclusive labels, cover pixel dimensions, and internal plumbing like
+        release_file_id or alternative_versions (`get_files` resolves what's
+        actually downloadable). Detail-only fields such as ISBN, genres and the
+        HTML annotation are not on this endpoint at all and are left out rather
+        than invented as empty keys.
         """
-        persons_in = art.get("persons") or []
-        authors: list[str] = []
-        narrators: list[str] = []
-        persons: list[dict] = []
-        for person in persons_in:
-            name = person.get("full_name") or ""
-            role = person.get("role") or ""
-            if name:
-                persons.append(
-                    {
-                        "id": person.get("id"),
-                        "full_name": name,
-                        "role": role,
-                        "url": person.get("url"),
-                    }
-                )
-            if role == "author" and name:
-                authors.append(name)
-            elif role == "reader" and name:
-                narrators.append(name)
-
         series_list = []
         for s in art.get("series") or []:
-            if not isinstance(s, dict):
+            if not isinstance(s, dict) or not s.get("name"):
                 continue
-            name = s.get("name")
-            if not name:
-                continue
-            series_list.append(
-                {
-                    "id": s.get("id"),
-                    "name": name,
-                    "url": s.get("url"),
-                    "art_order": s.get("art_order"),
-                    "arts_count": s.get("arts_count") or s.get("unique_arts_count"),
-                }
-            )
-        primary_series = series_list[0] if series_list else None
-
-        cover = art.get("cover_url")
-        if cover and not str(cover).startswith(("http://", "https://")):
-            cover = f"https://static.litres.ru{cover}"
-
-        rel_url = art.get("url") or ""
-        if rel_url and not str(rel_url).startswith(("http://", "https://")):
-            page_url = f"https://www.litres.ru{rel_url}"
-        else:
-            page_url = rel_url or None
+            series_list.append({"name": s["name"], "art_order": s.get("art_order")})
 
         art_type = art.get("art_type")
         rating = art.get("rating") or {}
-        prices = art.get("prices") or {}
-        labels = art.get("labels") or {}
-
-        title = art.get("title") or (str(art.get("id")) if art.get("id") is not None else "")
 
         return {
             "id": art.get("id"),
             "uuid": art.get("uuid"),
-            "title": title,
+            "title": LitresClient.title_or_id(art),
             "subtitle": art.get("subtitle") or "",
-            "url": page_url,
-            "cover_url": cover or None,
-            "cover_width": art.get("cover_width"),
-            "cover_height": art.get("cover_height"),
+            "authors": LitresClient.person_names(art, "author"),
+            "narrators": LitresClient.person_names(art, "reader"),
+            "series": series_list[0] if series_list else None,
+            "series_list": series_list,
             "art_type": art_type,
             "is_audio": art_type == 1,
             "language_code": art.get("language_code"),
-            "min_age": art.get("min_age"),
-            "authors": authors,
-            "authors_str": ", ".join(authors),
-            "narrators": narrators,
-            "narrators_str": ", ".join(narrators),
-            "persons": persons,
-            "series": primary_series,
-            "series_list": series_list,
+            "cover_url": LitresClient._absolute(art.get("cover_url"), COVER_BASE),
+            "url": LitresClient._absolute(art.get("url"), DOWNLOAD_BASE),
             "purchased_at": art.get("purchased_at"),
             "date_written_at": art.get("date_written_at"),
-            "available_from": art.get("available_from"),
             "last_released_at": art.get("last_released_at"),
             "last_updated_at": art.get("last_updated_at"),
             "symbols_count": art.get("symbols_count"),
             "is_drm": bool(art.get("is_drm")),
             "is_adult_content": bool(art.get("is_adult_content")),
-            "is_free": bool(art.get("is_free")),
             "is_archived": bool(art.get("is_archived")),
-            "labels": {
-                "is_bestseller": bool(labels.get("is_bestseller")),
-                "is_new": bool(labels.get("is_new")),
-                "is_sales_hit": bool(labels.get("is_sales_hit")),
-                "is_litres_exclusive": bool(labels.get("is_litres_exclusive")),
-            },
             "rating_avg": rating.get("rated_avg"),
-            "rating_count": rating.get("rated_total_count"),
-            "prices": {
-                "final_price": prices.get("final_price"),
-                "full_price": prices.get("full_price"),
-                "currency": prices.get("currency"),
-                "discount_percent": prices.get("discount_percent"),
-            }
-            if prices
-            else None,
-            "synchronized_art_ids": [
-                a.get("id") for a in (art.get("synchronized_arts") or []) if a.get("id") is not None
-            ],
-            "alternative_versions": [
-                {"id": a.get("id"), "art_type": a.get("art_type"), "link_type": a.get("link_type")}
-                for a in (art.get("alternative_versions") or [])
-                if a.get("id") is not None
-            ],
-            "read_percent": art.get("read_percent"),
-            "my_art_status": art.get("my_art_status"),
-            "release_file_id": art.get("release_file_id"),
         }
+
+    @staticmethod
+    def normalize_art_details(art: dict, files: list | None = None) -> dict:
+        """`normalize_library_item` plus the fields that only exist on the
+        per-art detail endpoint (`GET .../arts/{id}`): the annotation, genres,
+        tags and ISBN. Used by the library sync to fill metadata.json; the
+        listing endpoint carries none of these.
+
+        Unlike list_library's payload this is fetched one art at a time and is
+        written to disk rather than into a context window, so it can afford to
+        be richer.
+        """
+        meta = LitresClient.normalize_library_item(art)
+
+        html = art.get("html_annotation") or art.get("annotation") or ""
+        description = _HTML_RE.sub("", html).strip() if html else ""
+
+        def _names(items):
+            out = []
+            for item in items or []:
+                name = item.get("name") if isinstance(item, dict) else item
+                if name:
+                    out.append(str(name))
+            return out
+
+        meta.update(
+            {
+                "isbn": art.get("isbn") or None,
+                "publication_date": art.get("publication_date") or art.get("date_written_at"),
+                "description": description or None,
+                "genres": _names(art.get("genres")),
+                "tags": _names(art.get("tags")),
+            }
+        )
+
+        if files is not None:
+            meta["files"] = [
+                {
+                    "id": f.get("id"),
+                    "filename": f.get("filename"),
+                    "extension": f.get("extension") or LitresClient.file_extension(f),
+                    "file_type": f.get("file_type"),
+                    "size": f.get("size"),
+                    "is_additional": bool(f.get("is_additional")),
+                }
+                for f in files
+            ]
+            best = LitresClient.pick_best_file(files)
+            meta["best_file"] = (
+                {
+                    "id": best.get("id"),
+                    "extension": LitresClient.file_extension(best),
+                    "file_type": best.get("file_type"),
+                    "size": best.get("size"),
+                }
+                if best is not None
+                else None
+            )
+
+        return meta
+
+    def get_art(self, art_id, should_cancel=None) -> dict:
+        """Fetch one art's detail payload from `GET .../arts/{id}`."""
+        resp = self._get_retrying(f"{API_BASE}/arts/{art_id}", should_cancel=should_cancel)
+        if not resp.ok:
+            logger.warning("Art detail fetch failed for %s: HTTP %s", art_id, resp.status)
+            raise LitresAuthError(
+                f"Could not fetch art {art_id} ({resp.status}): {resp.text()[:300]}"
+            )
+        data = (resp.json().get("payload") or {}).get("data")
+        if not data:
+            raise LitresAuthError(f"Could not fetch art {art_id}: empty payload")
+        return data
 
     def get_files(self, art_id, should_cancel=None) -> list:
         """Flat list of {id, extension, file_type, mime, size, is_additional} for one art."""
@@ -636,9 +666,9 @@ class LitresClient:
     @staticmethod
     def pick_best_file(
         files: list,
-        preferred_ext: Optional[str] = None,
-        preferred_file_type: Optional[str] = None,
-    ) -> Optional[dict]:
+        preferred_ext: str | None = None,
+        preferred_file_type: str | None = None,
+    ) -> dict | None:
         """Pick one file per book. `preferred_ext`/`preferred_file_type` (the
         user's chosen default format) are tried first; if the book doesn't
         have that format, falls back to the built-in preference order."""
@@ -680,14 +710,13 @@ class LitresClient:
             timeout = httpx.Timeout(timeout_s)
             with httpx.Client(
                 transport=self._httpx_transport, follow_redirects=True, timeout=timeout, cookies=cookies
-            ) as http:
-                with http.stream("GET", url, headers=headers) as resp:
-                    yield _StreamResp(
-                        resp.status_code,
-                        resp.headers,
-                        lambda size: resp.iter_bytes(chunk_size=size),
-                        lambda: resp.read(),
-                    )
+            ) as http, http.stream("GET", url, headers=headers) as resp:
+                yield _StreamResp(
+                    resp.status_code,
+                    resp.headers,
+                    lambda size: resp.iter_bytes(chunk_size=size),
+                    lambda: resp.read(),
+                )
         else:
             # Let the impersonation own the browser-shaped headers so they stay
             # consistent with its TLS/JA4 fingerprint; still forward auth/app

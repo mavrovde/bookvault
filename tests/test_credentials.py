@@ -4,6 +4,7 @@ touched by this suite)."""
 from __future__ import annotations
 
 from bookvault_core import credentials
+
 from tests.fakes import NoBackendKeyring
 
 

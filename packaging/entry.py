@@ -54,6 +54,10 @@ def main() -> None:
     os.environ.setdefault("LITRES_CACHE_FILE", str(data / ".litres_cache.json"))
     os.environ.setdefault("LITRES_STATE_FILE", str(data / ".litres_state.json"))
     os.environ.setdefault("LITRES_DOWNLOAD_DIR", str(Path.home() / "Downloads" / "litres-library"))
+    # NOT setdefault-ed to a path: an unset LITRES_LIBRARY_DIR is what *disables*
+    # the on-disk library sync, so giving it a default here would silently opt
+    # every packaged install into mirroring the whole library to disk. Listed
+    # only so the next person adding a path var doesn't assume it was forgotten.
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(_browsers_dir()))
 
     from bookvault_desktop.app import main as run

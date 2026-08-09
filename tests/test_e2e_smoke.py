@@ -29,12 +29,12 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-
 from bookvault_core import session
 from bookvault_mcp import server as mcp_server
 from bookvault_web import activity
 from bookvault_web.app import app
+from fastapi.testclient import TestClient
+
 from tests.fakes import client_factory
 
 
