@@ -1,6 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## [1.3.1] - Audiobookshelf library sync
+
+Adds an optional on-disk library: point `LITRES_LIBRARY_DIR` at a folder and
+BookVault mirrors purchased titles into an Audiobookshelf-compatible
+`Author/Title/` tree, instead of only producing a one-shot zip. Off unless you
+configure it.
+
+Both features in this release were contributed by
+[@yuri-tceretian](https://github.com/yuri-tceretian) — thank you.
 
 ### Added
 - **On-disk library sync (ABS / litres-downloader layout).** Set
