@@ -17,14 +17,24 @@ dev = [
     "pytest-asyncio==1.4.0",
     "pytest-cov==7.1.0",
     "httpx==0.28.1",
-    "ruff==0.15.21",
-    "pip-audit==2.9.0",
+    "ruff==0.16.1",
+    "pip-audit==2.10.1",
 ]
 
 [tool.setuptools]
 # This root project ships no importable package -- it exists only to carry the
 # shared dev tooling and the test/lint config below.
 py-modules = []
+
+[tool.ruff.lint]
+# Pin the rule set explicitly. Ruff's *defaults* widen between releases (0.16
+# added UP/BLE/I/S/B/SIM to them, turning a clean tree into ~99 findings), so
+# leaving this unset means a routine version bump silently changes what CI
+# enforces. These four are the set the project has always been green on:
+# E4 imports, E7 statements, E9 syntax/IO errors, F pyflakes.
+# Adopting more (import sorting, flake8-bugbear, ...) is a deliberate change
+# worth its own PR -- not a side effect of upgrading the linter.
+select = ["E4", "E7", "E9", "F"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
