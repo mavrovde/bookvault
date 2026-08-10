@@ -1,5 +1,25 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Every release artifact can now be traced back to the build that made it.**
+  The installers and the Docker images carry a signed build provenance
+  attestation, so you can confirm a download came from this repository's CI at
+  a specific commit rather than trusting wherever you got the link:
+  ```bash
+  gh attestation verify BookVault-1.3.2.dmg --repo mavrovde/bookvault
+  ```
+- **Releases publish a `SHA256SUMS` file** covering all three installers, for
+  checking a download arrived intact (`sha256sum -c SHA256SUMS`).
+
+The builds are still **unsigned** — this is not code signing, and macOS
+Gatekeeper and Windows SmartScreen will warn exactly as before. Signing needs a
+paid certificate per platform; provenance is free, is verified against a public
+transparency log, and answers a question a certificate doesn't: *which commit
+and which workflow produced this file.* Worth having precisely because the
+builds are unsigned. See "Verify your download" in the README.
+
 ## [1.3.2] - Security fix and contributor attribution
 
 Fixes a path-injection issue in the save-folder setting, and records the

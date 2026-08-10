@@ -66,6 +66,21 @@ Push the tag only after the above. Then confirm the publish workflows finished
 **and that the artifacts actually attached** — a build can succeed and still
 fail to upload. Check the release page, not just the workflow status.
 
+## 8. Verify the published artifacts as a user would
+
+Download at least one artifact from the release page and check it the way the
+README tells a stranger to. Provenance and checksums are only worth publishing
+if they actually validate:
+
+```bash
+gh attestation verify <artifact> --repo <owner>/<repo>
+sha256sum -c SHA256SUMS
+```
+
+If a release publishes checksums covering several artifacts built by separate
+workflows, confirm the checksum file lists **all** of them — a collector that
+runs while a slow build is still going will happily publish a partial file.
+
 ## If something is wrong after tagging
 
 Prefer rolling forward with a new patch version over deleting or moving a tag.

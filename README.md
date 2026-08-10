@@ -186,6 +186,42 @@ chmod +x BookVault-*-x86_64.AppImage
 
 > Homebrew / winget / AUR channels are still on the way.
 
+### Verify your download
+
+The installers are **unsigned** — there's no Apple Developer ID or Authenticode
+certificate behind them, which is why macOS and Windows warn on first launch.
+What you get instead is *verifiable evidence of origin*: every release artifact
+carries a [build provenance attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds)
+— a signed statement, recorded publicly, that this exact file was produced by
+this repository's build workflow from a specific commit.
+
+Check it with the [GitHub CLI](https://cli.github.com/) (nothing to install
+beyond `gh`):
+
+```bash
+gh attestation verify BookVault-1.3.2.dmg --repo mavrovde/bookvault
+```
+
+That confirms the file was built by BookVault's own CI from a tagged commit —
+so a copy tampered with in transit, or re-hosted elsewhere, fails the check.
+The same works for the `.exe`, the `.AppImage`, and the Docker images:
+
+```bash
+gh attestation verify oci://ghcr.io/mavrovde/bookvault/web:1.3.2 --repo mavrovde/bookvault
+```
+
+Each release also ships a **`SHA256SUMS`** file if you'd rather just confirm the
+download is intact:
+
+```bash
+sha256sum -c SHA256SUMS      # macOS: shasum -a 256 -c SHA256SUMS
+```
+
+**What this does and doesn't buy you.** Provenance proves *origin*; a checksum
+proves *integrity*. Neither is a code-signing certificate, so neither silences
+Gatekeeper or SmartScreen — see the per-OS notes above for those. Verification
+is worth doing precisely *because* the builds are unsigned.
+
 ### Run from source (any OS)
 
 ```bash
@@ -462,6 +498,12 @@ You are responsible for using this tool in line with litres.ru's Terms of Servic
 - 🍪 Your browser **session cookies** are cached in a local JSON file so you don't re-login every run. It's gitignored — **treat it like being logged in; don't share it.**
 - 🚫 `.env`, `.venv/`, and the session/cache files are all gitignored.
 - 🏠 All three front-ends (web, desktop, MCP) are **single-user and local-only by design** — bound to `127.0.0.1` (or published only to it in Docker; the desktop app serves on a private localhost port inside its own process). There's no multi-user support, and none is planned: this is intentionally *not* built to hold other people's credentials.
+
+- 📦 Release artifacts (installers **and** Docker images) carry signed **build
+  provenance attestations**, so you can prove a download came from this repo's
+  CI rather than trusting the link — see [Verify your download](#verify-your-download).
+  The builds themselves are unsigned; provenance is evidence of origin, not a
+  code-signing certificate.
 
 Found a security issue? See [`SECURITY.md`](SECURITY.md).
 

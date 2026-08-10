@@ -17,7 +17,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # upload the Setup.exe asset to the release
+  contents: write      # upload the Setup.exe asset to the release
+  id-token: write      # OIDC token for build provenance (tag builds only)
+  attestations: write  # record the signed provenance statement
 
 jobs:
   build:
@@ -80,6 +82,16 @@ jobs:
           name: BookVault-windows-setup
           path: packaging/windows/dist/BookVault-Setup-*.exe
           if-no-files-found: error
+
+      # Provenance before upload, so an unattested Setup.exe never reaches a
+      # release. The installer is not Authenticode-signed, so SmartScreen will
+      # still warn; this is verifiable evidence of origin, not a substitute:
+      #   gh attestation verify BookVault-Setup-<version>.exe --repo mavrovde/bookvault
+      - name: Attest build provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: packaging/windows/dist/BookVault-Setup-*.exe
 
       - name: Attach Setup.exe to the release
         if: startsWith(github.ref, 'refs/tags/')
