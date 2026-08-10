@@ -118,6 +118,15 @@ class LitresAuthError(RuntimeError):
     """Login failed, or an existing session is no longer valid."""
 
 
+class LitresBrowserUnavailable(LitresAuthError):
+    """Chromium could not be started, so no login can even be attempted --
+    a *local setup* failure, not a rejection by litres.ru. Subclasses
+    LitresAuthError (same reasoning as LitresBlocked below) so every existing
+    caller already degrades to "logged out" instead of crashing; the web login
+    route catches it specifically to show install instructions rather than the
+    generic "check your credentials" banner."""
+
+
 class LitresBlocked(LitresAuthError):
     """An anti-bot check (DDoS-Guard) or rate limit turned us away -- a
     *transient* block distinct from a real auth failure or a rights-limited
@@ -244,11 +253,29 @@ class LitresClient:
         self._pw = sync_playwright().start()
         try:
             self._browser = self._pw.chromium.launch(headless=HEADLESS)
-        except Exception:
+        except Exception as exc:
             # e.g. Chromium not installed yet -- don't leak the started
             # Playwright driver process behind the raised error.
             self._pw.stop()
-            raise
+            # Re-raise as a typed, *user-facing* error. Playwright's own
+            # message is a wall of driver detail wrapped in an ASCII box; on
+            # the web login route it used to escape as a bare 500 ("Internal
+            # Server Error") because only LitresAuthError was caught. The
+            # missing-browser case is the common one and is fixable by the
+            # user, so it gets the instruction; anything else just says the
+            # browser wouldn't start. The original is chained (`from exc`) so
+            # the full detail is still in the log.
+            if "executable doesn't exist" in str(exc).lower():
+                raise LitresBrowserUnavailable(
+                    "BookVault needs Playwright's Chromium to sign in to litres.ru, "
+                    "and it isn't installed yet. Run `python -m playwright install "
+                    "chromium` in the project's virtualenv, then try again."
+                ) from exc
+            raise LitresBrowserUnavailable(
+                "BookVault could not start the browser it uses to sign in to "
+                "litres.ru. Check that Playwright's Chromium is installed and "
+                "that nothing is blocking it, then try again."
+            ) from exc
         try:
             state = str(storage_state_path) if storage_state_path and storage_state_path.exists() else None
             self.context: BrowserContext = self._browser.new_context(storage_state=state)

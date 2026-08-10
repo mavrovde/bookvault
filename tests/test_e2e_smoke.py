@@ -70,6 +70,14 @@ def test_web_server_process_boots_and_serves(tmp_path):
         "LITRES_LOG_LEVEL": "WARNING",
         "LITRES_SESSION_FILE": str(tmp_path / "session.json"),  # absent -> logged out
         "LITRES_CACHE_FILE": str(tmp_path / "cache.json"),
+        # conftest's fake-keyring fixture only patches THIS process -- the
+        # server below is a subprocess with its own import of `keyring`, so it
+        # would read the developer's real OS keychain and silently re-log-in
+        # with saved credentials, rendering the logged-IN page and failing the
+        # login-form assertion. (It passes on a machine that has never logged
+        # in, which is what hid this.) A null backend keeps the spawned server
+        # logged out for the same reason the rest of the suite is offline.
+        "PYTHON_KEYRING_BACKEND": "keyring.backends.null.Keyring",
     }
     proc = subprocess.Popen(
         [sys.executable, "-m", "bookvault_web.run"],
