@@ -1039,3 +1039,45 @@ def test_start_sync_writes_library(monkeypatch, tmp_path):
     snap = wait_until_idle(timeout=5.0)
     assert snap["result"] == "done"
     assert (lib / "Author A" / "Audio One" / "metadata.json").exists()
+
+
+# -- sizes are durable, not per-activity ------------------------------------
+# A book's file size is effectively immutable. It has no business being lost
+# to a 15-minute clock meant for "did you buy anything new", nor to starting
+# an unrelated operation.
+
+
+def test_a_cache_only_sweep_uses_the_stale_library_when_the_fresh_one_expired(monkeypatch):
+    """The library listing expires after 15 minutes; a book's file listing
+    after 7 days. Sweeping an empty list because the *listing* went stale
+    reported "0 of 0" and left every size showing as unknown while all of them
+    sat fresh on disk."""
+    from bookvault_core import cache
+
+    books = [{"id": 1, "title": "One", "authors": "", "is_audio": False, "cover_url": None}]
+    monkeypatch.setattr(cache, "get_library", lambda: None)          # fresh copy expired
+    monkeypatch.setattr(cache, "get_library_stale", lambda: books)   # but we still know the ids
+    monkeypatch.setattr(cache, "get_files", lambda art_id: [{"id": 9, "extension": "epub", "size": 5_000_000}])
+
+    activity._run_check(object(), None, live=False)
+
+    snap = activity.snapshot()
+    assert snap["sizes"], "a stale library must still let cached sizes resolve"
+    assert snap["total"] == 1 and snap["done"] == 1
+
+
+def test_starting_an_activity_keeps_the_sizes_already_resolved():
+    """Downloading, refreshing, or the automatic check on page load must not
+    blank sizes the app already had -- they come from the durable file-listing
+    cache, not from the activity that happens to be running."""
+    activity._state["sizes"] = {1: 12.5, 2: 30.0}
+    assert activity._begin(activity.PREPARING) is True
+    assert activity.snapshot()["sizes"] == {1: 12.5, 2: 30.0}
+
+
+def test_logout_drops_the_sizes_so_they_cannot_cross_accounts():
+    """The flip side of surviving _begin: entries are keyed by art_id, so a
+    previous account's sizes must not paint onto the next one's rows."""
+    activity._state["sizes"] = {1: 12.5}
+    activity.forget_sizes()
+    assert activity.snapshot()["sizes"] == {}

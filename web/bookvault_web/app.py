@@ -207,6 +207,10 @@ def do_login(request: Request, login: str = Form(...), password: str = Form(...)
 def do_logout():
     logger.info("Logout requested for %s", session.current_login())
     session.logout()
+    # Sizes outlive an activity now, so they have to be dropped explicitly
+    # here -- session.logout() clears the on-disk cache they came from, and
+    # this clears the in-memory copy that would otherwise carry over.
+    activity.forget_sizes()
     return RedirectResponse("/", status_code=303)
 
 

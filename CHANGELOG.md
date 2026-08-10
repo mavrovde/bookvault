@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+## [1.3.4] - Sizes stop disappearing
+
+Follow-up to 1.3.3. Everything here is about the library's file sizes going
+missing, and the Browse button added in 1.3.3 not responding to clicks.
+
+### Fixed
+- **Sizes no longer vanish 15 minutes after a refresh.** A book's file size
+  never changes, but resolving it was tied to the library listing's 15-minute
+  cache. Once that expired, the sweep that runs on page load had no list of
+  books to work through, so it resolved nothing and reported "0 of 0" — while
+  every one of those sizes sat on disk, fresh, in a cache with a 7-day life.
+  Open the app more than 15 minutes after a refresh and the whole library
+  showed as unsized. It now falls back to the slightly older listing, which
+  costs at most a brand-new purchase missing its size until the next Refresh.
+- **Starting a download no longer blanks the sizes.** Beginning any
+  operation — a build, a refresh, even the automatic check on page load —
+  discarded every size already on screen, and only a completed sweep brought
+  them back. Sizes are derived from the durable cache, not progress belonging
+  to one operation, so they now survive alongside the finished-build results.
+  They are still dropped on logout, so one account's sizes can never appear
+  against another's books.
+- **The Browse button responds to clicks.** It was nested inside the save
+  folder's `<label>`, and a label hands clicks to the field it labels — so the
+  button never ran its own code. It also now matches the toolbar it sits in.
+- **The selected-size line stops claiming things are loading when they
+  aren't.** The sweep on page load deliberately never contacts litres.ru, so
+  on an unsized library it finishes instantly having found nothing — and the
+  line still read `(~0.0 MB so far, size of 239 more still loading…)`, which
+  described something that would never happen. It now distinguishes a sweep in
+  progress from sizes that simply aren't known, and points at Refresh, which
+  does fetch them.
+- **App logs appear again when running locally.** With auto-reload on (the
+  default for `bookvault-web`), the server ran in a subprocess where logging
+  was never configured, so everything below a warning was silently dropped —
+  session restore, download progress, the folder picker.
+
+### Added
+- **A browser-layer test suite** (`pytest -m ui`, 16 tests). Both button
+  defects above shipped with 400 passing tests, because they lived between the
+  page and its JavaScript where no route test reaches. Opt-in and excluded
+  from the normal run, so the everyday suite stays fast and browser-free; CI
+  runs it in its own job. It never contacts litres.ru — the app is served
+  against a fake, and building a real client is a test failure.
+
 ## [1.3.3] - Pick your save folder, and clearer failures
 
 ### Added
