@@ -480,6 +480,59 @@ def cancel_activity():
     return {"ok": True, "cancelled": cancelled}
 
 
+@app.post("/download/save-copy")
+def save_archive_copy():
+    """Pick a folder and put an extra copy of the finished archive in it.
+
+    The build already auto-saved the archive to the configured save folder;
+    this is purely additional, so the original is never moved or removed. Sync
+    def (threadpool) for the same reason as /prefs/browse: the dialog waits on
+    a human and must not park the Playwright worker."""
+    if not folder_dialog.is_available():
+        return JSONResponse(
+            {"ok": False, "error": "No folder picker is available here."}, status_code=501
+        )
+    if not activity.snapshot().get("zip_path"):
+        return JSONResponse(
+            {"ok": False, "error": "There's no finished archive to copy yet."}, status_code=409
+        )
+    try:
+        chosen = folder_dialog.choose_folder(prefs.snapshot()["download_dir_effective"])
+    except folder_dialog.DialogBusy:
+        return JSONResponse({"ok": False, "error": "A folder dialog is already open."}, status_code=409)
+    except folder_dialog.FolderDialogError as exc:
+        logger.warning("Folder dialog failed while saving a copy: %s", exc)
+        return JSONResponse({"ok": False, "error": "The folder picker could not be opened."}, status_code=503)
+    if chosen is None:
+        return {"ok": True, "cancelled": True}
+
+    # Same bar as the configured save folder -- absolute, a real writable
+    # folder, inside the allowed roots -- but validated WITHOUT storing it, so
+    # saving a copy somewhere never silently changes where builds go.
+    try:
+        dest = prefs.validate_download_dir(chosen)
+    except prefs.InvalidDownloadDir as exc:
+        logger.info("Copy destination rejected (%s)", exc.code)
+        message = prefs.DOWNLOAD_DIR_ERRORS.get(exc.code, "That folder can't be used.")
+        return JSONResponse({"ok": False, "error": message}, status_code=400)
+
+    try:
+        target = activity.copy_archive_to(Path(dest))
+    except FileNotFoundError:
+        return JSONResponse(
+            {"ok": False, "error": "There's no finished archive to copy yet."}, status_code=409
+        )
+    except OSError as exc:
+        # Out of space, a drive unmounted between the pick and the copy.
+        # Fixed message: the OSError's text can carry filesystem detail.
+        logger.warning("Copying the archive failed: %s", exc)
+        return JSONResponse(
+            {"ok": False, "error": "The copy could not be written to that folder."}, status_code=503
+        )
+    logger.info("Saved an extra copy of the archive")
+    return {"ok": True, "cancelled": False, "copied_to": str(target)}
+
+
 @app.get("/download/file")
 def download_file_route():
     zip_path = activity.snapshot().get("zip_path")

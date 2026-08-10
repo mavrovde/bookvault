@@ -87,6 +87,15 @@ _state = {
     "current_total": None,       # total bytes of the current file when known (PREPARING only)
     "done": 0,              # progress counter (CHECKING: sizes resolved; PREPARING: books zipped)
     "total": None,          # progress denominator when known
+    # Whole-build byte progress (PREPARING only). `done` counts books, which
+    # says nothing about how much is left when one audiobook outweighs fifty
+    # ebooks -- these answer "how far through the download am I" in the unit
+    # the user actually cares about. `bytes_total` is an *estimate*: it sums
+    # the best file for every selected book whose listing is cached, so a book
+    # whose size was never resolved contributes nothing and the real total may
+    # come in higher. The UI marks it approximate rather than pretending.
+    "bytes_done": 0,        # bytes transferred so far across the whole build
+    "bytes_total": None,    # expected total bytes, or None when nothing is known
     "log": [],              # per-book results of the RUNNING prepare: {"title","status",...}
     "results": [],          # durable copy of the last finished prepare's log, so the
                             # results view (and its failed/skipped filter) survives the
@@ -193,6 +202,8 @@ def _begin(state: str, *, total=None, message="") -> bool:
             current_total=None,
             done=0,
             total=total,
+            bytes_done=0,
+            bytes_total=None,
             log=[],
             error=None,
         )
@@ -494,6 +505,79 @@ def _sweep_sizes(client: LitresClient, books: list, selected: list | None, do_li
     )
 
 
+def _expected_total_bytes(art_ids: set | None) -> int | None:
+    """Best estimate of how many bytes the whole build will transfer.
+
+    Sums the same file the download loop will actually pick
+    (`pick_best_file`), for every selected book whose listing is already
+    cached -- so the figure agrees with the per-book sizes the UI shows rather
+    than being a second, differently-derived number.
+
+    Cache-only on purpose: this runs just before a build, and fetching a
+    listing per book to firm up a progress denominator is exactly the burst of
+    requests the anti-bot layer keys on. Books with no cached listing simply
+    contribute nothing, which is why the total is an estimate the UI marks as
+    approximate. Returns None when nothing at all is known."""
+    books = cache.get_library() or cache.get_library_stale() or []
+    total = 0
+    known = False
+    for book in books:
+        art_id = book.get("id")
+        if art_ids is not None and art_id not in art_ids:
+            continue
+        files = cache.get_files(art_id)
+        if not files:
+            continue
+        best = LitresClient.pick_best_file(files)
+        size = best.get("size") if best else None
+        if size:
+            total += int(size)
+            known = True
+    return total if known else None
+
+
+def copy_archive_to(dest_dir: Path) -> Path:
+    """Put an *extra* copy of the finished archive in `dest_dir`.
+
+    Deliberately a copy, not a move: the archive stays where the build already
+    auto-saved it (the configured save folder). This is the "…and also put one
+    over there" case -- an external drive, a shared folder -- and the original
+    must survive it.
+
+    Reads `saved_path` first and falls back to `zip_path`, which matters when
+    the auto-save failed: the archive is then still sitting in its temp
+    workdir, and that is exactly when the user most wants a copy somewhere
+    real. Touches none of the state fields, so the download link and the
+    "Saved to …" line keep pointing where they did.
+
+    Raises FileNotFoundError when there's no finished archive, and OSError if
+    the copy itself fails."""
+    with _lock:
+        source = _state["saved_path"] or _state["zip_path"]
+    if not source or not Path(source).exists():
+        raise FileNotFoundError("there is no finished archive to copy")
+    source = Path(source)
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    target = dest_dir / source.name
+    if target.exists() and target.samefile(source):
+        # Asked to copy it into the folder it already lives in. Copying onto
+        # itself would truncate the archive, and " (2)" of the same file is
+        # just litter -- so treat it as already done.
+        logger.info("Copy destination is the archive's own folder -- nothing to do")
+        return source
+    # Same disambiguation as _save_archive: never silently overwrite an
+    # archive the user still wants.
+    stem, suffix, n = source.stem, source.suffix, 2
+    while target.exists():
+        target = dest_dir / f"{stem} ({n}){suffix}"
+        n += 1
+    # copy2 preserves the timestamps, so the copy still reads as "built then".
+    shutil.copy2(source, target)
+    logger.info("Copied the archive to a second location (%s)", target.name)
+    return target
+
+
 def _run_check(client: LitresClient, selected: list | None, live: bool = True) -> None:
     try:
         # Fall back to the *stale* listing, not to nothing. This list is only
@@ -623,6 +707,12 @@ def _run_prepare(
     # same title get distinct entries instead of silently overwriting each
     # other on extraction.
     used_names: set = set()
+    # Whole-build byte progress. `completed_bytes` only grows when a file has
+    # finished, so a transfer that fails or is cancelled part-way doesn't leave
+    # its partial bytes counted against the total; the live figure adds the
+    # current file's progress on top.
+    completed_bytes = 0
+    _update(bytes_done=0, bytes_total=_expected_total_bytes(art_ids))
     try:
         # Default STORED; _add_to_zip picks the right per-member scheme (see
         # its docstring). The goal is an archive macOS Archive Utility can open
@@ -684,11 +774,22 @@ def _run_prepare(
                         # from the enclosing loop: the callback is only ever
                         # invoked during this iteration, but binding makes that
                         # guarantee explicit instead of relying on it.
-                        on_progress=lambda written, total, fallback=best_size: _update(
-                            current_downloaded=written, current_total=total or fallback
+                        on_progress=lambda written, total, fallback=best_size, base=completed_bytes: _update(
+                            current_downloaded=written,
+                            current_total=total or fallback,
+                            # `base` is bound per-iteration for the same reason
+                            # as `fallback`: the whole-build figure is the bytes
+                            # already banked plus this file's live progress.
+                            bytes_done=base + written,
                         ),
                     )
                     elapsed = time.monotonic() - started_at
+                    # Bank this file's real size (not the estimate) now that it
+                    # has landed, so the whole-build figure self-corrects when a
+                    # book turned out bigger or smaller than its cached listing
+                    # said -- and so a later failure can't subtract from it.
+                    completed_bytes += dest.stat().st_size
+                    _update(bytes_done=completed_bytes)
                     _add_to_zip(zf, dest, safe_title, is_audio)
                     dest.unlink()
                     logger.info(

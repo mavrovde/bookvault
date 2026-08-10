@@ -224,6 +224,17 @@ def _normalise_download_dir(value: str) -> str | None:
     return str(safe_path)
 
 
+def validate_download_dir(value: str) -> str | None:
+    """Check a folder the same way a saved one is checked, without storing it.
+
+    For one-off destinations -- "save a copy of this zip over there" -- which
+    must clear exactly the same bar as the configured save folder (absolute,
+    a real folder, writable, inside the allowed roots) but must NOT become the
+    configured folder as a side effect. Raises InvalidDownloadDir; returns None
+    only for an empty value."""
+    return _normalise_download_dir(value)
+
+
 def _download_dir_warning(state: dict) -> str | None:
     """A non-blocking caveat about the destination in force.
 

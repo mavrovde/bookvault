@@ -84,10 +84,20 @@
         <div class="filter-pills log-summary" id="log-summary" style="display:none"></div>
         <ul id="progress-log"></ul>
         <div class="progress-actions">
+          {# The archive is already saved to the configured folder by the time
+             these appear. So: one button downloads it through the browser
+             (wherever the browser puts downloads), the other puts an extra
+             copy in a folder chosen in the native dialog. Neither moves or
+             replaces the auto-saved original. #}
           <a id="download-link" href="/download/file" style="display:none">
-            <button type="button" class="btn-primary">💾 Save zip file</button>
+            <button type="button" class="btn-primary" title="Download the archive through your browser">⬇ Download</button>
           </a>
+          {% if folder_picker %}
+            <button type="button" id="save-copy" class="btn-ghost" style="display:none"
+                    title="Put an extra copy of the archive in another folder -- the saved one stays where it is">💾 Save a copy to…</button>
+          {% endif %}
           <span id="saved-path" class="muted saved-path" style="display:none"></span>
+          <span id="copy-result" class="muted saved-path" style="display:none"></span>
         </div>
       </div>
 

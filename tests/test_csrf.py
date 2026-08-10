@@ -28,6 +28,7 @@ WRITE_ROUTES = [
     ("/activity/check", {"json": {}}),
     ("/activity/sync", {"json": {}}),
     ("/activity/cancel", {}),
+    ("/download/save-copy", {}),
 ]
 
 FOREIGN = "https://evil.example.com"

@@ -258,17 +258,26 @@ function renderActivity(s) {
     const frac = (s.current_total && s.current_downloaded != null)
       ? Math.min(1, s.current_downloaded / s.current_total)
       : 0;
+    // How much of the WHOLE build is done, in bytes. The book count says
+    // nothing about how far along you are when one audiobook outweighs fifty
+    // ebooks, which is the question "600 MB total, where am I?" is asking.
+    // bytes_total is an estimate (it can only sum books whose file listing is
+    // cached), so it's shown with a ~ and the bar still tracks book count --
+    // a denominator that grows mid-run would make the bar go backwards.
+    const overall = (s.bytes_total && s.bytes_done != null)
+      ? ` · ~${formatSize(s.bytes_done / 1e6)} of ~${formatSize(s.bytes_total / 1e6)}`
+      : (s.bytes_done ? ` · ${formatSize(s.bytes_done / 1e6)} so far` : '');
     if (s.total) {
       bar.style.width = Math.min(100, ((s.done + frac) / s.total) * 100) + '%';
-      countEl.textContent = `${s.done} / ${s.total} books`;
+      countEl.textContent = `${s.done} / ${s.total} books${overall}`;
     } else if (s.current_total) {
       // Whole-library job: book count is unknown, so fill by the current
       // file's byte progress -- at least the bar moves per book.
       bar.style.width = Math.min(100, frac * 100) + '%';
-      countEl.textContent = `${s.done} books`;
+      countEl.textContent = `${s.done} books${overall}`;
     } else {
       bar.classList.add('indeterminate');
-      countEl.textContent = s.done ? `${s.done} books` : '';
+      countEl.textContent = s.done ? `${s.done} books${overall}` : (overall ? overall.replace(' · ', '') : '');
     }
   } else { // idle
     bar.style.width = s.result === 'done' ? '100%' : '0%';
@@ -346,6 +355,10 @@ function renderActivity(s) {
   // re-checks the file still exists, so `zip_path` alone is the right signal.
   document.getElementById('download-link').style.display =
     s.zip_path ? 'inline-block' : 'none';
+  // "Save a copy to…" rides on the same signal, and is absent entirely where
+  // no native dialog can be drawn (see the template guard).
+  const copyBtn = document.getElementById('save-copy');
+  if (copyBtn) copyBtn.style.display = s.zip_path ? 'inline-block' : 'none';
   // Where the archive was auto-saved. Durable alongside zip_path, so this
   // line survives a reload too; absent when the save failed or was skipped,
   // in which case the button above is the only way to get the file.
@@ -628,6 +641,41 @@ async function browseForDownloadDir() {
   }
 }
 
+// Put an extra copy of the finished archive somewhere the user picks. The
+// auto-saved original is untouched -- this is "…and also keep one over
+// there". Same shape as browseForDownloadDir: the request stays open for as
+// long as the dialog does, so the button is disabled meanwhile.
+async function saveArchiveCopy() {
+  const btn = document.getElementById('save-copy');
+  const out = document.getElementById('copy-result');
+  if (!btn || btn.disabled) return;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Choosing…';
+  try {
+    const resp = await fetch('/download/save-copy', { method: 'POST' });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      out.textContent = body.error || 'Could not save a copy.';
+      out.style.color = 'var(--danger)';
+      out.style.display = 'inline';
+      return;
+    }
+    if (body.cancelled) { out.style.display = 'none'; return; }
+    out.textContent = `Copied to ${body.copied_to}`;
+    out.title = body.copied_to;
+    out.style.color = '';
+    out.style.display = 'inline';
+  } catch (e) {
+    out.textContent = 'Could not save a copy.';
+    out.style.color = 'var(--danger)';
+    out.style.display = 'inline';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
 let downloadDirTimer = null;
 let downloadDirPending = false;
 function pushDownloadDir(value) {
@@ -660,6 +708,8 @@ function initPrefControls() {
   // Absent where no native dialog can be drawn (see the template guard).
   const browseBtn = document.getElementById('browse-dir');
   if (browseBtn) browseBtn.addEventListener('click', browseForDownloadDir);
+  const copyBtn = document.getElementById('save-copy');
+  if (copyBtn) copyBtn.addEventListener('click', saveArchiveCopy);
 }
 
 (async function init() {

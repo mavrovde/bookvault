@@ -423,3 +423,90 @@ def test_browse_works_while_a_library_is_loaded(monkeypatch, tmp_path):
         assert resp.status_code == 200
         # The poll every browser shares reflects it immediately.
         assert client.get("/activity").json()["prefs"]["download_dir"] == str(chosen)
+
+
+# -- saving an extra copy of a finished archive -----------------------------
+
+def test_save_copy_puts_a_copy_where_the_user_picked(monkeypatch, tmp_path):
+    from bookvault_web import activity
+
+    saved = tmp_path / "configured" / "litres-library.zip"
+    saved.parent.mkdir()
+    saved.write_bytes(b"archive")
+    activity._state["zip_path"] = str(saved)
+    activity._state["saved_path"] = str(saved)
+    dest = tmp_path / "external"
+    dest.mkdir()
+
+    monkeypatch.setattr(folder_dialog, "is_available", lambda: True)
+    monkeypatch.setattr(folder_dialog, "choose_folder", lambda initial=None: str(dest))
+    monkeypatch.setattr(prefs, "allowed_download_roots", lambda: [tmp_path.resolve()])
+
+    with TestClient(app) as client:
+        resp = client.post("/download/save-copy")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True and body["cancelled"] is False
+    assert (dest / "litres-library.zip").read_bytes() == b"archive"
+    assert saved.exists()  # the configured folder keeps its copy
+
+
+def test_save_copy_does_not_change_the_configured_save_folder(monkeypatch, tmp_path):
+    """Saving a copy somewhere is a one-off, not a new default."""
+    from bookvault_web import activity
+
+    saved = tmp_path / "configured" / "litres-library.zip"
+    saved.parent.mkdir()
+    saved.write_bytes(b"archive")
+    activity._state["zip_path"] = activity._state["saved_path"] = str(saved)
+    dest = tmp_path / "elsewhere"
+    dest.mkdir()
+
+    monkeypatch.setattr(folder_dialog, "is_available", lambda: True)
+    monkeypatch.setattr(folder_dialog, "choose_folder", lambda initial=None: str(dest))
+    monkeypatch.setattr(prefs, "allowed_download_roots", lambda: [tmp_path.resolve()])
+
+    before = prefs.snapshot()["download_dir"]
+    with TestClient(app) as client:
+        client.post("/download/save-copy")
+    assert prefs.snapshot()["download_dir"] == before
+
+
+def test_save_copy_without_a_finished_build_is_refused(monkeypatch):
+    from bookvault_web import activity
+
+    activity._state["zip_path"] = None
+    monkeypatch.setattr(folder_dialog, "is_available", lambda: True)
+    with TestClient(app) as client:
+        resp = client.post("/download/save-copy")
+    assert resp.status_code == 409
+
+
+def test_save_copy_destination_is_subject_to_the_allowed_roots_guard(monkeypatch, tmp_path):
+    from bookvault_web import activity
+
+    saved = tmp_path / "litres-library.zip"
+    saved.write_bytes(b"archive")
+    activity._state["zip_path"] = activity._state["saved_path"] = str(saved)
+
+    monkeypatch.setattr(folder_dialog, "is_available", lambda: True)
+    monkeypatch.setattr(folder_dialog, "choose_folder", lambda initial=None: "/etc")
+    with TestClient(app) as client:
+        resp = client.post("/download/save-copy")
+    assert resp.status_code == 400
+    assert resp.json()["error"] == prefs.DOWNLOAD_DIR_ERRORS["outside_allowed_roots"]
+
+
+def test_save_copy_cancel_copies_nothing(monkeypatch, tmp_path):
+    from bookvault_web import activity
+
+    saved = tmp_path / "litres-library.zip"
+    saved.write_bytes(b"archive")
+    activity._state["zip_path"] = activity._state["saved_path"] = str(saved)
+
+    monkeypatch.setattr(folder_dialog, "is_available", lambda: True)
+    monkeypatch.setattr(folder_dialog, "choose_folder", lambda initial=None: None)
+    with TestClient(app) as client:
+        resp = client.post("/download/save-copy")
+    assert resp.status_code == 200 and resp.json()["cancelled"] is True
+    assert list(tmp_path.iterdir()) == [saved]
