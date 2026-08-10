@@ -51,7 +51,7 @@ Then drive it with the Playwright MCP browser tools, or poll the API directly:
 
 ```bash
 curl -s http://127.0.0.1:8499/activity | python3 -m json.tool
-curl -s -X POST http://127.0.0.1:8499/activity/prepare -H 'Content-Type: application/json' -d '{}'
+curl -s -X POST http://127.0.0.1:8499/activity/prepare-zip -H 'Content-Type: application/json' -d '{}'
 ```
 
 ## Cleaning up

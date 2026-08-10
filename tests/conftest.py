@@ -48,6 +48,10 @@ def isolated_module_state(tmp_path, monkeypatch):
         session._state["client"] = None
         session._state["login"] = None
         activity._cancel_event.clear()
+        # Memoised "which books are already on disk" scan -- module-level like
+        # the rest, so it has to be dropped or one test's folder leaks into the
+        # next one's badges.
+        activity.forget_books_on_disk()
         activity._state.update(
             state=activity.IDLE,
             result=None,

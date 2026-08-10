@@ -156,3 +156,62 @@ user's own machine. When shelling out to one, the start path travels as an
 argv element or an environment variable, never interpolated into a script
 body, and the result is re-validated by the same guard a typed path goes
 through.
+
+## 13. A mode is wired into more places than the file you are editing
+
+Adding a state to the activity machine, a status to a result list, or an option
+to a pref means touching every place the existing siblings appear. The failure
+mode is silent: the feature works, and one control adjacent to it quietly
+doesn't.
+
+Find the places by grepping for a sibling that already works, and treat every
+hit as a site to update:
+
+```bash
+grep -rn "PREPARING\|preparing" web/bookvault_web/ --include="*.py" --include="*.js"
+```
+
+For a long-running state that means at least: the constant, the guard that
+claims it, the cancel predicate, the frontend's busy/stoppable/badge maps, the
+progress branch, and the route list in `tests/test_csrf.py`.
+
+**Test the negative path first.** A control that silently does nothing —
+a Stop that doesn't stop, a filter that matches nothing — passes every test
+that only asserts the happy path. Assert the *effect* ("the run ended
+cancelled"), never that the call was made.
+
+## 14. Resumable work must verify content, not presence
+
+Any operation that can be re-run has to decide "is this already done?", and the
+cheap answer — the path exists — is always wrong. Work interrupted halfway
+leaves something at the destination, and trusting it means the damage is
+permanent and invisible.
+
+- Compare against a property the source actually asserts (a size, a count, a
+  version). If the source asserts nothing, prefer leaving the artefact alone
+  over re-doing everything on every run.
+- Where the stored form differs from the source form, record what was written
+  and verify that on the next run — and record enough that partial *removal*
+  is also caught, not just partial writing.
+- **Write to a temporary name and rename on success.** A dead run must not
+  leave wreckage where the finished artefact belongs, or the next run inspects
+  the wreckage.
+- Prefer direct evidence over bookkeeping. A sidecar recording "this is fine"
+  is a second source of truth that can disagree with reality; only introduce
+  one where nothing on disk can be compared directly.
+
+## 15. Look for the feature before building it
+
+This codebase has several paths that look alike from outside, and a feature can
+be invisible simply because its entry point is hidden behind an env var or a
+capability check. Before designing anything, search for what already exists —
+by capability, not by the name you would have given it:
+
+```bash
+grep -rn "def start_\|def prepare\|def sync\|def download" web/bookvault_web/activity.py
+grep -rn "display:none\|{% if " web/bookvault_web/templates/index.html
+```
+
+A hidden entry point is not a missing feature. Surfacing or renaming the
+existing one beats adding a near-duplicate, which confuses users permanently
+and doubles the surface that has to stay correct.

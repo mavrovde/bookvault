@@ -141,7 +141,7 @@ def test_web_full_backup_flow(monkeypatch):
         assert [b["id"] for b in lib.json()["books"]] == [1, 2]
 
         # 3. build a zip of everything
-        prep = client.post("/activity/prepare", json={"art_ids": [1, 2]})
+        prep = client.post("/activity/prepare-zip", json={"art_ids": [1, 2]})
         assert prep.status_code == 200 and prep.json()["started"] is True
         snap = _wait_until_idle()
         assert snap["error"] is None, snap

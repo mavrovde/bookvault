@@ -174,7 +174,26 @@ class FakeLitresClient:
         if art_id in self.fail_downloads:
             raise LitresAuthError(f"Download failed for art {art_id} (403): DDoS-Guard")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        data = b"FAKEDATA"
+        # Write as many bytes as this file's listing claims it has. A real
+        # download produces a file matching the listed size, and code that
+        # compares the two (the loose-file mirror's "is this already complete?"
+        # check) is only exercised meaningfully if the fake agrees. Falls back
+        # to a short marker when the listing carries no size.
+        declared = None
+        for entry in self.files_by_id.get(art_id, []):
+            if entry.get("id") == release_file_id:
+                declared = entry.get("size")
+                break
+        marker = b"FAKEDATA"
+        if declared:
+            n = int(declared)
+            # The marker, repeated and cut to the declared length: the bytes
+            # stay recognisably fake (and a listing that declares 8 still gets
+            # exactly b"FAKEDATA", so tests asserting the marker keep passing)
+            # while the file's SIZE matches what the listing promised.
+            data = (marker * (n // len(marker) + 1))[:n]
+        else:
+            data = marker
         dest.write_bytes(data)
         if on_progress is not None:
             on_progress(len(data), len(data))

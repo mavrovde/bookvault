@@ -560,3 +560,73 @@ async def test_download_book_reports_a_library_install_failure(monkeypatch, tmp_
 
     assert result["ok"] is False
     assert result["error"] == "disk full"
+
+
+# -- download_book must not re-fetch what it already has --------------------
+# An agent calling this in a loop over a library would otherwise re-download
+# everything on every run: the request volume that gets an account flagged.
+
+
+@pytest.mark.anyio
+async def test_download_book_skips_a_file_it_already_has(monkeypatch, tmp_path):
+    fake = client_factory(monkeypatch, session, library=[{"id": 1, "title": "One"}],
+                          files_by_id={1: [{"id": 10, "extension": "epub", "size": 1_000_000}]})
+    session._state["client"] = fake
+    monkeypatch.setattr(mcp_server, "DOWNLOAD_DIR", tmp_path)
+    (tmp_path / "1.epub").write_bytes(b"x" * 1_000_000)
+
+    result = await mcp_server.download_book(1)
+
+    assert result["ok"] is True
+    assert result["status"] == "exists"
+    assert fake.download_calls == [], "an already-complete file must not be re-fetched"
+
+
+@pytest.mark.anyio
+async def test_download_book_replaces_a_partial_file(monkeypatch, tmp_path):
+    """A transfer interrupted last time left a stub; it must be overwritten,
+    not trusted forever."""
+    fake = client_factory(monkeypatch, session, library=[{"id": 1, "title": "One"}],
+                          files_by_id={1: [{"id": 10, "extension": "epub", "size": 1_000_000}]})
+    session._state["client"] = fake
+    monkeypatch.setattr(mcp_server, "DOWNLOAD_DIR", tmp_path)
+    dest = tmp_path / "1.epub"
+    dest.write_bytes(b"partial")
+
+    result = await mcp_server.download_book(1)
+
+    assert result["status"] == "replaced"
+    assert fake.download_calls == [1]
+    assert dest.stat().st_size == 1_000_000
+
+
+@pytest.mark.anyio
+async def test_download_book_leaves_nothing_behind_when_a_transfer_fails(monkeypatch, tmp_path):
+    """Staged through a .part file, so a failure can't leave wreckage that the
+    next call would size-check as if it were the book."""
+    fake = client_factory(monkeypatch, session, library=[{"id": 1, "title": "One"}],
+                          files_by_id={1: [{"id": 10, "extension": "epub", "size": 1_000_000}]})
+    fake.fail_downloads = {1}
+    session._state["client"] = fake
+    monkeypatch.setattr(mcp_server, "DOWNLOAD_DIR", tmp_path)
+
+    # The fake raises LitresAuthError for a blocked download; assert that
+    # specifically rather than "something went wrong", so a different failure
+    # (a typo in the staging path, say) can't quietly satisfy this test.
+    with pytest.raises(LitresAuthError):
+        await mcp_server.download_book(1)
+
+    assert not (tmp_path / "1.epub").exists()
+    assert list(tmp_path.glob("*.part")) == []
+
+
+@pytest.mark.anyio
+async def test_download_book_reports_a_fresh_download_as_done(monkeypatch, tmp_path):
+    fake = client_factory(monkeypatch, session, library=[{"id": 1, "title": "One"}],
+                          files_by_id={1: [{"id": 10, "extension": "epub", "size": 1_000_000}]})
+    session._state["client"] = fake
+    monkeypatch.setattr(mcp_server, "DOWNLOAD_DIR", tmp_path)
+
+    result = await mcp_server.download_book(1)
+    assert result["status"] == "done"
+    assert result["size_bytes"] == 1_000_000

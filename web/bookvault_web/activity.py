@@ -14,11 +14,14 @@ module makes that implicit constraint the explicit contract:
     IDLE -> REFRESHING  -> (CHECKING) -> IDLE     (reload the library list)
     IDLE -> CHECKING                  -> IDLE     (paced per-book size sweep)
     IDLE -> PREPARING                 -> IDLE     (build the download zip)
+    IDLE -> DOWNLOADING               -> IDLE     (loose-file mirror of the selection)
     IDLE -> SYNCING                   -> IDLE     (on-disk ABS library sync)
-    CHECKING/PREPARING/SYNCING -> STOPPING -> IDLE (cancel the current activity)
+    CHECKING/PREPARING/DOWNLOADING/SYNCING -> STOPPING -> IDLE (cancel)
 
 Only one activity may be in flight; `refresh`/`check_sizes`/`prepare`/
-`start_sync` all no-op (return False) if the state isn't IDLE. When an
+`download_files`/`start_sync` all no-op (return False) if the state isn't
+IDLE. Adding a long-running state here means adding it to `cancel()` too --
+omitted, Stop is silently a no-op. When an
 activity finishes it returns to IDLE and records the outcome in `result`
 (done | cancelled | error) plus a human `message`, so the UI can show
 "what just happened" while sitting idle. The frontend polls `snapshot()`
@@ -52,7 +55,11 @@ from bookvault_core.client import (
     LitresBlocked,
     LitresClient,
 )
-from bookvault_core.library_fs import library_root_from_env
+from bookvault_core.library_fs import (
+    extract_audio_zip,
+    file_is_complete,
+    library_root_from_env,
+)
 from bookvault_core.library_sync import sync_library
 
 logger = logging.getLogger(__name__)
@@ -65,6 +72,10 @@ IDLE = "idle"
 REFRESHING = "refreshing"
 CHECKING = "checking"
 PREPARING = "preparing"
+# Downloading the selected books into the save folder as loose files -- the
+# same transfers as PREPARING, without the zip. Distinct from SYNCING, which
+# builds the Audiobookshelf-shaped tree under LITRES_LIBRARY_DIR.
+DOWNLOADING = "downloading"
 SYNCING = "syncing"
 STOPPING = "stopping"
 
@@ -256,8 +267,15 @@ def prepare(
     preferred_ext: str | None = None,
     preferred_file_type: str | None = None,
     dest_dir: Path | None = None,
+    mirror_root: Path | None = None,
 ) -> bool:
     """Build a zip of the selected books in the background (PREPARING).
+
+    `mirror_root`, when given, is the loose-file folder to reuse from: a book
+    already sitting there complete is packed straight into the archive instead
+    of being downloaded again. Requests to litres.ru are the scarce resource
+    here, so this is the cheapest possible saving.
+
     `art_ids` None/empty means "everything"; a specific set restricts the
     zip to those ids. `dest_dir`, when given, is the folder a *successful*
     archive is moved into (see prefs.resolve_download_dir); None leaves it in
@@ -287,7 +305,7 @@ def prepare(
         preferred_file_type,
         dest_dir or "(temp only)",
     )
-    session.submit(_run_prepare, client, art_ids, preferred_ext, preferred_file_type, dest_dir)
+    session.submit(_run_prepare, client, art_ids, preferred_ext, preferred_file_type, dest_dir, mirror_root)
     return True
 
 
@@ -403,10 +421,14 @@ def _run_sync(
 
 def cancel() -> bool:
     """Ask the running activity to stop before its next book/size fetch.
-    CHECKING, PREPARING, and SYNCING are cancellable. Returns False if there's
-    nothing stoppable in progress."""
+    CHECKING, PREPARING, DOWNLOADING and SYNCING are cancellable -- every state
+    that loops over books and can therefore run for hours. Returns False if
+    there's nothing stoppable in progress.
+
+    Adding a long-running state means adding it here too: omitted, Stop is
+    silently a no-op and the only way out is killing the server."""
     with _lock:
-        if _state["state"] not in (CHECKING, PREPARING, SYNCING):
+        if _state["state"] not in (CHECKING, PREPARING, DOWNLOADING, SYNCING):
             return False
         _state["state"] = STOPPING
     logger.info("Cancellation requested")
@@ -578,6 +600,318 @@ def copy_archive_to(dest_dir: Path) -> Path:
     return target
 
 
+"""Marker written into an audiobook's folder once its tracks are extracted.
+
+**Why only audiobooks have one.** An ebook is a single file, so the file *is*
+the evidence: `st_size` against the listing is a direct check of the actual
+bytes on disk, and a marker beside it would only be a weaker second claim that
+could disagree with reality. An audiobook arrives as a zip and is stored
+*unpacked*, so nothing on disk has the size the listing describes -- there is
+no direct check to make, and a folder that merely exists proves nothing about
+an extract that died on track 3 of 40.
+
+So the marker stands in for the missing evidence, and records two things: the
+source zip's size (so a re-issued edition invalidates it) and the number of
+tracks written (so deleting one is noticed). Both are re-checked on every run;
+a mismatch means the folder is rebuilt from a fresh download."""
+AUDIO_COMPLETE_MARKER = ".bookvault-complete"
+
+
+def _audio_media_count(book_dir: Path) -> int:
+    return sum(1 for p in book_dir.iterdir() if p.is_file() and p.name != AUDIO_COMPLETE_MARKER)
+
+
+def _write_audio_marker(book_dir: Path, expected_size) -> None:
+    book_dir.mkdir(parents=True, exist_ok=True)
+    (book_dir / AUDIO_COMPLETE_MARKER).write_text(
+        f"{expected_size or ''}\n{_audio_media_count(book_dir)}\n"
+    )
+
+
+def _audio_is_complete(book_dir: Path, expected_size) -> bool:
+    if not expected_size or not book_dir.is_dir():
+        return False
+    try:
+        recorded = (book_dir / AUDIO_COMPLETE_MARKER).read_text().splitlines()
+    except OSError:
+        return False
+    if not recorded or recorded[0].strip() != str(expected_size):
+        return False
+    # Tracks removed (or an older marker with no count) -- rebuild rather than
+    # trusting a claim the folder no longer backs up.
+    if len(recorded) < 2 or not recorded[1].strip().isdigit():
+        return False
+    return _audio_media_count(book_dir) == int(recorded[1].strip())
+
+
+def _existing_file_state(dest: Path, expected_size) -> str:
+    """Whether an already-present ebook can be left alone.
+
+    Thin wrapper over `library_fs.file_is_complete`, which is the one shared
+    definition of "I already have this" -- the MCP server applies the same rule
+    to the same question, and the two must not drift apart."""
+    if not dest.exists():
+        return "missing"
+    return "complete" if file_is_complete(dest, expected_size) else "partial"
+
+
+# Memoised result of the last books_on_disk() scan: (root, expires_at, ids).
+# The scan is cheap per book but runs on a route the browser polls once a
+# second, over a whole library, taking the cache lock for each book -- while a
+# running download holds that same lock to rewrite the listing file after every
+# transfer. Uncached, the polls queue up, saturate Starlette's threadpool, and
+# then *every* request waits for a free thread, including the one that stops
+# the download. Recomputing at most every few seconds removes that entirely;
+# a badge lagging a moment behind is invisible next to a multi-minute download.
+_on_disk_cache: tuple = (None, 0.0, [])
+ON_DISK_TTL = 5.0
+
+
+def books_on_disk(mirror_root: Path | None, books: list | None = None) -> list:
+    """Cached wrapper -- see _scan_books_on_disk for what it computes."""
+    global _on_disk_cache
+    root, expires_at, ids = _on_disk_cache
+    now = time.monotonic()
+    if root == mirror_root and now < expires_at:
+        return ids
+    ids = _scan_books_on_disk(mirror_root, books)
+    _on_disk_cache = (mirror_root, now + ON_DISK_TTL, ids)
+    return ids
+
+
+def forget_books_on_disk() -> None:
+    """Drop the memoised scan so the next poll re-reads the folder. Called when
+    a run that writes files finishes, so badges appear promptly rather than
+    after the TTL."""
+    global _on_disk_cache
+    _on_disk_cache = (None, 0.0, [])
+
+
+def _scan_books_on_disk(mirror_root: Path | None, books: list | None = None) -> list:
+    """art_ids that already sit complete in the loose-file mirror.
+
+    Drives the badge on each book card, so "I already have this" is visible
+    before starting anything rather than only in a run's log. Judged the same
+    way the download judges it -- size for an ebook, the marker for an
+    audiobook -- so the badge can't claim a partial file is the book.
+
+    Cache-only and cheap: it reads the file listings already on disk and stats
+    one path per book (microseconds each), and makes zero litres.ru requests.
+    A book whose listing was never cached simply doesn't get a badge."""
+    if mirror_root is None or not mirror_root.is_dir():
+        return []
+    if books is None:
+        books = cache.get_library() or cache.get_library_stale() or []
+    used_names: set = set()
+    present = []
+    for book in books:
+        art_id = book.get("id")
+        title = book.get("title") or str(art_id)
+        # Names are assigned in listing order, exactly as a run would assign
+        # them, so a de-collided "Title (123)" is looked for under that name.
+        safe_title = _safe_book_name(title, art_id, used_names)
+        files = cache.get_files(art_id)
+        if not files:
+            continue
+        best = LitresClient.pick_best_file(files)
+        if best is None:
+            continue
+        is_audio = book.get("is_audio")
+        if is_audio is None:
+            is_audio = book.get("art_type") == 1
+        if _local_copy_for(mirror_root, safe_title, LitresClient.file_extension(best),
+                           best.get("size") or None, is_audio):
+            present.append(art_id)
+    return present
+
+
+def download_files(
+    client: LitresClient,
+    art_ids: set | None = None,
+    preferred_ext: str | None = None,
+    preferred_file_type: str | None = None,
+    *,
+    dest_root: Path,
+) -> bool:
+    """Download the selected books into `dest_root` as loose files
+    (DOWNLOADING). Returns False if another activity is running."""
+    if not _begin(DOWNLOADING, total=len(art_ids) if art_ids is not None else None,
+                  message="Downloading your books into the save folder…"):
+        return False
+    logger.info("Starting a loose-file download into %s", dest_root)
+    session.submit(_run_download_files, client, art_ids, preferred_ext, preferred_file_type, dest_root)
+    return True
+
+
+def _run_download_files(
+    client: LitresClient,
+    art_ids: set | None,
+    preferred_ext: str | None,
+    preferred_file_type: str | None,
+    dest_root: Path,
+) -> None:
+    """The loose-file mirror. Same transfers, pacing and cancellation as the
+    zip build -- the difference is only where each file lands, and that a book
+    already sitting complete on disk is skipped rather than fetched again."""
+    used_names: set = set()
+    completed_bytes = 0
+    _update(bytes_done=0, bytes_total=_expected_total_bytes(art_ids))
+    cancelled = False
+    try:
+        dest_root.mkdir(parents=True, exist_ok=True)
+        for art in _iter_books(client):
+            if _cancel_event.is_set():
+                cancelled = True
+                break
+
+            art_id = art.get("id")
+            if art_ids is not None and art_id not in art_ids:
+                continue
+            title = art.get("title") or str(art_id)
+            _update(current_title=title, current_downloaded=None, current_total=None)
+
+            try:
+                files = cache.get_files(art_id)
+                if files is None:
+                    files = client.get_files(art_id, should_cancel=_cancel_event.is_set)
+                    cache.set_files(art_id, files)
+                best = client.pick_best_file(files, preferred_ext, preferred_file_type)
+                if best is None:
+                    reason = "No downloadable file for this title on litres.ru (rights-limited or preview-only)."
+                    logger.info("Skipping %r (art %s): %s", title, art_id, reason)
+                    with _lock:
+                        _state["log"].append({"title": title, "status": "skipped", "reason": reason})
+                    continue
+
+                ext = client.file_extension(best)
+                expected = best.get("size") or None
+                size_mb = round((expected or 0) / 1e6, 1)
+                is_audio = art.get("is_audio")
+                if is_audio is None:  # raw art dict vs cached web-shape book
+                    is_audio = art.get("art_type") == 1
+                safe_title = _safe_book_name(title, art_id, used_names)
+
+                # Already here and intact? Say so and move on -- the whole
+                # point of a mirror is that running it twice is cheap.
+                target = dest_root / (safe_title if is_audio else f"{safe_title}.{ext}")
+                already = (
+                    _audio_is_complete(target, expected) if is_audio
+                    else _existing_file_state(target, expected) == "complete"
+                )
+                if already:
+                    logger.info("Already on disk, skipping %r (art %s)", title, art_id)
+                    with _lock:
+                        _state["done"] += 1
+                        _state["log"].append(
+                            {"title": title, "ext": ext, "size_mb": size_mb, "status": "exists"}
+                        )
+                    continue
+
+                # Something is there but doesn't match (a half-finished
+                # transfer, a file truncated by a full disk). Worth telling the
+                # user apart from a fresh download: "re-downloaded" explains
+                # why a book they thought they had is being fetched again.
+                existed_but_wrong = target.exists()
+
+                _update(current_downloaded=0, current_total=expected)
+                started_at = time.monotonic()
+                # Always stage into a temp file next to the destination: a
+                # transfer that dies must not leave a half-written file where
+                # the finished one belongs, or the next run would treat the
+                # wreckage as the book. Same directory so the rename is atomic
+                # rather than a cross-filesystem copy.
+                staging = dest_root / f".{safe_title}.{ext}.part"
+                client.download_file(
+                    art_id, best["id"], staging.name, staging,
+                    should_cancel=_cancel_event.is_set,
+                    on_progress=lambda written, total, fallback=expected, base=completed_bytes: _update(
+                        current_downloaded=written,
+                        current_total=total or fallback,
+                        bytes_done=base + written,
+                    ),
+                )
+                elapsed = time.monotonic() - started_at
+                completed_bytes += staging.stat().st_size
+                _update(bytes_done=completed_bytes)
+
+                if is_audio:
+                    # An audiobook arrives as a zip of tracks; unpack it into a
+                    # folder per book so the mirror holds playable files, not
+                    # archives. Rebuilt from scratch so a re-download after a
+                    # size mismatch can't leave last attempt's tracks behind.
+                    if target.exists():
+                        shutil.rmtree(target, ignore_errors=True)
+                    target.mkdir(parents=True, exist_ok=True)
+                    extract_audio_zip(staging, target)
+                    staging.unlink(missing_ok=True)
+                    # Written last, so a crash mid-extract leaves no marker and
+                    # the folder is correctly seen as incomplete next run.
+                    _write_audio_marker(target, expected)
+                else:
+                    # os.replace: atomic, and overwrites in place -- which is
+                    # exactly what a size mismatch should do to a partial file.
+                    os.replace(staging, target)
+                logger.info(
+                    "Saved %r (art %s): %s, %.1f MB in %.1fs", title, art_id, ext, size_mb, elapsed,
+                )
+            except DownloadCancelled:
+                cancelled = True
+                break
+            except Exception as exc:  # noqa: BLE001 -- one book failing must not sink the whole run
+                logger.warning("Download failed for %r (art %s): %s", title, art_id, exc)
+                with _lock:
+                    _state["log"].append(
+                        {
+                            "title": title,
+                            "status": "error",
+                            "error": _friendly_error(exc),
+                            "detail": str(exc)[:300],
+                        }
+                    )
+                continue
+
+            with _lock:
+                _state["done"] += 1
+                _state["log"].append(
+                    {
+                        "title": title,
+                        "ext": ext,
+                        "size_mb": size_mb,
+                        "status": "replaced" if existed_but_wrong else "done",
+                    }
+                )
+    except Exception as exc:
+        # A run-level failure (the listing sweep dying, an unwritable folder)
+        # must leave the machine IDLE rather than wedged mid-activity.
+        logger.exception("Loose-file download crashed")
+        _update(state=IDLE, result="error", error=_friendly_error(exc), message="",
+                current_title=None, current_downloaded=None, current_total=None)
+        return
+
+    with _lock:
+        done, entries = _state["done"], list(_state["log"])
+    fresh = sum(1 for e in entries if e.get("status") == "done")
+    replaced = sum(1 for e in entries if e.get("status") == "replaced")
+    existing = sum(1 for e in entries if e.get("status") == "exists")
+    # The folder just changed, so the memoised badge scan is stale.
+    forget_books_on_disk()
+    summary = f"Downloaded {fresh} book{'' if fresh == 1 else 's'} into {dest_root}"
+    if replaced:
+        summary += f"; re-downloaded {replaced} that were incomplete"
+    if existing:
+        summary += f"; {existing} already saved"
+    _update(
+        state=IDLE,
+        result="cancelled" if cancelled else "done",
+        message=("Stopped. " + summary) if cancelled else summary + ".",
+        results=entries,
+        current_title=None,
+        current_downloaded=None,
+        current_total=None,
+        done=done,
+    )
+
+
 def _run_check(client: LitresClient, selected: list | None, live: bool = True) -> None:
     try:
         # Fall back to the *stale* listing, not to nothing. This list is only
@@ -625,6 +959,25 @@ def _run_refresh(client: LitresClient, selected: list | None) -> None:
 # --------------------------------------------------------------------------
 
 
+def _safe_book_name(title: str, art_id, used_names: set) -> str:
+    """Filesystem/archive-safe base name for one book, de-collided.
+
+    Shared by the zip build and the loose-file download so a book lands under
+    the same name in both -- an archive extracted next to a synced folder
+    should look identical, not subtly differently named.
+
+    A title of pure punctuation/emoji sanitizes to nothing, so it falls back to
+    the id rather than producing a bare ".epub"; two books that sanitize to the
+    same string get the id appended so neither overwrites the other."""
+    safe = "".join(c for c in title if c.isalnum() or c in " ._-")[:150]
+    if not safe.strip():
+        safe = str(art_id)
+    if safe.lower() in used_names:
+        safe = f"{safe} ({art_id})"
+    used_names.add(safe.lower())
+    return safe
+
+
 def _iter_books(client: LitresClient):
     """Prefer the cached library listing over a fresh full re-sweep -- the
     browser typically fetched it moments ago, and re-fetching just to start
@@ -635,6 +988,37 @@ def _iter_books(client: LitresClient):
     if cached is not None:
         return cached
     return list(client.iter_library())
+
+
+def _add_folder_to_zip(zf: zipfile.ZipFile, folder: Path, safe_title: str) -> None:
+    """Add an already-extracted audiobook folder to the archive.
+
+    The loose-file mirror stores audiobooks unpacked, so reusing one means
+    adding its tracks directly rather than re-zipping them. Members go in
+    STORED under a per-book folder -- byte-identical to what the audio branch
+    of _add_to_zip produces after unpacking a freshly downloaded bundle, so an
+    archive built from the mirror matches one built from downloads."""
+    for track in sorted(p for p in folder.iterdir() if p.is_file()):
+        if track.name == AUDIO_COMPLETE_MARKER:
+            continue  # bookkeeping, not part of the book
+        zf.write(track, arcname=f"{safe_title}/{track.name}", compress_type=zipfile.ZIP_STORED)
+
+
+def _local_copy_for(mirror_root: Path | None, safe_title: str, ext: str, expected, is_audio: bool):
+    """A complete copy of this book already in the loose-file mirror, or None.
+
+    Lets "Prepare zip" build from files already on disk instead of downloading
+    them again -- the user's own suggestion, and the cheapest possible win
+    against the thing that actually constrains this app: requests to
+    litres.ru. Completeness is judged exactly as the mirror judges it (size for
+    an ebook, the marker for an audiobook), so a partial copy is never packed
+    into an archive as if it were the book."""
+    if mirror_root is None:
+        return None
+    target = mirror_root / (safe_title if is_audio else f"{safe_title}.{ext}")
+    if is_audio:
+        return target if _audio_is_complete(target, expected) else None
+    return target if _existing_file_state(target, expected) == "complete" else None
 
 
 def _add_to_zip(zf: zipfile.ZipFile, dest: Path, safe_title: str, is_audio: bool) -> None:
@@ -699,6 +1083,7 @@ def _run_prepare(
     preferred_ext: str | None,
     preferred_file_type: str | None,
     dest_dir: Path | None = None,
+    mirror_root: Path | None = None,
 ) -> None:
     workdir = Path(tempfile.mkdtemp(prefix="litres-"))
     zip_path = workdir / "litres-library.zip"
@@ -749,16 +1134,27 @@ def _run_prepare(
                     is_audio = art.get("is_audio")
                     if is_audio is None:  # raw art dict vs cached web-shape book
                         is_audio = art.get("art_type") == 1
-                    safe_title = "".join(c for c in title if c.isalnum() or c in " ._-")[:150]
-                    # A title of pure punctuation/emoji sanitizes to nothing --
-                    # fall back to the id rather than writing ".epub". Then
-                    # de-collide: same-titled books (or same title after
-                    # sanitizing) must not overwrite each other in the archive.
-                    if not safe_title.strip():
-                        safe_title = str(art_id)
-                    if safe_title.lower() in used_names:
-                        safe_title = f"{safe_title} ({art_id})"
-                    used_names.add(safe_title.lower())
+                    safe_title = _safe_book_name(title, art_id, used_names)
+
+                    # Already downloaded as a loose file? Pack that copy
+                    # instead of fetching it again. Saves the transfer and,
+                    # more importantly, the request -- and the completeness
+                    # test is the same one the mirror uses, so a half-written
+                    # file is never packed as though it were the book.
+                    local = _local_copy_for(mirror_root, safe_title, ext, best.get("size") or None, is_audio)
+                    if local is not None:
+                        if is_audio:
+                            _add_folder_to_zip(zf, local, safe_title)
+                        else:
+                            _add_to_zip(zf, local, safe_title, is_audio)
+                        logger.info("Packed %r (art %s) from the local folder", title, art_id)
+                        with _lock:
+                            _state["done"] += 1
+                            _state["log"].append(
+                                {"title": title, "ext": ext, "size_mb": size_mb, "status": "reused"}
+                            )
+                        continue
+
                     dest = workdir / f"{safe_title}.{ext}"
                     # Seed the total from the known file size so the MB readout
                     # shows "0 / N MB" the instant the transfer starts; the

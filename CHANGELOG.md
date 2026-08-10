@@ -2,7 +2,30 @@
 
 ## [Unreleased]
 
+## [1.4.0] - Download your library as plain files
+
 ### Added
+- **⬇ Download as files** — a new button beside *Prepare zip*. It downloads the
+  selected books into your save folder as ordinary files (ebooks as files,
+  audiobooks as a folder of tracks) with no archive around them, so the folder
+  becomes a plain mirror of your library that you can browse, sync, or point
+  any reader at.
+
+  Run it again and it only fetches what's missing. A book already there **and
+  the right size** is reported as `Already saved` and left alone; one that's
+  there but the wrong size — an interrupted download — is re-fetched and
+  overwritten, so a damaged file repairs itself instead of being trusted
+  forever. Files are written to a temporary name and renamed on success, so a
+  failed transfer never leaves wreckage where a finished book belongs.
+- **Prepare zip now reuses those files.** If a book is already in the folder,
+  it's packed straight into the archive instead of being downloaded again —
+  reported as `From your folder`. The saving that matters isn't the bytes, it's
+  not asking litres.ru for something you already have.
+- **A ✓ badge on every book you already have**, so "do I have this?" is
+  answerable while browsing rather than only after starting a run.
+- **Per-book status in the progress list**: `Downloaded`, `Re-downloaded`,
+  `Already saved`, `From your folder`, `Not available`, `Failed` — each with a
+  clickable summary pill to filter by it.
 - **Keep an extra copy of the archive somewhere else.** The finished zip is
   still saved automatically to your configured folder — that hasn't changed.
   Afterwards, **💾 Save a copy to…** picks a folder in your operating system's
@@ -17,10 +40,33 @@
   size as it finishes.
 
 ### Changed
+- **Activity URLs now say what they act on**: `/activity/check-sizes`,
+  `/activity/prepare-zip`, `/activity/refresh-library`,
+  `/activity/sync-audiobookshelf`, `/activity/stop`. *Check what? Sync what?*
+  If you scripted against the old paths, they've moved. **Reload any open tab
+  after upgrading** — see the fix below.
+- The Audiobookshelf sync button is now **⬇ Sync to Audiobookshelf**, since
+  "Sync library" no longer distinguished it from downloading as files.
+- **The MCP `download_book` tool skips what it already has**, using the same
+  size check as the app, and stages its downloads the same way. An agent
+  looping over a library no longer re-downloads it on every run.
 - **The old "Save zip file" button is now "⬇ Download".** By the time it
   appears, the archive has already been saved to your folder, so the button was
   really offering a second copy via your browser's download location. Its name
   now says so, and the new "Save a copy to…" covers choosing where.
+
+### Fixed
+- **Stop now works during a file download.** The new activity wasn't in the
+  cancellable set, so Stop silently did nothing.
+- **The app stays responsive while downloading.** The "already have this" scan
+  ran on every status poll, over the whole library, competing for the same lock
+  the download was using — enough to tie up the server's worker threads until
+  even Stop couldn't get one. It's now cached between polls.
+- **Browsers no longer run stale JavaScript after an upgrade.** The stylesheet
+  and script are versioned, so a new release always loads fresh ones. Without
+  it, an upgraded app in an already-open tab could show a new button stuck
+  disabled next to a working one — which looks like a broken feature, not a
+  caching problem.
 
 ## [1.3.4] - Sizes stop disappearing
 

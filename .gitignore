@@ -33,3 +33,8 @@ packaging/*/dist/
 .Trashes
 Thumbs.db
 desktop.ini
+
+# Playwright MCP browser output (page snapshots, screenshots). Written into
+# the repo root when driving the app in a browser; never part of the project,
+# and a snapshot of a logged-in page contains the library it was taken from.
+.playwright-mcp/

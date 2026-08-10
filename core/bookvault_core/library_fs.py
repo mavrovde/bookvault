@@ -280,3 +280,48 @@ def install_book(
                 pass
 
     return dest_dir
+
+
+def file_is_complete(path: Path, expected_size) -> bool:
+    """Whether an already-downloaded file can be left alone.
+
+    The shared definition of "I already have this", used by every front-end so
+    they cannot disagree about what counts as a finished download.
+
+    A path existing proves nothing: a transfer interrupted at 3 MB of 300 MB
+    leaves a file behind, and trusting it means the user keeps a broken book
+    with no way to notice. So the file's actual size must match what the
+    listing says it should be -- any mismatch (short *or* long) means fetch it
+    again and overwrite.
+
+    `expected_size` of None/0 means the listing carried no size. There is then
+    nothing to check against, and re-downloading an entire library because a
+    field was missing is far worse than trusting the file, so a present file
+    counts as complete."""
+    try:
+        if not path.is_file():
+            return False
+        if not expected_size:
+            return True
+        return path.stat().st_size == int(expected_size)
+    except OSError:  # pragma: no cover - unreadable path
+        return False
+
+
+def download_to_temp_then_rename(client, art_id, file_id, dest: Path, **kwargs) -> Path:
+    """Download into a sibling `.part` file and rename it into place on success.
+
+    Writing straight to `dest` means a failed or cancelled transfer leaves
+    wreckage exactly where the finished file belongs -- and the next run, which
+    can only judge by what is on disk, inspects the wreckage. Staging alongside
+    (not in the system temp dir) keeps the rename atomic instead of a
+    cross-filesystem copy of a possibly multi-gigabyte file."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    staging = dest.with_name(f".{dest.name}.part")
+    try:
+        client.download_file(art_id, file_id, staging.name, staging, **kwargs)
+        os.replace(staging, dest)
+    except BaseException:
+        staging.unlink(missing_ok=True)
+        raise
+    return dest
