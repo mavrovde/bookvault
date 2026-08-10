@@ -1391,6 +1391,55 @@ def test_an_unwritable_destination_ends_in_error_not_a_wedged_machine(tmp_path):
         blocked.chmod(0o700)
 
 
+# -- nothing may be left behind in the user's own folder --------------------
+# The mirror writes into a directory the user browses. A `.part` file left
+# there is invisible (dotfile), never retried, and accumulates one per failure
+# -- so every path out of a transfer has to clean up after itself.
+
+
+def test_a_corrupt_audio_bundle_leaves_no_staging_file(tmp_path):
+    """The transfer succeeded, so the client has already washed its hands of
+    the staging file; everything after it can still fail. The bundle not being
+    a zip is the realistic version of that."""
+    client = _make_client(({"id": 1, "title": "An Audiobook", "art_type": 1},
+                           [{"id": 100, "extension": "zip", "is_additional": False, "size": 1000}]))
+
+    def not_really_a_zip(art_id, release_file_id, filename, dest, subscr=False,
+                         should_cancel=None, on_progress=None):
+        dest.write_bytes(b"this is not a zip at all")
+        client.download_calls.append(art_id)
+        return dest
+
+    client.download_file = not_really_a_zip
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    assert result["log"][0]["status"] == "error"
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".part")] == []
+    assert activity.books_on_disk(tmp_path) == [], "a failed extract must not look complete"
+
+
+def test_a_cancelled_transfer_leaves_no_staging_file(tmp_path):
+    """Stop mid-transfer is the common case, not an exotic one -- it must not
+    cost the user a hidden file every time they change their mind."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES), _book(2, "Book Two", TEXT_FILES))
+
+    def cancel_midway(art_id, release_file_id, filename, dest, subscr=False,
+                      should_cancel=None, on_progress=None):
+        client.download_calls.append(art_id)
+        dest.write_bytes(b"half a book")
+        raise DownloadCancelled("stopped mid-transfer")
+
+    client.download_file = cancel_midway
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    assert result["result"] == "cancelled"
+    # (the suite redirects its own cache file into tmp_path, so look for ours)
+    strays = [p.name for p in tmp_path.iterdir() if p.name.endswith(".part") or "Book" in p.name]
+    assert strays == [], f"a cancelled run must leave nothing behind, found: {strays}"
+
+
 def test_the_summary_counts_each_outcome_separately(tmp_path):
     client = _make_client(
         _book(1, "Fresh", TEXT_FILES),

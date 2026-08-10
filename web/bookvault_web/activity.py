@@ -779,42 +779,57 @@ def _run_download_files(
                 # wreckage as the book. Same directory so the rename is atomic
                 # rather than a cross-filesystem copy.
                 staging = dest_root / f".{safe_title}.{ext}.part"
-                client.download_file(
-                    art_id, best["id"], staging.name, staging,
-                    should_cancel=_cancel_event.is_set,
-                    on_progress=lambda written, total, fallback=expected, base=completed_bytes: _update(
-                        current_downloaded=written,
-                        current_total=total or fallback,
-                        bytes_done=base + written,
-                    ),
-                )
-                elapsed = time.monotonic() - started_at
-                completed_bytes += staging.stat().st_size
-                _update(bytes_done=completed_bytes)
-
-                if is_audio:
-                    # An audiobook arrives as a zip of tracks; unpack it into a
-                    # folder per book so the mirror holds playable files, not
-                    # archives. Rebuilt from scratch so a re-download after a
-                    # size mismatch can't leave last attempt's tracks behind.
-                    if target.exists():
-                        shutil.rmtree(target, ignore_errors=True)
-                    target.mkdir(parents=True, exist_ok=True)
-                    extract_audio_zip(staging, target)
-                    staging.unlink(missing_ok=True)
-                    # Recorded last, so a crash mid-extract leaves no record and
-                    # the folder is correctly seen as incomplete next run.
-                    record_in_mirror_index(
-                        dest_root, art_id, target.name, 0, tracks=_audio_media_count(target)
+                # One `finally` covering the transfer *and* everything after
+                # it. `download_file` discards its own partial on cancel or
+                # error, but this layer chose the staging path, so it owns
+                # removing it rather than trusting a collaborator to -- and
+                # the steps after the transfer (a bundle that isn't a zip, a
+                # disk that fills mid-extract, a read-only target) have no
+                # such collaborator at all.
+                #
+                # This runs in the user's own browsable folder, so a leak here
+                # is a hidden dotfile that is never retried and never noticed,
+                # and gains a sibling on every failed run.
+                try:
+                    client.download_file(
+                        art_id, best["id"], staging.name, staging,
+                        should_cancel=_cancel_event.is_set,
+                        on_progress=lambda written, total, fallback=expected, base=completed_bytes: _update(
+                            current_downloaded=written,
+                            current_total=total or fallback,
+                            bytes_done=base + written,
+                        ),
                     )
-                else:
-                    # os.replace: atomic, and overwrites in place -- which is
-                    # exactly what a size mismatch should do to a partial file.
-                    os.replace(staging, target)
-                    # Record the length we actually wrote, not the one the
-                    # listing claimed: they differ for almost every book, so
-                    # only this makes the next run's check meaningful.
-                    record_in_mirror_index(dest_root, art_id, target.name, target.stat().st_size)
+                    elapsed = time.monotonic() - started_at
+                    completed_bytes += staging.stat().st_size
+                    _update(bytes_done=completed_bytes)
+
+                    if is_audio:
+                        # An audiobook arrives as a zip of tracks; unpack it into
+                        # a folder per book so the mirror holds playable files,
+                        # not archives. Rebuilt from scratch so a re-download
+                        # can't leave the last attempt's tracks behind.
+                        if target.exists():
+                            shutil.rmtree(target, ignore_errors=True)
+                        target.mkdir(parents=True, exist_ok=True)
+                        extract_audio_zip(staging, target)
+                        # Recorded last, so a crash mid-extract leaves no record
+                        # and the folder is correctly seen as incomplete next run.
+                        record_in_mirror_index(
+                            dest_root, art_id, target.name, 0, tracks=_audio_media_count(target)
+                        )
+                    else:
+                        # os.replace: atomic, and overwrites in place -- which is
+                        # exactly what a mismatch should do to a partial file.
+                        os.replace(staging, target)
+                        # Record the length we actually wrote, not the one the
+                        # listing claimed: they differ for almost every book, so
+                        # only this makes the next run's check meaningful.
+                        record_in_mirror_index(
+                            dest_root, art_id, target.name, target.stat().st_size
+                        )
+                finally:
+                    staging.unlink(missing_ok=True)
                 logger.info(
                     "Saved %r (art %s): %s, %.1f MB in %.1fs", title, art_id, ext, size_mb, elapsed,
                 )
