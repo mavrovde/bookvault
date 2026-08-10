@@ -38,3 +38,8 @@ desktop.ini
 # the repo root when driving the app in a browser; never part of the project,
 # and a snapshot of a logged-in page contains the library it was taken from.
 .playwright-mcp/
+
+# Editor / IDE settings (per-developer, not project configuration)
+.idea/
+.vscode/
+*.code-workspace
