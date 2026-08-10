@@ -23,11 +23,12 @@ WRITE_ROUTES = [
     ("/logout", {}),
     ("/prefs", {"json": {"ebook_format": "epub"}}),
     ("/prefs/browse", {}),
-    ("/activity/prepare", {"json": {}}),
-    ("/activity/refresh", {"json": {}}),
-    ("/activity/check", {"json": {}}),
-    ("/activity/sync", {"json": {}}),
-    ("/activity/cancel", {}),
+    ("/activity/prepare-zip", {"json": {}}),
+    ("/activity/refresh-library", {"json": {}}),
+    ("/activity/check-sizes", {"json": {}}),
+    ("/activity/sync-audiobookshelf", {"json": {}}),
+    ("/activity/stop", {}),
+    ("/activity/download-files", {"json": {}}),
     ("/download/save-copy", {}),
 ]
 
@@ -124,7 +125,7 @@ def test_a_foreign_page_cannot_start_a_build(monkeypatch):
     monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", None)
     monkeypatch.setattr("bookvault_web.app.activity.prepare", lambda *a, **k: started.append(1))
     with TestClient(app) as client:
-        resp = client.post("/activity/prepare", json={}, headers={"origin": FOREIGN})
+        resp = client.post("/activity/prepare-zip", json={}, headers={"origin": FOREIGN})
     assert resp.status_code == 403
     assert started == []
 

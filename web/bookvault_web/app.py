@@ -155,8 +155,33 @@ def index(request: Request):
             # Hides the Browse button where no dialog can be drawn (Docker,
             # plain SSH) -- the text field stays as the way in there.
             "folder_picker": folder_dialog.is_available(),
+            "asset_v": asset_version(),
         },
     )
+
+
+_STATIC_DIR = Path(__file__).parent / "static"
+
+
+def asset_version() -> str:
+    """Cache-busting token for the stylesheet and script.
+
+    They're served with an ETag but no Cache-Control, so browsers fall back to
+    *heuristic* caching and may reuse them without revalidating. After an
+    upgrade that leaves a tab running the previous JS against the new HTML --
+    which doesn't look like a caching problem, it looks like a broken control:
+    anything the old script doesn't know about keeps whatever state the markup
+    gave it, while its neighbours update. A newly added button sitting disabled
+    next to a working one is the classic symptom.
+
+    Derived from the newest mtime under static/, so it changes exactly when the
+    assets do -- during development as well as across releases, which a version
+    number wouldn't. Two stats per page load, and page loads are rare."""
+    try:
+        newest = max(p.stat().st_mtime for p in _STATIC_DIR.rglob("*") if p.is_file())
+    except (OSError, ValueError):  # pragma: no cover - no static dir
+        return "0"
+    return str(int(newest))
 
 
 def _login_page(request: Request, error: str, *, status_code: int):
@@ -168,7 +193,7 @@ def _login_page(request: Request, error: str, *, status_code: int):
     return templates.TemplateResponse(
         request,
         "index.html",
-        {"logged_in": False, "login": None, "error": error},
+        {"logged_in": False, "login": None, "error": error, "asset_v": asset_version()},
         status_code=status_code,
     )
 
@@ -325,6 +350,10 @@ def get_activity():
         "prefs": prefs.snapshot(),
         "library_sync_enabled": root is not None,
         "library_dir": str(root) if root else None,
+        # art_ids already sitting complete in the loose-file mirror, so each
+        # card can show "you already have this" before anything is started.
+        # Cache-only and a stat per book -- no litres.ru requests.
+        "on_disk": activity.books_on_disk(_mirror_root()),
     }
 
 
@@ -398,8 +427,8 @@ def set_prefs(req: PrefsUpdate):
     return {"ok": True, **updated}
 
 
-@app.post("/activity/refresh")
-def refresh_activity(req: SweepRequest):
+@app.post("/activity/refresh-library")
+def refresh_library_activity(req: SweepRequest):
     client = session.current_client()
     if client is None:
         return JSONResponse({"ok": False, "error": "Not logged in"}, status_code=401)
@@ -407,8 +436,8 @@ def refresh_activity(req: SweepRequest):
     return {"ok": True, "started": started}
 
 
-@app.post("/activity/check")
-def check_activity(req: SweepRequest):
+@app.post("/activity/check-sizes")
+def check_sizes_activity(req: SweepRequest):
     client = session.current_client()
     if client is None:
         return JSONResponse({"ok": False, "error": "Not logged in"}, status_code=401)
@@ -424,8 +453,8 @@ class SyncRequest(BaseModel):
     art_ids: list[int] | None = None
 
 
-@app.post("/activity/sync")
-def sync_activity(req: SyncRequest):
+@app.post("/activity/sync-audiobookshelf")
+def sync_audiobookshelf_activity(req: SyncRequest):
     client = session.current_client()
     if client is None:
         return JSONResponse({"ok": False, "error": "Not logged in"}, status_code=401)
@@ -452,8 +481,8 @@ def sync_activity(req: SyncRequest):
     return {"ok": True, "started": started}
 
 
-@app.post("/activity/prepare")
-def prepare_activity(req: PrepareRequest):
+@app.post("/activity/prepare-zip")
+def prepare_zip_activity(req: PrepareRequest):
     client = session.current_client()
     if client is None:
         return JSONResponse({"ok": False, "error": "Not logged in"}, status_code=401)
@@ -469,15 +498,55 @@ def prepare_activity(req: PrepareRequest):
     started = activity.prepare(
         client, art_ids, req.ebook_format, req.audiobook_format,
         dest_dir=prefs.resolve_download_dir(),
+        # Books already downloaded as loose files are packed from disk instead
+        # of being fetched again -- the saving that matters is the request, not
+        # the bytes.
+        mirror_root=_mirror_root(),
     )
     return {"ok": True, "started": started}
 
 
-@app.post("/activity/cancel")
-def cancel_activity():
-    logger.info("Cancel requested via /activity/cancel")
+@app.post("/activity/stop")
+def stop_activity():
+    logger.info("Cancel requested via /activity/stop")
     cancelled = activity.cancel()
     return {"ok": True, "cancelled": cancelled}
+
+
+MIRROR_SUBFOLDER = "BookVault library"
+
+
+def _mirror_root() -> Path | None:
+    """Where the loose-file mirror lives: a subfolder of the configured save
+    folder, so hundreds of book files never scatter among the user's other
+    downloads. None only when there's no save folder at all (tests)."""
+    root = prefs.resolve_download_dir()
+    return (root / MIRROR_SUBFOLDER) if root else None
+
+
+@app.post("/activity/download-files")
+def download_files_activity(req: PrepareRequest):
+    """Download the selected books into the save folder as loose files.
+
+    Same transfers as /activity/prepare without the zip; a book already there
+    and the right size is skipped rather than fetched again."""
+    client = session.current_client()
+    if client is None:
+        return JSONResponse({"ok": False, "error": "Not logged in"}, status_code=401)
+    # Same distinction prepare makes: None means "everything", an explicitly
+    # empty list means the user selected nothing, which is an error.
+    if req.art_ids is not None and len(req.art_ids) == 0:
+        return JSONResponse({"ok": False, "error": "No books selected"}, status_code=400)
+    dest = _mirror_root()
+    if dest is None:
+        return JSONResponse(
+            {"ok": False, "error": "No save folder is configured."}, status_code=400
+        )
+    art_ids = set(req.art_ids) if req.art_ids is not None else None
+    started = activity.download_files(
+        client, art_ids, req.ebook_format, req.audiobook_format, dest_root=dest,
+    )
+    return {"ok": True, "started": started}
 
 
 @app.post("/download/save-copy")

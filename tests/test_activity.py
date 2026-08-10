@@ -17,6 +17,11 @@ import zipfile
 import pytest
 from bookvault_core import cache
 from bookvault_core.client import DownloadCancelled
+from bookvault_core.library_fs import (
+    MIRROR_INDEX,
+    read_mirror_index,
+    record_in_mirror_index,
+)
 from bookvault_web import activity
 
 from tests.fakes import FakeLitresClient
@@ -541,11 +546,11 @@ def test_cancel_returns_false_when_nothing_running():
 def test_cancel_returns_false_during_refresh_reload_phase():
     """Cancel only stops CHECKING/PREPARING; the REFRESHING reload itself is
     a single call that isn't interruptible, so cancel() no-ops there."""
-    activity._state["state"] = activity.REFRESHING
+    activity.state._state["state"] = activity.REFRESHING
     try:
         assert activity.cancel() is False
     finally:
-        activity._state["state"] = activity.IDLE
+        activity.state._state["state"] = activity.IDLE
 
 
 # ==========================================================================
@@ -600,21 +605,21 @@ def test_fetch_size_returns_size_and_raw_files():
 
 
 def test_friendly_error_recognizes_ddos_guard_block():
-    assert "anti-bot" in activity._friendly_error(RuntimeError("Download failed for art 1 (403): DDoS-Guard"))
+    assert "anti-bot" in activity.state._friendly_error(RuntimeError("Download failed for art 1 (403): DDoS-Guard"))
 
 
 def test_friendly_error_recognizes_stale_client_after_relogin():
-    msg = activity._friendly_error(RuntimeError("Event loop is closed! Is Playwright already stopped?"))
+    msg = activity.state._friendly_error(RuntimeError("Event loop is closed! Is Playwright already stopped?"))
     assert "session changed" in msg.lower()
 
 
 def test_friendly_error_recognizes_dropped_connection():
-    msg = activity._friendly_error(RuntimeError("APIRequestContext.get: socket hang up"))
+    msg = activity.state._friendly_error(RuntimeError("APIRequestContext.get: socket hang up"))
     assert "interrupted" in msg.lower()
 
 
 def test_friendly_error_falls_back_to_raw_text_for_unrecognized_errors():
-    assert "something truly unexpected" in activity._friendly_error(RuntimeError("something truly unexpected"))
+    assert "something truly unexpected" in activity.state._friendly_error(RuntimeError("something truly unexpected"))
 
 
 # ==========================================================================
@@ -800,7 +805,7 @@ def test_a_build_with_no_successes_leaves_no_workdir_behind(monkeypatch):
         made.append(path)
         return path
 
-    monkeypatch.setattr(activity.tempfile, "mkdtemp", recording_mkdtemp)
+    monkeypatch.setattr(activity.archive.tempfile, "mkdtemp", recording_mkdtemp)
     client = _make_client(_book(1, "Book A", TEXT_FILES))
     client.fail_downloads = {1}
     activity.prepare(client)
@@ -845,7 +850,7 @@ def test_saving_moves_the_zip_out_and_removes_the_workdir(tmp_path):
     client = _make_client(_book(1, "Book A", TEXT_FILES))
     activity.prepare(client, dest_dir=dest)
     wait_until_idle()
-    assert activity._state["workdir"] is None
+    assert activity.state._state["workdir"] is None
     assert not list(tmp_path.glob("litres-*/"))  # nothing staged left behind
 
 
@@ -873,7 +878,7 @@ def test_a_new_build_never_deletes_the_users_download_folder(tmp_path):
 def test_two_builds_in_the_same_second_do_not_collide(tmp_path, monkeypatch):
     """The name is timestamped to the second, so two quick builds would
     otherwise land on the same filename."""
-    monkeypatch.setattr(activity.time, "strftime", lambda fmt: "20260809-120000")
+    monkeypatch.setattr(activity.archive.time, "strftime", lambda fmt: "20260809-120000")
     dest = tmp_path / "out"
     client = _make_client(_book(1, "Book A", TEXT_FILES))
     for _ in range(2):
@@ -898,7 +903,7 @@ def test_an_unwritable_destination_keeps_the_archive_downloadable(tmp_path):
     assert snap["zip_path"] and pathlib.Path(snap["zip_path"]).exists()
     assert "Couldn't save" in snap["message"]
     # Still tracked, so the next prepare() cleans it up.
-    assert activity._state["workdir"] == str(pathlib.Path(snap["zip_path"]).parent)
+    assert activity.state._state["workdir"] == str(pathlib.Path(snap["zip_path"]).parent)
 
 
 def test_a_failed_build_writes_nothing_into_the_destination(tmp_path):
@@ -946,9 +951,13 @@ def test_a_crashed_build_removes_its_workdir(monkeypatch):
         made.append(path)
         return path
 
-    monkeypatch.setattr(activity.tempfile, "mkdtemp", recording_mkdtemp)
+    monkeypatch.setattr(activity.archive.tempfile, "mkdtemp", recording_mkdtemp)
     client = _make_client(_book(1, "Book A", TEXT_FILES))
-    monkeypatch.setattr(activity, "_iter_books", lambda c: (_ for _ in ()).throw(RuntimeError("boom")))
+    # The zip build reaches the listing through `library._iter_books`, so the
+    # patch has to land on the module that owns it.
+    monkeypatch.setattr(
+        activity.library, "_iter_books", lambda c: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     activity.prepare(client)
     snap = wait_until_idle()
 
@@ -977,10 +986,10 @@ def test_refresh_cancelled_during_reload_stops_before_the_sweep(monkeypatch):
     already be set when the reload finishes -- the refresh must then stop
     cleanly instead of rolling into the size sweep."""
     def build_and_cancel(client):
-        activity._cancel_event.set()
+        activity.state._cancel_event.set()
         return [{"id": 1, "title": "Book A", "is_audio": False}]
 
-    monkeypatch.setattr(activity, "build_books", build_and_cancel)
+    monkeypatch.setattr(activity.library, "build_books", build_and_cancel)
     client = _make_client(_book(1, "Book A", TEXT_FILES))
     activity.refresh(client)
     snap = wait_until_idle()
@@ -996,7 +1005,7 @@ def test_friendly_error_maps_common_statuses():
         "Timeout 300000ms exceeded": "timed out",
     }
     for raw, expected in cases.items():
-        assert expected in activity._friendly_error(Exception(raw)), raw
+        assert expected in activity.state._friendly_error(Exception(raw)), raw
 
 
 # ==========================================================================
@@ -1060,7 +1069,7 @@ def test_a_cache_only_sweep_uses_the_stale_library_when_the_fresh_one_expired(mo
     monkeypatch.setattr(cache, "get_library_stale", lambda: books)   # but we still know the ids
     monkeypatch.setattr(cache, "get_files", lambda art_id: [{"id": 9, "extension": "epub", "size": 5_000_000}])
 
-    activity._run_check(object(), None, live=False)
+    activity.library._run_check(object(), None, live=False)
 
     snap = activity.snapshot()
     assert snap["sizes"], "a stale library must still let cached sizes resolve"
@@ -1071,15 +1080,15 @@ def test_starting_an_activity_keeps_the_sizes_already_resolved():
     """Downloading, refreshing, or the automatic check on page load must not
     blank sizes the app already had -- they come from the durable file-listing
     cache, not from the activity that happens to be running."""
-    activity._state["sizes"] = {1: 12.5, 2: 30.0}
-    assert activity._begin(activity.PREPARING) is True
+    activity.state._state["sizes"] = {1: 12.5, 2: 30.0}
+    assert activity.state._begin(activity.PREPARING) is True
     assert activity.snapshot()["sizes"] == {1: 12.5, 2: 30.0}
 
 
 def test_logout_drops_the_sizes_so_they_cannot_cross_accounts():
     """The flip side of surviving _begin: entries are keyed by art_id, so a
     previous account's sizes must not paint onto the next one's rows."""
-    activity._state["sizes"] = {1: 12.5}
+    activity.state._state["sizes"] = {1: 12.5}
     activity.forget_sizes()
     assert activity.snapshot()["sizes"] == {}
 
@@ -1091,7 +1100,7 @@ def test_copy_archive_leaves_the_original_where_it_was(tmp_path):
     saved = tmp_path / "configured" / "litres-library.zip"
     saved.parent.mkdir()
     saved.write_bytes(b"archive")
-    activity._state["saved_path"] = str(saved)
+    activity.state._state["saved_path"] = str(saved)
 
     elsewhere = tmp_path / "external-drive"
     target = activity.copy_archive_to(elsewhere)
@@ -1107,8 +1116,8 @@ def test_copy_archive_falls_back_to_the_temp_zip_when_the_save_failed(tmp_path):
     temp_zip = tmp_path / "workdir" / "litres-library.zip"
     temp_zip.parent.mkdir()
     temp_zip.write_bytes(b"archive")
-    activity._state["saved_path"] = None
-    activity._state["zip_path"] = str(temp_zip)
+    activity.state._state["saved_path"] = None
+    activity.state._state["zip_path"] = str(temp_zip)
 
     target = activity.copy_archive_to(tmp_path / "dest")
     assert target.exists() and temp_zip.exists()
@@ -1121,7 +1130,7 @@ def test_copy_archive_never_overwrites_an_existing_file(tmp_path):
     dest = tmp_path / "b"
     dest.mkdir()
     (dest / "litres-library.zip").write_bytes(b"older archive worth keeping")
-    activity._state["saved_path"] = str(saved)
+    activity.state._state["saved_path"] = str(saved)
 
     target = activity.copy_archive_to(dest)
     assert target.name == "litres-library (2).zip"
@@ -1132,7 +1141,7 @@ def test_copying_into_the_folder_it_already_lives_in_is_a_no_op(tmp_path):
     """Copying a file onto itself would truncate it."""
     saved = tmp_path / "litres-library.zip"
     saved.write_bytes(b"archive")
-    activity._state["saved_path"] = str(saved)
+    activity.state._state["saved_path"] = str(saved)
 
     target = activity.copy_archive_to(tmp_path)
     assert target == saved
@@ -1141,8 +1150,8 @@ def test_copying_into_the_folder_it_already_lives_in_is_a_no_op(tmp_path):
 
 
 def test_copy_archive_without_a_finished_build_raises(tmp_path):
-    activity._state["saved_path"] = None
-    activity._state["zip_path"] = None
+    activity.state._state["saved_path"] = None
+    activity.state._state["zip_path"] = None
     with pytest.raises(FileNotFoundError):
         activity.copy_archive_to(tmp_path)
 
@@ -1163,8 +1172,8 @@ def test_expected_total_sums_the_files_the_build_will_actually_pick(monkeypatch)
     }
     monkeypatch.setattr(cache, "get_files", lambda art_id: listings.get(art_id))
 
-    assert activity._expected_total_bytes(None) == 3_500_000
-    assert activity._expected_total_bytes({1}) == 1_000_000
+    assert activity.library._expected_total_bytes(None) == 3_500_000
+    assert activity.library._expected_total_bytes({1}) == 1_000_000
 
 
 def test_expected_total_is_none_when_nothing_is_known(monkeypatch):
@@ -1174,13 +1183,639 @@ def test_expected_total_is_none_when_nothing_is_known(monkeypatch):
 
     monkeypatch.setattr(cache, "get_library", lambda: [{"id": 1}])
     monkeypatch.setattr(cache, "get_files", lambda art_id: None)
-    assert activity._expected_total_bytes(None) is None
+    assert activity.library._expected_total_bytes(None) is None
 
 
 def test_byte_progress_resets_when_a_new_activity_starts():
     """Unlike sizes, these ARE progress for one build and must not carry over."""
-    activity._state["bytes_done"] = 500
-    activity._state["bytes_total"] = 1000
-    activity._begin(activity.PREPARING)
+    activity.state._state["bytes_done"] = 500
+    activity.state._state["bytes_total"] = 1000
+    activity.state._begin(activity.PREPARING)
     snap = activity.snapshot()
     assert snap["bytes_done"] == 0 and snap["bytes_total"] is None
+
+
+# ==========================================================================
+# DOWNLOADING -- the loose-file mirror
+# ==========================================================================
+# The interesting cases are all about a file that is ALREADY THERE: is it the
+# book, a half-written wreck, or something the user put there themselves?
+
+
+def _files(size, ext="epub", fid=100):
+    return [{"id": fid, "extension": ext, "is_additional": False, "size": size}]
+
+
+def test_download_files_writes_books_into_the_folder(tmp_path):
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    assert activity.download_files(client, dest_root=tmp_path) is True
+    result = wait_until_idle()
+    assert result["result"] == "done"
+    assert (tmp_path / "Book One.epub").exists()
+    assert [e["status"] for e in result["log"]] == ["done"]
+
+
+def test_a_complete_file_is_not_downloaded_again(tmp_path):
+    """The whole point: running it twice must be nearly free."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    (tmp_path / "Book One.epub").write_bytes(b"x" * 1_000_000)
+    record_in_mirror_index(tmp_path, 1, "Book One.epub", 1_000_000)
+
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+    assert [e["status"] for e in result["log"]] == ["exists"]
+    assert client.download_calls == [], "a complete book must not be re-fetched"
+
+
+def test_a_truncated_file_is_redownloaded_and_overwritten(tmp_path):
+    """An interrupted transfer left 3 bytes where 1 MB belongs. Trusting it
+    forever is the bug this check exists to prevent."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    dest = tmp_path / "Book One.epub"
+    dest.write_bytes(b"abc")
+    # A previous run recorded writing the full file; only 3 bytes are there now.
+    record_in_mirror_index(tmp_path, 1, "Book One.epub", 1_000_000)
+
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+    assert [e["status"] for e in result["log"]] == ["replaced"]
+    assert client.download_calls == [1]
+    assert dest.read_bytes() != b"abc", "the partial file must be overwritten"
+
+
+def test_a_file_that_is_too_LARGE_is_also_replaced(tmp_path):
+    """Not just truncation -- any mismatch. A file bigger than the listing says
+    is equally not the book (a double-append, a different edition)."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    (tmp_path / "Book One.epub").write_bytes(b"x" * 2_000_000)
+    record_in_mirror_index(tmp_path, 1, "Book One.epub", 1_000_000)
+
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+    assert [e["status"] for e in result["log"]] == ["replaced"]
+    assert client.download_calls == [1]
+
+
+def test_a_zero_byte_file_counts_as_missing_not_complete(tmp_path):
+    """A transfer that died before the first chunk. 0 != 1_000_000, so it must
+    re-download rather than be read as "present"."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    (tmp_path / "Book One.epub").write_bytes(b"")
+
+    activity.download_files(client, dest_root=tmp_path)
+    wait_until_idle()
+    assert client.download_calls == [1]
+
+
+def test_a_listing_without_a_size_leaves_an_existing_file_alone(tmp_path):
+    """No size to compare against. Re-downloading a whole library every run on
+    a listing that omits the field would be far worse than trusting the file."""
+    client = _make_client(_book(1, "Book One", _files(None)))
+    dest = tmp_path / "Book One.epub"
+    dest.write_bytes(b"whatever")
+
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+    assert [e["status"] for e in result["log"]] == ["exists"]
+    assert client.download_calls == []
+
+
+def test_a_failed_transfer_leaves_no_file_where_the_book_belongs(tmp_path):
+    """Staged through a .part file: a dead transfer must not leave wreckage at
+    the destination, or the NEXT run would size-check the wreckage."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    client.fail_downloads = {1}
+
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+    assert [e["status"] for e in result["log"]] == ["error"]
+    assert not (tmp_path / "Book One.epub").exists()
+
+
+def test_a_book_with_no_downloadable_file_is_skipped(tmp_path):
+    client = _make_client(_book(1, "Rights limited", []))
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+    assert [e["status"] for e in result["log"]] == ["skipped"]
+
+
+def test_two_books_with_the_same_title_do_not_overwrite_each_other(tmp_path):
+    """Both sanitize to "Same Title"; the second must not land on the first."""
+    client = _make_client(
+        _book(1, "Same Title", TEXT_FILES),
+        _book(2, "Same Title", TEXT_FILES),
+    )
+    # Its own subfolder: conftest also parks the cache/state files in tmp_path,
+    # and this assertion is about the *whole* directory listing.
+    dest = tmp_path / "mirror"
+    activity.download_files(client, dest_root=dest)
+    wait_until_idle()
+    names = sorted(p.name for p in dest.iterdir() if p.name != MIRROR_INDEX)
+    assert names == ["Same Title (2).epub", "Same Title.epub"]
+
+
+def test_a_title_of_pure_punctuation_falls_back_to_the_id(tmp_path):
+    client = _make_client(_book(7, "???!!!", TEXT_FILES))
+    activity.download_files(client, dest_root=tmp_path)
+    wait_until_idle()
+    assert (tmp_path / "7.epub").exists(), "must not write a bare '.epub'"
+
+
+def test_the_mirror_folder_is_created_if_missing(tmp_path):
+    """A first run into a folder that doesn't exist yet, including parents."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    dest = tmp_path / "not" / "there" / "yet"
+    activity.download_files(client, dest_root=dest)
+    assert wait_until_idle()["result"] == "done"
+    assert (dest / "Book One.epub").exists()
+
+
+def test_only_the_selected_books_are_downloaded(tmp_path):
+    client = _make_client(
+        _book(1, "One", TEXT_FILES), _book(2, "Two", TEXT_FILES), _book(3, "Three", TEXT_FILES),
+    )
+    activity.download_files(client, art_ids={1, 3}, dest_root=tmp_path)
+    wait_until_idle()
+    assert sorted(client.download_calls) == [1, 3]
+    assert not (tmp_path / "Two.epub").exists()
+
+
+def test_stop_leaves_finished_books_in_place_for_the_next_run(tmp_path):
+    """Cancelling isn't a rollback -- what landed stays, and re-running skips
+    it. That's what makes a mirror resumable."""
+    client = _make_client(_book(1, "First", TEXT_FILES), _book(2, "Second", TEXT_FILES))
+    original = client.download_file
+
+    def stop_after_first(art_id, release_file_id, filename, dest, subscr=False, should_cancel=None, on_progress=None):
+        result = original(art_id, release_file_id, filename, dest, subscr)
+        if art_id == 1:
+            activity.cancel()
+        return result
+
+    client.download_file = stop_after_first
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    assert result["result"] == "cancelled"
+    assert (tmp_path / "First.epub").exists()
+    assert not (tmp_path / "Second.epub").exists()
+
+
+def test_a_second_run_after_a_stop_skips_what_already_landed(tmp_path):
+    client = _make_client(_book(1, "First", TEXT_FILES))
+    activity.download_files(client, dest_root=tmp_path)
+    wait_until_idle()
+    client.download_calls.clear()
+
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+    assert [e["status"] for e in result["log"]] == ["exists"]
+    assert client.download_calls == []
+
+
+def test_download_files_refuses_while_something_else_runs(tmp_path):
+    client = _make_client(_book(1, "One", TEXT_FILES))
+    assert activity.download_files(client, dest_root=tmp_path) is True
+    assert activity.download_files(client, dest_root=tmp_path) is False
+    wait_until_idle()
+
+
+def test_an_unwritable_destination_ends_in_error_not_a_wedged_machine(tmp_path):
+    """The machine must land back at IDLE so the user can try elsewhere."""
+    blocked = tmp_path / "read-only"
+    blocked.mkdir()
+    blocked.chmod(0o500)
+    client = _make_client(_book(1, "One", TEXT_FILES))
+    try:
+        activity.download_files(client, dest_root=blocked / "sub")
+        result = wait_until_idle()
+        assert result["state"] == activity.IDLE
+        assert result["result"] == "error"
+    finally:
+        blocked.chmod(0o700)
+
+
+# -- nothing may be left behind in the user's own folder --------------------
+# The mirror writes into a directory the user browses. A `.part` file left
+# there is invisible (dotfile), never retried, and accumulates one per failure
+# -- so every path out of a transfer has to clean up after itself.
+
+
+def test_a_corrupt_audio_bundle_leaves_no_staging_file(tmp_path):
+    """The transfer succeeded, so the client has already washed its hands of
+    the staging file; everything after it can still fail. The bundle not being
+    a zip is the realistic version of that."""
+    client = _make_client(({"id": 1, "title": "An Audiobook", "art_type": 1},
+                           [{"id": 100, "extension": "zip", "is_additional": False, "size": 1000}]))
+
+    def not_really_a_zip(art_id, release_file_id, filename, dest, subscr=False,
+                         should_cancel=None, on_progress=None):
+        dest.write_bytes(b"this is not a zip at all")
+        client.download_calls.append(art_id)
+        return dest
+
+    client.download_file = not_really_a_zip
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    assert result["log"][0]["status"] == "error"
+    assert [p.name for p in tmp_path.iterdir() if p.name.endswith(".part")] == []
+    assert activity.books_on_disk(tmp_path) == [], "a failed extract must not look complete"
+
+
+def test_a_cancelled_transfer_leaves_no_staging_file(tmp_path):
+    """Stop mid-transfer is the common case, not an exotic one -- it must not
+    cost the user a hidden file every time they change their mind."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES), _book(2, "Book Two", TEXT_FILES))
+
+    def cancel_midway(art_id, release_file_id, filename, dest, subscr=False,
+                      should_cancel=None, on_progress=None):
+        client.download_calls.append(art_id)
+        dest.write_bytes(b"half a book")
+        raise DownloadCancelled("stopped mid-transfer")
+
+    client.download_file = cancel_midway
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    assert result["result"] == "cancelled"
+    # (the suite redirects its own cache file into tmp_path, so look for ours)
+    strays = [p.name for p in tmp_path.iterdir() if p.name.endswith(".part") or "Book" in p.name]
+    assert strays == [], f"a cancelled run must leave nothing behind, found: {strays}"
+
+
+def test_the_summary_counts_each_outcome_separately(tmp_path):
+    client = _make_client(
+        _book(1, "Fresh", TEXT_FILES),
+        _book(2, "Already", TEXT_FILES),
+        _book(3, "Broken", TEXT_FILES),
+    )
+    (tmp_path / "Already.epub").write_bytes(b"x" * 1_000_000)   # complete
+    record_in_mirror_index(tmp_path, 2, "Already.epub", 1_000_000)
+    (tmp_path / "Broken.epub").write_bytes(b"x" * 12)           # partial
+    record_in_mirror_index(tmp_path, 3, "Broken.epub", 1_000_000)
+
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+    by_status = {e["title"]: e["status"] for e in result["log"]}
+    assert by_status == {"Fresh": "done", "Already": "exists", "Broken": "replaced"}
+    assert "already saved" in result["message"]
+    assert "re-downloaded" in result["message"]
+
+
+# -- round trips: run it for real, then ask again ---------------------------
+# Every test above hand-seeds the index and then checks one consumer. That is
+# how a feature whose central check could NEVER fire shipped green: the seeded
+# value agreed with the production code's assumption, and no test ever let a
+# real download decide what the next question would see.
+#
+# These do. They perform an actual run and then ask the SAME question the app
+# asks afterwards -- which is the only way a wrong idea of "what a finished
+# download looks like" has anywhere to hide.
+
+
+def test_running_the_mirror_twice_downloads_nothing_the_second_time(tmp_path):
+    """The feature's entire promise, end to end and unseeded.
+
+    This is the test whose absence let the catalogue-size check ship: it
+    compared bytes on disk against the size litres.ru's listing declares, which
+    that service does not honour, so the second run re-fetched the whole
+    library. Hand-seeded tests passed because they seeded the same wrong
+    number the code compared against."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES), _book(2, "Book Two", TEXT_FILES))
+
+    activity.download_files(client, dest_root=tmp_path)
+    assert wait_until_idle()["result"] == "done"
+    assert sorted(client.download_calls) == [1, 2]
+
+    client.download_calls.clear()
+    activity.download_files(client, dest_root=tmp_path)
+    second = wait_until_idle()
+
+    assert [e["status"] for e in second["log"]] == ["exists", "exists"]
+    assert client.download_calls == [], "a second run must re-fetch nothing"
+
+
+def test_an_audiobook_mirror_run_is_also_idempotent(tmp_path):
+    """Same promise for the unpacked-folder case, which has no file size to
+    compare at all and so relies entirely on the recorded track count."""
+    client = _make_client(({"id": 1, "title": "An Audiobook", "art_type": 1}, TEXT_FILES))
+
+    def download_zip_with_mp3(art_id, release_file_id, filename, dest, subscr=False,
+                              should_cancel=None, on_progress=None):
+        _write_zip(dest, [("01.mp3", b"\xff\xfbone" * 40), ("02.mp3", b"\xff\xfbtwo" * 40)])
+        client.download_calls.append(art_id)
+        return dest
+
+    client.download_file = download_zip_with_mp3
+    activity.download_files(client, dest_root=tmp_path)
+    assert wait_until_idle()["result"] == "done"
+    tracks = sorted(p.name for p in (tmp_path / "An Audiobook").iterdir())
+    assert tracks == ["01.mp3", "02.mp3"], "the bundle must land unpacked"
+
+    client.download_calls.clear()
+    activity.download_files(client, dest_root=tmp_path)
+    assert [e["status"] for e in wait_until_idle()["log"]] == ["exists"]
+    assert client.download_calls == []
+
+
+def test_a_real_download_lights_up_the_badge_and_feeds_zip_reuse(tmp_path, monkeypatch):
+    """The three consumers must agree about one folder.
+
+    They were implemented separately and drifted: the mirror moved to the
+    recorded-size index while the badge scan and the zip reuse still compared
+    against the catalogue, so a book the mirror called "exists" showed no badge
+    and was downloaded again by the very next zip build. Asking all three after
+    one real run is what catches that."""
+    monkeypatch.setattr(cache, "get_library", lambda: [{"id": 1, "title": "Book One", "is_audio": False}])
+    monkeypatch.setattr(cache, "get_files", lambda art_id: TEXT_FILES)
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+
+    activity.download_files(client, dest_root=tmp_path)
+    assert wait_until_idle()["result"] == "done"
+
+    # 1. the mirror says it has it
+    activity.forget_books_on_disk()
+    assert activity.books_on_disk(tmp_path) == [1], "the badge must reflect a real download"
+
+    # 2. and a zip build packs that copy rather than fetching it again
+    client.download_calls.clear()
+    activity.prepare(client, mirror_root=tmp_path)
+    zipped = wait_until_idle()
+    assert [e["status"] for e in zipped["log"]] == ["reused"]
+    assert client.download_calls == [], "the zip must reuse the file the mirror wrote"
+
+
+def test_the_fake_does_not_deliver_the_size_the_listing_declares(tmp_path):
+    """Guards the fake itself.
+
+    Restoring exact-size delivery would make every test above pass again while
+    the product broke in the field, because litres.ru's declared size is not
+    the length of what it serves. If this assertion ever needs "fixing", the
+    thing to fix is the code that depends on it."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    activity.download_files(client, dest_root=tmp_path)
+    wait_until_idle()
+
+    delivered = (tmp_path / "Book One.epub").stat().st_size
+    assert delivered != TEXT_FILES[0]["size"]
+    assert read_mirror_index(tmp_path)["1"]["size"] == delivered
+
+
+# -- reusing already-downloaded files when building a zip -------------------
+# Requests to litres.ru are the scarce resource, so a book already on disk
+# should be packed, not fetched. The risk is packing a BROKEN local file.
+
+
+def test_prepare_packs_a_local_copy_instead_of_downloading(tmp_path):
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    (mirror / "Book One.epub").write_bytes(b"y" * 1_000_000)
+
+    activity.prepare(client, mirror_root=mirror)
+    result = wait_until_idle()
+
+    assert [e["status"] for e in result["log"]] == ["reused"]
+    assert client.download_calls == [], "a local copy must not be re-fetched"
+    with zipfile.ZipFile(result["zip_path"]) as zf:
+        assert zf.read("Book One.epub") == b"y" * 1_000_000
+
+
+def test_prepare_ignores_a_local_copy_of_the_wrong_size(tmp_path):
+    """A half-written file must never be packed as though it were the book --
+    that would put corruption inside an archive the user trusts."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    (mirror / "Book One.epub").write_bytes(b"truncated")
+    # A previous run finished this file at 1 MB; 9 bytes are there now.
+    record_in_mirror_index(mirror, 1, "Book One.epub", 1_000_000)
+
+    activity.prepare(client, mirror_root=mirror)
+    result = wait_until_idle()
+
+    assert [e["status"] for e in result["log"]] == ["done"]
+    assert client.download_calls == [1], "a partial local file must be re-fetched"
+
+
+def test_prepare_without_a_mirror_behaves_exactly_as_before(tmp_path):
+    """mirror_root=None is the old behaviour, unchanged."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    activity.prepare(client, mirror_root=None)
+    result = wait_until_idle()
+    assert [e["status"] for e in result["log"]] == ["done"]
+    assert client.download_calls == [1]
+
+
+def test_prepare_reuses_only_the_books_that_are_present(tmp_path):
+    """The realistic mix: some downloaded earlier, some not."""
+    client = _make_client(_book(1, "Have", TEXT_FILES), _book(2, "Missing", TEXT_FILES))
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    (mirror / "Have.epub").write_bytes(b"z" * 1_000_000)
+
+    activity.prepare(client, mirror_root=mirror)
+    result = wait_until_idle()
+
+    by_status = {e["title"]: e["status"] for e in result["log"]}
+    assert by_status == {"Have": "reused", "Missing": "done"}
+    assert client.download_calls == [2]
+
+
+def test_a_mirror_folder_that_does_not_exist_is_simply_ignored(tmp_path):
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    activity.prepare(client, mirror_root=tmp_path / "never-created")
+    result = wait_until_idle()
+    assert [e["status"] for e in result["log"]] == ["done"]
+
+
+# -- the "already on disk" badge --------------------------------------------
+
+
+def test_books_on_disk_lists_only_complete_files(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "get_library", lambda: [
+        {"id": 1, "title": "Complete", "is_audio": False},
+        {"id": 2, "title": "Partial", "is_audio": False},
+        {"id": 3, "title": "Absent", "is_audio": False},
+    ])
+    monkeypatch.setattr(cache, "get_files", lambda art_id: TEXT_FILES)
+    (tmp_path / "Complete.epub").write_bytes(b"c" * 1_000_000)
+    record_in_mirror_index(tmp_path, 1, "Complete.epub", 1_000_000)
+    (tmp_path / "Partial.epub").write_bytes(b"c" * 10)
+    record_in_mirror_index(tmp_path, 2, "Partial.epub", 1_000_000)
+
+    assert activity.books_on_disk(tmp_path) == [1]
+
+
+def test_books_on_disk_is_empty_when_there_is_no_folder():
+    assert activity.books_on_disk(None) == []
+    assert activity.books_on_disk(pathlib.Path("/definitely/not/here")) == []
+
+
+def test_books_on_disk_skips_books_whose_listing_was_never_cached(tmp_path, monkeypatch):
+    """No cached listing means no size to compare -- so no badge, rather than
+    a badge based on a filename alone."""
+    monkeypatch.setattr(cache, "get_library", lambda: [{"id": 1, "title": "Book One", "is_audio": False}])
+    monkeypatch.setattr(cache, "get_files", lambda art_id: None)
+    (tmp_path / "Book One.epub").write_bytes(b"x" * 1_000_000)
+    assert activity.books_on_disk(tmp_path) == []
+
+
+def test_books_on_disk_uses_the_same_decollided_names_a_run_would(tmp_path, monkeypatch):
+    """Two identical titles: the second is written as "Same (2).epub", so the
+    badge has to look under that name or it would never light up."""
+    monkeypatch.setattr(cache, "get_library", lambda: [
+        {"id": 1, "title": "Same", "is_audio": False},
+        {"id": 2, "title": "Same", "is_audio": False},
+    ])
+    monkeypatch.setattr(cache, "get_files", lambda art_id: TEXT_FILES)
+    (tmp_path / "Same (2).epub").write_bytes(b"x" * 1_000_000)
+    assert activity.books_on_disk(tmp_path) == [2]
+
+
+# -- audiobook completeness --------------------------------------------------
+# An audiobook is stored unpacked, so no single file has a length to check.
+# The index records how many tracks the finished extract wrote; that count,
+# re-counted on disk, is the equivalent evidence.
+
+
+def _audio_on_disk(root, art_id, name, is_audio=True):
+    return activity.mirror._is_on_disk(root, read_mirror_index(root), art_id, name, "m4b", is_audio)
+
+
+def test_an_audiobook_folder_with_no_record_is_not_complete(tmp_path):
+    """A folder that merely exists proves nothing -- an extract may have died
+    halfway, leaving three of forty tracks. Unlike a single file (which we
+    trust when unrecorded), a directory carries no evidence at all."""
+    book = tmp_path / "Audiobook"
+    book.mkdir()
+    (book / "01.mp3").write_bytes(b"partial")
+    assert _audio_on_disk(tmp_path, 1, "Audiobook") is False
+
+
+def test_an_audiobook_matching_its_recorded_track_count_is_complete(tmp_path):
+    book = tmp_path / "Audiobook"
+    book.mkdir()
+    (book / "01.mp3").write_bytes(b"track")
+    record_in_mirror_index(tmp_path, 1, "Audiobook", 0, tracks=1)
+    assert _audio_on_disk(tmp_path, 1, "Audiobook") is True
+
+
+def test_an_audiobook_missing_a_track_is_not_complete(tmp_path):
+    """Delete one track of forty and the folder still looks like the book.
+    The recorded count is what notices."""
+    book = tmp_path / "Audiobook"
+    book.mkdir()
+    for n in range(3):
+        (book / f"0{n}.mp3").write_bytes(b"track")
+    record_in_mirror_index(tmp_path, 1, "Audiobook", 0, tracks=3)
+    assert _audio_on_disk(tmp_path, 1, "Audiobook") is True
+
+    (book / "01.mp3").unlink()
+    assert _audio_on_disk(tmp_path, 1, "Audiobook") is False
+
+
+def test_an_audiobook_that_gained_a_track_is_not_complete(tmp_path):
+    """A re-issue with an extra track, or a stray file dropped in: the folder
+    is no longer what we wrote, so it is rebuilt rather than believed."""
+    book = tmp_path / "Audiobook"
+    book.mkdir()
+    (book / "01.mp3").write_bytes(b"track")
+    record_in_mirror_index(tmp_path, 1, "Audiobook", 0, tracks=1)
+    (book / "02.mp3").write_bytes(b"track")
+    assert _audio_on_disk(tmp_path, 1, "Audiobook") is False
+
+
+def test_a_record_with_no_track_count_is_not_trusted(tmp_path):
+    """An ebook-shaped record (size, no tracks) against a folder can't prove
+    anything, so it must not read as complete."""
+    book = tmp_path / "Audiobook"
+    book.mkdir()
+    (book / "01.mp3").write_bytes(b"track")
+    record_in_mirror_index(tmp_path, 1, "Audiobook", 5_000_000)
+    assert _audio_on_disk(tmp_path, 1, "Audiobook") is False
+
+
+def test_bookkeeping_files_are_not_counted_as_tracks(tmp_path):
+    """The index itself, and any `.part` staging file, sit alongside the
+    media; counting them would make a complete folder look over-full."""
+    book = tmp_path / "Audiobook"
+    book.mkdir()
+    (book / "01.mp3").write_bytes(b"track")
+    (book / ".bookvault-index.json").write_text("{}")
+    (book / ".02.mp3.part").write_bytes(b"half")
+    assert activity.mirror._audio_media_count(book) == 1
+
+
+# -- the badge scan must not make the app unresponsive ----------------------
+# It runs on a route the browser polls once a second, over the whole library,
+# taking the cache lock per book -- while a running download holds that same
+# lock after every transfer. Uncached, the polls queue up and saturate the
+# threadpool, and then Stop can't get a thread either.
+
+
+def test_the_on_disk_scan_is_memoised_between_polls(tmp_path, monkeypatch):
+    scans = []
+    monkeypatch.setattr(cache, "get_library", lambda: [{"id": 1, "title": "One", "is_audio": False}])
+
+    def counting_get_files(art_id):
+        scans.append(art_id)
+        return TEXT_FILES
+
+    monkeypatch.setattr(cache, "get_files", counting_get_files)
+    (tmp_path / "One.epub").write_bytes(b"x" * 1_000_000)
+
+    first = activity.books_on_disk(tmp_path)
+    for _ in range(20):           # what a browser does in 20 seconds
+        activity.books_on_disk(tmp_path)
+
+    assert first == [1]
+    assert len(scans) == 1, f"the folder was rescanned {len(scans)} times for 21 polls"
+
+
+def test_a_finished_download_drops_the_memo_so_badges_appear(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "get_library", lambda: [{"id": 1, "title": "One", "is_audio": False}])
+    monkeypatch.setattr(cache, "get_files", lambda art_id: TEXT_FILES)
+
+    assert activity.books_on_disk(tmp_path) == []      # nothing there yet, memoised
+    (tmp_path / "One.epub").write_bytes(b"x" * 1_000_000)
+    assert activity.books_on_disk(tmp_path) == [], "still memoised, as designed"
+
+    activity.forget_books_on_disk()                     # what a finished run does
+    assert activity.books_on_disk(tmp_path) == [1]
+
+
+def test_changing_the_folder_bypasses_the_memo(tmp_path, monkeypatch):
+    """A different destination must never be answered from another one's scan."""
+    monkeypatch.setattr(cache, "get_library", lambda: [{"id": 1, "title": "One", "is_audio": False}])
+    monkeypatch.setattr(cache, "get_files", lambda art_id: TEXT_FILES)
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "One.epub").write_bytes(b"x" * 1_000_000)
+
+    assert activity.books_on_disk(tmp_path) == []
+    assert activity.books_on_disk(other) == [1]
+
+
+def test_stop_is_answerable_while_a_download_is_running(tmp_path):
+    """The regression this guards: Stop has to be reachable *during* a run.
+    cancel() must not depend on anything the run holds."""
+    client = _make_client(_book(1, "One", TEXT_FILES), _book(2, "Two", TEXT_FILES))
+    started = threading.Event()
+    release = threading.Event()
+    original = client.download_file
+
+    def slow(art_id, release_file_id, filename, dest, subscr=False, should_cancel=None, on_progress=None):
+        started.set()
+        release.wait(timeout=5)
+        return original(art_id, release_file_id, filename, dest, subscr)
+
+    client.download_file = slow
+    activity.download_files(client, dest_root=tmp_path)
+    assert started.wait(timeout=5), "the run never started"
+
+    # Mid-transfer, exactly when a user reaches for Stop.
+    assert activity.cancel() is True
+    release.set()
+    assert wait_until_idle(timeout=10)["result"] == "cancelled"

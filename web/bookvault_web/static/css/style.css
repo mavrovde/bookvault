@@ -236,6 +236,16 @@ button:active { transform: scale(0.97); }
   position: absolute; bottom: -6px; right: -6px; font-size: 0.75rem; line-height: 1;
   padding: 0.25rem; border-radius: 50%; background: white; box-shadow: var(--shadow-sm);
 }
+/* Mirrors .book-type-dot on the opposite corner, so the two badges read as a
+   pair rather than one being an afterthought. Green: "you already have this",
+   which is reassurance, not a warning. */
+.book-saved-badge {
+  position: absolute; bottom: -6px; left: -6px;
+  width: 18px; height: 18px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.65rem; color: white; background: var(--success);
+  box-shadow: var(--shadow-sm);
+}
 .book-title-g {
   font-size: 0.82rem; font-weight: 600; text-align: center; line-height: 1.25;
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
@@ -287,6 +297,13 @@ button:active { transform: scale(0.97); }
 #progress-log li.done .icon { background: var(--success); }
 #progress-log li.skipped .icon { background: var(--warning); }
 #progress-log li.error .icon { background: var(--danger); }
+/* Nothing was transferred for these -- the book was already on disk, or came
+   from the folder rather than litres.ru. Muted rather than green so a run that
+   mostly reused files doesn't read as a wall of fresh downloads. */
+#progress-log li.exists .icon { background: var(--text-faint); }
+/* The status carries the meaning, so it leads the detail line and the size
+   trails it. */
+#progress-log li .status-tag { color: var(--text-muted); font-weight: 500; }
 #progress-log li .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #progress-log li .detail { color: var(--text-faint); font-size: 0.8rem; flex-shrink: 0; max-width: 48%; text-align: right; }
 #progress-log li.error .detail, #progress-log li.skipped .detail { color: var(--text-muted); cursor: help; }

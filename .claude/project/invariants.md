@@ -17,14 +17,14 @@ already running *inside* a submission must not submit again — the single worke
 would wait on itself and deadlock (see the MCP server's threading note).
 
 Everything else follows from this: only one activity can run at a time, which
-is why `activity.py` is a state machine rather than a job queue.
+is why `activity/` is a state machine rather than a job queue.
 
 ## 2. Request cadence, not volume
 
 litres.ru sits behind an anti-bot layer that keys on **request count and
 rhythm**. This is why the on-load size sweep is cache-only, why `iter_library`
 jitters between pages, and why autosync runs on a multi-hour interval with
-jitter rather than a tidy timer.2push 
+jitter rather than a tidy timer.
 
 Treat as suspect: anything adding requests per book, lowering a page size,
 polling on a fixed period, or scanning the whole library to find one item.
@@ -156,3 +156,134 @@ user's own machine. When shelling out to one, the start path travels as an
 argv element or an environment variable, never interpolated into a script
 body, and the result is re-validated by the same guard a typed path goes
 through.
+
+## 13. A mode is wired into more places than the file you are editing
+
+Adding a state to the activity machine, a status to a result list, or an option
+to a pref means touching every place the existing siblings appear. The failure
+mode is silent: the feature works, and one control adjacent to it quietly
+doesn't.
+
+Find the places by grepping for a sibling that already works, and treat every
+hit as a site to update:
+
+```bash
+grep -rn "PREPARING\|preparing" web/bookvault_web/ --include="*.py" --include="*.js"
+```
+
+For a long-running state that means at least: the constant, the guard that
+claims it, the cancel predicate, the frontend's busy/stoppable/badge maps, the
+progress branch, and the route list in `tests/test_csrf.py`.
+
+**Test the negative path first.** A control that silently does nothing —
+a Stop that doesn't stop, a filter that matches nothing — passes every test
+that only asserts the happy path. Assert the *effect* ("the run ended
+cancelled"), never that the call was made.
+
+## 14. Resumable work must verify content, not presence
+
+Any operation that can be re-run has to decide "is this already done?", and the
+cheap answer — the path exists — is always wrong. Work interrupted halfway
+leaves something at the destination, and trusting it means the damage is
+permanent and invisible.
+
+- **Measure the property before you build a check on it.** A remote source
+  asserting a size, a hash, or a version is making a claim, not a promise, and
+  a claim that turns out not to describe what it delivers makes the check fire
+  *always* rather than never — which presents as re-doing all the work every
+  run. One throwaway script over real data settles it in minutes; shipping it
+  costs a re-download of someone's entire library.
+- Prefer the strongest evidence that is actually *true*. Comparing bytes on
+  disk against an upstream number is the most direct check available and is the
+  right instinct — but only once that number is known to describe the bytes.
+  Where it doesn't, record what the finished run itself wrote and compare
+  against that: weaker in principle, sound in practice.
+- Record enough that partial *removal* is caught too, not just partial writing
+  — a count for something stored unpacked, a length for a single file.
+- **No record must not mean "redo it".** Absence of evidence is not evidence of
+  damage. Something the user placed there themselves has nothing to verify
+  against, and re-fetching it is destructive; leave it alone.
+- **Write to a temporary name and rename on success.** A dead run must not
+  leave wreckage where the finished artefact belongs, or the next run inspects
+  the wreckage.
+- **One function answers the question, and every caller uses it.** The mirror,
+  the badge, and the zip's reuse are the same question about the same file.
+  Implemented separately they drift, and the drift is silent: each is
+  self-consistent, and the contradiction only shows in behaviour.
+
+## 15. Look for the feature before building it
+
+This codebase has several paths that look alike from outside, and a feature can
+be invisible simply because its entry point is hidden behind an env var or a
+capability check. Before designing anything, search for what already exists —
+by capability, not by the name you would have given it:
+
+```bash
+grep -rn "def start_\|def prepare\|def sync\|def download" web/bookvault_web/activity.py
+grep -rn "display:none\|{% if " web/bookvault_web/templates/index.html
+```
+
+A hidden entry point is not a missing feature. Surfacing or renaming the
+existing one beats adding a near-duplicate, which confuses users permanently
+and doubles the surface that has to stay correct.
+
+## 16. A fake must model the service, not the code's hopes
+
+The suite is fully offline, so `tests/fakes.py` *is* litres.ru as far as every
+test is concerned. Whatever the fake asserts about the service becomes
+unfalsifiable: production code and test agree, the suite is green, and the
+disagreement only surfaces in a real library.
+
+This has already cost a whole feature. The fake wrote exactly as many bytes as
+a file listing declared, justified in its own comment as "a real download
+produces a file matching the listed size". litres.ru does not, and the check
+built on that belief would have re-downloaded every book on every run.
+
+- When a fake encodes a **belief about the service** — a size, an ordering, a
+  status code, a header — verify the belief against reality first, and write
+  what you measured (with numbers) in the comment. A comment that argues from
+  plausibility is a warning sign; it means nobody checked.
+- Where the service is unreliable, make the fake unreliable **by default**, so
+  code that depends on the reliability fails loudly here. Reserve the
+  well-behaved case for a parameter an individual test opts into.
+- Add a test that pins the misbehaviour (`test_the_fake_does_not_deliver_the
+  _size_the_listing_declares`), so a later "cleanup" restoring the tidy
+  version fails instead of quietly re-enabling the bug.
+
+## 17. Seeded state proves less than a round trip
+
+A test that writes the expected state by hand and then asserts one consumer
+reads it back mostly tests the seed. If the seeded value embodies the same
+wrong assumption as the code, it passes forever — this is how §16's bug
+survived a large, careful suite.
+
+For anything re-runnable, add at least one test that **performs the real
+operation and then asks the question the app asks next**:
+
+- Run it twice: the second run must do nothing. That single test would have
+  caught the entire download-mirror failure.
+- After one real run, query *every* consumer of that state (in this codebase:
+  the run's own log, `books_on_disk`, `_local_copy_for`, the MCP tool). Drift
+  between them is invisible to per-consumer tests.
+- To check a test can actually fail, reintroduce the bug and watch it go red.
+  A test that passes against the broken version is decoration.
+
+## 18. Patch the module that owns the name
+
+`web/bookvault_web/activity/` is a package with a façade `__init__.py`. Two
+rules keep that structure testable, and both exist because breaking them fails
+*silently*:
+
+- **Cross-module references go through the module object** —
+  `library._iter_books(...)`, `state._state`, not
+  `from .library import _iter_books`. A `from` import binds the object at
+  import time, so a later `monkeypatch.setattr` on the owning module is never
+  seen by the caller: the test injects nothing and passes anyway.
+- **Tests patch the owning module** (`activity.library.PACE_SECONDS`), not the
+  façade. Rebinding a name on `__init__.py` changes only its own copy.
+
+The façade therefore re-exports the *public* surface only. Patchable internals
+are deliberately absent from it, so a mis-aimed `monkeypatch.setattr` raises
+`AttributeError` — loud and immediate — rather than quietly binding a copy
+nothing reads. When adding to the façade, ask whether a test might want to
+patch the name; if so, leave it off.

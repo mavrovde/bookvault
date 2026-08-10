@@ -1,8 +1,8 @@
 // The frontend is a thin renderer. It owns no activity/progress logic: the
 // backend runs a single state machine (see bookvault_web/activity.py) with states
-// idle | refreshing | checking | preparing | syncing | stopping and a terminal
-// `result` (done | cancelled | error). This file just:
-//   1. dispatches user actions to the backend (refresh / prepare / sync / cancel),
+// idle | refreshing | checking | preparing | downloading | syncing | stopping
+// and a terminal `result` (done | cancelled | error). This file just:
+//   1. dispatches user actions (refresh / prepare / download-files / sync / cancel),
 //   2. polls GET /activity and paints whatever state it reports,
 //   3. renders the book list / filters / selection (pure display state).
 // Every enable/disable/label rule below is a pure function of the backend's
@@ -15,7 +15,12 @@ const state = { books: [], selected: new Set(), filter: '', typeFilter: 'all', s
 let currentState = 'idle';
 let librarySyncEnabled = false;
 
-const BUSY_STATES = new Set(['refreshing', 'checking', 'preparing', 'syncing', 'stopping']);
+const BUSY_STATES = new Set(['refreshing', 'checking', 'preparing', 'downloading', 'syncing', 'stopping']);
+
+// art_ids the backend reports as already sitting complete in the save folder's
+// loose-file mirror. Drives the badge on each card; refreshed by every poll,
+// so a book picks one up the moment its download finishes.
+let onDisk = new Set();
 
 // Every button's enabled/label state is a pure function of the backend
 // `state` (plus selection count for Prepare) -- recomputed as a whole rather
@@ -31,7 +36,11 @@ function updateButtons() {
   }
 
   const cancelBtn = document.getElementById('cancel-download');
-  const stoppable = currentState === 'checking' || currentState === 'preparing' || currentState === 'syncing';
+  const filesBtn = document.getElementById('download-files');
+  if (filesBtn) filesBtn.disabled = busy || state.selected.size === 0;
+
+  const stoppable = currentState === 'checking' || currentState === 'preparing'
+    || currentState === 'downloading' || currentState === 'syncing';
   cancelBtn.disabled = !stoppable;
   cancelBtn.textContent = currentState === 'stopping' ? 'Stopping…' : 'Stop';
 }
@@ -105,6 +114,11 @@ function bookCardHtml(b) {
     ? `<img class="book-cover" src="${escapeHtml(b.cover_url)}" alt="" loading="lazy">`
     : `<span class="book-cover placeholder">${b.is_audio ? '🎧' : '📖'}</span>`;
   const typeDot = `<span class="book-type-dot" title="${b.is_audio ? 'Audiobook' : 'E-book'}">${b.is_audio ? '🎧' : '📖'}</span>`;
+  // On the cover, so "I already have this" is visible while browsing rather
+  // than only after starting a run.
+  const savedBadge = onDisk.has(b.id)
+    ? '<span class="book-saved-badge" title="Already downloaded to your save folder">✓</span>'
+    : '';
   const sizeText = b.size_mb != null ? `${b.size_mb} MB` : '';
   const selected = state.selected.has(b.id);
   return `
@@ -113,6 +127,7 @@ function bookCardHtml(b) {
         ${cover}
         <span class="book-checkbox"><input type="checkbox" data-id="${b.id}" ${selected ? 'checked' : ''}></span>
         ${typeDot}
+        ${savedBadge}
       </div>
       <span class="book-title-g" title="${escapeHtml(b.title)}">${escapeHtml(b.title)}</span>
       ${b.authors ? `<span class="book-authors-g" title="${escapeHtml(b.authors)}">${escapeHtml(b.authors)}</span>` : ''}
@@ -214,6 +229,7 @@ const BADGE = {
   refreshing: ['Refreshing…', 'badge-running'],
   checking: ['Checking sizes…', 'badge-running'],
   preparing: ['Building zip…', 'badge-running'],
+  downloading: ['Downloading…', 'badge-running'],
   syncing: ['Syncing library…', 'badge-running'],
   stopping: ['Stopping…', 'badge-running'],
 };
@@ -223,7 +239,26 @@ const RESULT_BADGE = {
   error: ['Error', 'badge-error'],
 };
 
-// Which result rows to show in the log: 'all' | 'done' | 'skipped' | 'error'.
+// Every outcome a book can have, in one place, so the row, the summary pill
+// and the filter can never disagree about what a status is called.
+//
+//   done      the file wasn't there and was fetched
+//   replaced  something was there but its size didn't match the listing --
+//             a partial or damaged copy, overwritten with a fresh download
+//   exists    already on disk and the right size, so nothing was transferred
+//   skipped   litres.ru offers no downloadable file (rights-limited/preview)
+//   error     the transfer itself failed
+//
+// A zip build only ever produces done/skipped/error; the loose-file download
+// adds the other two, because it's the only one that can find a previous copy.
+const STATUS_LABELS = {
+  done:     { label: 'Downloaded',       icon: '✓', cls: 'done' },
+  replaced: { label: 'Re-downloaded',    icon: '⟳', cls: 'done' },
+  exists:   { label: 'Already saved',    icon: '=', cls: 'exists' },
+  reused:   { label: 'From your folder', icon: '↺', cls: 'exists' },
+};
+
+// Which result rows to show in the log: 'all' | 'done' | 'replaced' | 'exists' | 'skipped' | 'error'.
 // Persists across polls so the filter sticks while a build streams in. The
 // last snapshot is kept so a filter-pill click can re-render without a poll.
 let logFilter = 'all';
@@ -250,7 +285,7 @@ function renderActivity(s) {
   } else if (s.state === 'checking') {
     bar.style.width = s.total ? Math.min(100, (s.done / s.total) * 100) + '%' : '0%';
     countEl.textContent = s.total ? `${s.done} / ${s.total} sizes checked` : '';
-  } else if (s.state === 'preparing') {
+  } else if (s.state === 'preparing' || s.state === 'downloading') {
     // The bar reflects BYTES, not just whole books: blend the file currently
     // downloading into the book count as a fraction, so a single-book job (or
     // the last book of any job) visibly fills mid-transfer instead of sitting
@@ -286,7 +321,7 @@ function renderActivity(s) {
 
   // Current line: a book title while preparing, the backend's message
   // otherwise (which also carries the "what just happened" summary at idle).
-  if (s.state === 'preparing' && s.current_title) {
+  if ((s.state === 'preparing' || s.state === 'downloading') && s.current_title) {
     // Live MB for the file currently downloading. current_downloaded/_total
     // are bytes (total may be null if the server sent no Content-Length and
     // the size was unknown) -- show "12.3 / 45.0 MB", or just "12.3 MB" when
@@ -322,8 +357,11 @@ function renderActivity(s) {
     if (logFilter !== 'all') logFilter = 'all';
   } else {
     const pills = [['all', `All ${log.length}`, true]];
-    if (counts.done) pills.push(['done', `✓ ${counts.done}`, true]);
-    if (counts.skipped) pills.push(['skipped', `! ${counts.skipped} skipped`, true]);
+    if (counts.done) pills.push(['done', `✓ ${counts.done} downloaded`, true]);
+    if (counts.replaced) pills.push(['replaced', `⟳ ${counts.replaced} re-downloaded`, true]);
+    if (counts.exists) pills.push(['exists', `= ${counts.exists} already saved`, true]);
+    if (counts.reused) pills.push(['reused', `↺ ${counts.reused} from your folder`, true]);
+    if (counts.skipped) pills.push(['skipped', `! ${counts.skipped} not available`, true]);
     if (counts.error) pills.push(['error', `✗ ${counts.error} failed`, true]);
     // If the active filter's bucket emptied out, fall back to All.
     if (logFilter !== 'all' && !counts[logFilter]) logFilter = 'all';
@@ -337,12 +375,18 @@ function renderActivity(s) {
   const shown = logFilter === 'all' ? log : log.filter(item => item.status === logFilter);
   logEl.innerHTML = shown.map(item => {
     if (item.status === 'skipped') {
-      return `<li class="skipped"><span class="icon">!</span><span class="title">${escapeHtml(item.title)}</span><span class="detail">${escapeHtml(item.reason || 'Skipped -- no file available')}</span></li>`;
+      return `<li class="skipped"><span class="icon">!</span><span class="title">${escapeHtml(item.title)}</span><span class="detail">${escapeHtml(item.reason || 'Not available')}</span></li>`;
     }
     if (item.status === 'error') {
-      return `<li class="error"><span class="icon">✗</span><span class="title">${escapeHtml(item.title)}</span><span class="detail" title="${escapeHtml(item.detail || '')}">${escapeHtml(item.error || 'Download failed')}</span></li>`;
+      return `<li class="error"><span class="icon">✗</span><span class="title">${escapeHtml(item.title)}</span><span class="detail" title="${escapeHtml(item.detail || '')}">${escapeHtml(item.error || 'Failed')}</span></li>`;
     }
-    return `<li class="done"><span class="icon">✓</span><span class="title">${escapeHtml(item.title)}</span><span class="detail">${item.ext}, ${item.size_mb} MB</span></li>`;
+    // Every other row is a book that ended up on disk. The status says HOW it
+    // got there, which is the difference between "you already had this" and
+    // "the copy you had was broken, so it was fetched again" -- without it
+    // both look identical to a book downloaded for the first time.
+    const s = STATUS_LABELS[item.status] || STATUS_LABELS.done;
+    const size = item.size_mb != null ? `${item.ext}, ${item.size_mb} MB` : (item.ext || '');
+    return `<li class="${s.cls}"><span class="icon">${s.icon}</span><span class="title">${escapeHtml(item.title)}</span><span class="detail"><span class="status-tag">${s.label}</span>${size ? ` · ${escapeHtml(size)}` : ''}</span></li>`;
   }).join('');
   // Auto-scroll to follow the newest row only while unfiltered and streaming;
   // when filtered (i.e. inspecting failures) leave the scroll where the user is.
@@ -388,6 +432,14 @@ async function poll() {
   currentState = s.state;
   if (typeof s.library_sync_enabled === 'boolean') {
     librarySyncEnabled = s.library_sync_enabled;
+  }
+  // Repaint the cards only when the set actually changed, so a once-a-second
+  // poll doesn't re-render the whole library list for nothing.
+  if (Array.isArray(s.on_disk)) {
+    const next = new Set(s.on_disk);
+    const changed = next.size !== onDisk.size || [...next].some((id) => !onDisk.has(id));
+    onDisk = next;
+    if (changed) renderList();
   }
 
   // A refresh reloads the library list itself -- once it leaves the
@@ -448,7 +500,7 @@ document.getElementById('refresh-library').addEventListener('click', () => {
   // can't fire a second refresh; the next poll replaces this with the truth.
   currentState = 'refreshing';
   updateButtons();
-  startActivity('/activity/refresh', { selected: Array.from(state.selected) });
+  startActivity('/activity/refresh-library', { selected: Array.from(state.selected) });
 });
 
 document.getElementById('type-filter').addEventListener('click', (e) => {
@@ -487,7 +539,7 @@ document.getElementById('start-download').addEventListener('click', async () => 
   if (state.selected.size === 0 || BUSY_STATES.has(currentState)) return;
   currentState = 'preparing';
   updateButtons();
-  const data = await startActivity('/activity/prepare', {
+  const data = await startActivity('/activity/prepare-zip', {
     art_ids: Array.from(state.selected),
     ebook_format: document.getElementById('ebook-format').value,
     audiobook_format: document.getElementById('audiobook-format').value,
@@ -499,13 +551,34 @@ document.getElementById('start-download').addEventListener('click', async () => 
   document.getElementById('progress-section').scrollIntoView({ behavior: 'smooth' });
 });
 
+// Same dispatch as Prepare zip -- the backend decides everything, this just
+// names a different activity.
+const downloadFilesBtn = document.getElementById('download-files');
+if (downloadFilesBtn) {
+  downloadFilesBtn.addEventListener('click', async () => {
+    if (state.selected.size === 0 || BUSY_STATES.has(currentState)) return;
+    currentState = 'downloading';
+    updateButtons();
+    const data = await startActivity('/activity/download-files', {
+      art_ids: Array.from(state.selected),
+      ebook_format: document.getElementById('ebook-format').value,
+      audiobook_format: document.getElementById('audiobook-format').value,
+    });
+    if (data && data.ok === false) {
+      alert('Could not start downloading: ' + (data.error || 'unknown error'));
+      return;
+    }
+    document.getElementById('progress-section').scrollIntoView({ behavior: 'smooth' });
+  });
+}
+
 const syncLibraryBtn = document.getElementById('sync-library');
 if (syncLibraryBtn) {
   syncLibraryBtn.addEventListener('click', async () => {
     if (!librarySyncEnabled || BUSY_STATES.has(currentState)) return;
     currentState = 'syncing';
     updateButtons();
-    const data = await startActivity('/activity/sync', {
+    const data = await startActivity('/activity/sync-audiobookshelf', {
       audio_only: true,
       ebook_format: document.getElementById('ebook-format').value,
       audiobook_format: document.getElementById('audiobook-format').value,
@@ -525,7 +598,7 @@ document.getElementById('cancel-download').addEventListener('click', () => {
   // bookvault_web/activity.py); the next poll confirms the real state.
   currentState = 'stopping';
   updateButtons();
-  fetch('/activity/cancel', { method: 'POST' });
+  fetch('/activity/stop', { method: 'POST' });
   startPolling();
 });
 
@@ -735,6 +808,6 @@ function initPrefControls() {
     // Idle: resolve any already-cached sizes (cache-only -- live:false), so
     // just opening/reloading the app never fires a library's worth of size
     // requests at litres.ru. Live size fetching happens on explicit Refresh.
-    startActivity('/activity/check', { selected: Array.from(state.selected), live: false });
+    startActivity('/activity/check-sizes', { selected: Array.from(state.selected), live: false });
   }
 })();

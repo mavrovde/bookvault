@@ -3,6 +3,7 @@
 LitresClient -- no real Playwright/network involved."""
 from __future__ import annotations
 
+import os
 import time
 
 from bookvault_core import credentials, session
@@ -259,7 +260,7 @@ def test_library_serves_stale_cache_while_an_activity_is_busy(monkeypatch):
         client.post("/login", data={"login": "u@example.com", "password": "pw"})
         warm = client.get("/library")  # warms the cache (one live fetch)
         monkeypatch.setattr(cache, "LIBRARY_TTL", 0)  # fresh cache now considered expired
-        monkeypatch.setattr(activity, "_state", {**activity._state, "state": activity.PREPARING})
+        monkeypatch.setattr(activity.state, "_state", {**activity.state._state, "state": activity.PREPARING})
         resp = client.get("/library")
 
     assert resp.status_code == 200
@@ -387,19 +388,19 @@ def test_activity_status_default_shape_when_idle():
 
 def test_activity_prepare_requires_login():
     with TestClient(app) as client:
-        resp = client.post("/activity/prepare", json={})
+        resp = client.post("/activity/prepare-zip", json={})
     assert resp.status_code == 401
 
 
 def test_activity_refresh_requires_login():
     with TestClient(app) as client:
-        resp = client.post("/activity/refresh", json={})
+        resp = client.post("/activity/refresh-library", json={})
     assert resp.status_code == 401
 
 
 def test_activity_check_requires_login():
     with TestClient(app) as client:
-        resp = client.post("/activity/check", json={})
+        resp = client.post("/activity/check-sizes", json={})
     assert resp.status_code == 401
 
 
@@ -407,7 +408,7 @@ def test_activity_prepare_rejects_explicitly_empty_selection(monkeypatch):
     client_factory(monkeypatch, session, library=[{"id": 1, "title": "Book"}])
     with TestClient(app) as client:
         client.post("/login", data={"login": "u@example.com", "password": "pw"})
-        resp = client.post("/activity/prepare", json={"art_ids": []})
+        resp = client.post("/activity/prepare-zip", json={"art_ids": []})
     assert resp.status_code == 400
     assert "No books selected" in resp.json()["error"]
 
@@ -421,7 +422,7 @@ def test_activity_prepare_with_no_art_ids_downloads_everything(monkeypatch):
     )
     with TestClient(app) as client:
         client.post("/login", data={"login": "u@example.com", "password": "pw"})
-        resp = client.post("/activity/prepare", json={})
+        resp = client.post("/activity/prepare-zip", json={})
         assert resp.json() == {"ok": True, "started": True}
     _wait_until_idle()
     assert fake.download_calls == [1]
@@ -436,8 +437,8 @@ def test_activity_prepare_returns_started_false_when_already_running(monkeypatch
     )
     with TestClient(app) as client:
         client.post("/login", data={"login": "u@example.com", "password": "pw"})
-        first = client.post("/activity/prepare", json={})
-        second = client.post("/activity/prepare", json={})
+        first = client.post("/activity/prepare-zip", json={})
+        second = client.post("/activity/prepare-zip", json={})
     assert first.json()["started"] is True
     assert second.json()["started"] is False
     _wait_until_idle()
@@ -452,7 +453,7 @@ def test_activity_refresh_reloads_library_and_reports_via_status(monkeypatch):
     )
     with TestClient(app) as client:
         client.post("/login", data={"login": "u@example.com", "password": "pw"})
-        resp = client.post("/activity/refresh", json={})
+        resp = client.post("/activity/refresh-library", json={})
         assert resp.json() == {"ok": True, "started": True}
         final = _wait_until_idle()
         # Sizes come back keyed by id (as JSON string keys over the wire).
@@ -471,7 +472,7 @@ def test_activity_check_sweeps_sizes(monkeypatch):
     with TestClient(app) as client:
         client.post("/login", data={"login": "u@example.com", "password": "pw"})
         client.get("/library")  # warm the library cache the sweep reads from
-        resp = client.post("/activity/check", json={"selected": [1]})
+        resp = client.post("/activity/check-sizes", json={"selected": [1]})
         assert resp.json() == {"ok": True, "started": True}
         _wait_until_idle()
         status = client.get("/activity").json()
@@ -481,7 +482,7 @@ def test_activity_check_sweeps_sizes(monkeypatch):
 
 def test_activity_cancel_returns_false_when_nothing_running():
     with TestClient(app) as client:
-        resp = client.post("/activity/cancel")
+        resp = client.post("/activity/stop")
     assert resp.json() == {"ok": True, "cancelled": False}
 
 
@@ -501,7 +502,7 @@ def test_download_file_serves_the_completed_zip(monkeypatch):
     )
     with TestClient(app) as client:
         client.post("/login", data={"login": "u@example.com", "password": "pw"})
-        client.post("/activity/prepare", json={})
+        client.post("/activity/prepare-zip", json={})
         _wait_until_idle()
         resp = client.get("/download/file")
 
@@ -525,7 +526,7 @@ def test_the_saved_folder_pref_reaches_the_build_over_http(monkeypatch, tmp_path
     with TestClient(app) as client:
         client.post("/login", data={"login": "u@example.com", "password": "pw"})
         assert client.post("/prefs", json={"download_dir": str(dest)}).status_code == 200
-        client.post("/activity/prepare", json={})
+        client.post("/activity/prepare-zip", json={})
         snap = _wait_until_idle()
         resp = client.get("/download/file")
 
@@ -567,11 +568,11 @@ def test_results_and_download_survive_the_reload_size_check_over_http(monkeypatc
         client.post("/login", data={"login": "u@example.com", "password": "pw"})
         # book 2 fails -> one success, one error in the results
         session.current_client().fail_downloads = {2}
-        client.post("/activity/prepare", json={"art_ids": [1, 2]})
+        client.post("/activity/prepare-zip", json={"art_ids": [1, 2]})
         _wait_until_idle()
 
         # the size-check that fires on the next page load
-        client.post("/activity/check", json={"selected": [], "live": False})
+        client.post("/activity/check-sizes", json={"selected": [], "live": False})
         _wait_until_idle()
 
         snap = client.get("/activity").json()
@@ -607,3 +608,114 @@ def test_login_backend_crash_shows_clean_error_not_500(monkeypatch):
     assert resp.status_code == 401
     assert "did not complete" in resp.text  # the friendly wrapped message
     assert fake.closed is True  # no orphaned Chromium behind the error page
+
+
+# -- /activity/download-files -----------------------------------------------
+
+def test_download_files_route_requires_login():
+    with TestClient(app) as client:
+        assert client.post("/activity/download-files", json={}).status_code == 401
+
+
+def test_download_files_route_rejects_an_empty_selection(monkeypatch, tmp_path):
+    """None means "everything"; an explicit [] means the user picked nothing,
+    which is a mistake rather than a request to download the whole library."""
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", str(tmp_path))
+    client_factory(monkeypatch, session)
+    with TestClient(app) as client:
+        client.post("/login", data={"login": "u@example.com", "password": "pw"})
+        resp = client.post("/activity/download-files", json={"art_ids": []})
+    assert resp.status_code == 400
+
+
+def test_download_files_route_refuses_without_a_save_folder(monkeypatch):
+    """conftest pins DEFAULT_DOWNLOAD_DIR to None, i.e. nowhere to mirror to."""
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", None)
+    client_factory(monkeypatch, session)
+    with TestClient(app) as client:
+        client.post("/login", data={"login": "u@example.com", "password": "pw"})
+        resp = client.post("/activity/download-files", json={})
+    assert resp.status_code == 400
+
+
+def test_download_files_route_targets_a_subfolder_of_the_save_folder(monkeypatch, tmp_path):
+    """Hundreds of book files must not scatter among the user's other
+    downloads -- they go in a named subfolder."""
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", str(tmp_path))
+    seen = {}
+    monkeypatch.setattr(
+        "bookvault_web.app.activity.download_files",
+        lambda *a, **k: seen.update(k) or True,
+    )
+    client_factory(monkeypatch, session)
+    with TestClient(app) as client:
+        client.post("/login", data={"login": "u@example.com", "password": "pw"})
+        resp = client.post("/activity/download-files", json={"art_ids": [1]})
+    assert resp.status_code == 200
+    assert seen["dest_root"] == tmp_path / "BookVault library"
+
+
+def test_prepare_zip_is_told_where_the_mirror_is(monkeypatch, tmp_path):
+    """So an already-downloaded book is packed rather than fetched again."""
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", str(tmp_path))
+    seen = {}
+    monkeypatch.setattr(
+        "bookvault_web.app.activity.prepare", lambda *a, **k: seen.update(k) or True
+    )
+    client_factory(monkeypatch, session)
+    with TestClient(app) as client:
+        client.post("/login", data={"login": "u@example.com", "password": "pw"})
+        client.post("/activity/prepare-zip", json={"art_ids": [1]})
+    assert seen["mirror_root"] == tmp_path / "BookVault library"
+
+
+def test_the_activity_poll_reports_which_books_are_on_disk(monkeypatch, tmp_path):
+    """Drives the badge on each card."""
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr("bookvault_web.app.activity.books_on_disk", lambda root: [7, 9])
+    with TestClient(app) as client:
+        body = client.get("/activity").json()
+    assert body["on_disk"] == [7, 9]
+
+
+def test_stop_route_answers_when_nothing_is_running():
+    with TestClient(app) as client:
+        resp = client.post("/activity/stop")
+    assert resp.status_code == 200
+    assert resp.json()["cancelled"] is False
+
+
+def test_static_assets_are_cache_busted(monkeypatch):
+    """Without this, a browser can keep serving the previous JS against new
+    HTML after an upgrade -- which doesn't look like a caching problem, it
+    looks like a broken control: anything the old script doesn't know about
+    keeps whatever state the markup gave it while its neighbours update."""
+    client_factory(monkeypatch, session)
+    with TestClient(app) as client:
+        client.post("/login", data={"login": "u@example.com", "password": "pw"})
+        page = client.get("/").text
+    assert "/static/js/app.js?v=" in page
+    assert "/static/css/style.css?v=" in page
+    token = page.split("/static/js/app.js?v=")[1].split('"')[0]
+    assert token.isdigit() and int(token) > 0, f"empty cache-busting token: {token!r}"
+
+
+def test_the_login_page_is_cache_busted_too():
+    """It carries the stylesheet, and is the first page a new user ever sees."""
+    with TestClient(app) as client:
+        page = client.get("/").text
+    assert "/static/css/style.css?v=" in page
+
+
+def test_the_asset_token_changes_when_an_asset_changes(tmp_path, monkeypatch):
+    """Derived from the newest mtime under static/, so it moves exactly when
+    the files do -- in development as well as across releases."""
+    from bookvault_web import app as app_module
+
+    first = app_module.asset_version()
+    static_js = app_module._STATIC_DIR / "js" / "app.js"
+    os.utime(static_js, (time.time() + 60, time.time() + 60))
+    try:
+        assert app_module.asset_version() != first
+    finally:
+        os.utime(static_js, None)

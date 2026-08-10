@@ -59,3 +59,54 @@ Don't add auth, multi-user keying, or a public bind.
 `TestClient(app)` as a context manager drives the real lifespan. Wait for the
 machine to settle rather than calling worker bodies directly. See
 [test-guardian](test-guardian.md).
+
+## Adding an activity state: the checklist
+
+The state machine is wired into more places than `activity.py`. Miss one and
+the feature ships subtly broken — usually in a way no route test can see.
+
+1. The constant in `activity.py`, plus the `_begin(...)` that claims it.
+2. **`cancel()`'s cancellable tuple.** Omitted, Stop silently does nothing and
+   a multi-hour run can only be ended by killing the server. Assert
+   `result == "cancelled"`, not that `cancel()` was called.
+3. `static/js/app.js`: `BUSY_STATES`, the `stoppable` list, the `BADGE` map,
+   and the progress branch in `renderActivity`.
+4. `tests/test_csrf.py`'s `WRITE_ROUTES` for the route that starts it — that
+   list is asserted exhaustive, so it will fail you if you forget.
+
+## Decide which side of `_begin` new state lives on
+
+`_begin()` resets per-run progress and deliberately preserves durable state.
+Getting this wrong caused two shipped bugs:
+
+- **Durable** (survives `_begin`): `results`, `zip_path`, `saved_path`,
+  `sizes`. Derived from caches or from a finished build — wiping it means
+  starting *anything* blanks information the app already had.
+- **Per-run** (reset by `_begin`): `done`, `total`, `log`, `bytes_done`,
+  `bytes_total`, `current_*`.
+
+Anything durable and account-scoped needs an explicit clear on logout
+(`forget_sizes()`), because entries keyed by `art_id` would otherwise show one
+account's data against another's books.
+
+## Never let a cache TTL govern something it doesn't describe
+
+The library listing expires in 15 minutes ("did you buy anything new?"); a
+book's file listing in 7 days. Sizes were resolved *through* the library
+listing, so 15 minutes after a refresh the sweep iterated an empty list and
+reported "0 of 0" while every size sat fresh on disk. Use
+`cache.get_library() or cache.get_library_stale()` whenever the listing is only
+being used to enumerate ids.
+
+## Routes are named for what they act on
+
+`/activity/check` and `/activity/sync` invited "check what? sync what?".
+They are now `/activity/check-sizes`, `/activity/sync-audiobookshelf`,
+`/activity/prepare-zip`, `/activity/refresh-library`, `/activity/stop`,
+`/activity/download-files`. Renaming a route means updating `app.js`,
+`tests/test_csrf.py`, `tests/test_web.py`, the live/e2e suites and
+`.claude/skills/run-app/SKILL.md` in the same commit:
+
+```bash
+grep -rn "/activity/" --include="*.py" --include="*.js" --include="*.md" . | grep -v .venv
+```

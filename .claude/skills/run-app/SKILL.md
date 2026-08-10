@@ -51,11 +51,22 @@ Then drive it with the Playwright MCP browser tools, or poll the API directly:
 
 ```bash
 curl -s http://127.0.0.1:8499/activity | python3 -m json.tool
-curl -s -X POST http://127.0.0.1:8499/activity/prepare -H 'Content-Type: application/json' -d '{}'
+curl -s -X POST http://127.0.0.1:8499/activity/prepare-zip -H 'Content-Type: application/json' -d '{}'
 ```
 
 ## Cleaning up
 
-Kill the server (`pkill -f <your script>`) and delete any screenshots the
-browser tools wrote into the repo root before committing — they are not
-git-ignored.
+Kill the server (`pkill -f <your script>`). Prefer stopping it by PID
+(`kill $(lsof -tnP -iTCP:8420 -sTCP:LISTEN)`) and give it a moment: a
+`kill -9` skips the graceful shutdown and orphans the Playwright driver and
+its Chromium, which then hold the browser cache and the port.
+
+Browser-tool output (page snapshots, screenshots) lands in `.playwright-mcp/`,
+which is git-ignored — a snapshot of a logged-in page contains the library it
+was taken from, so it must never be committed. Before committing after a
+browser session, confirm nothing slipped in:
+
+```bash
+git status --short          # anything unexpected?
+git ls-files | grep playwright   # must print nothing
+```

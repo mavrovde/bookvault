@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="stylesheet" href="/static/css/style.css?v={{ asset_v }}">
 </head>
 <body>
   <div class="topbar">
@@ -106,9 +106,15 @@
           <h2>📚 Your bookshelf</h2>
           <div class="toolbar-right">
             <button type="button" class="btn-primary" id="refresh-library">↻ Refresh</button>
-            <button type="button" class="btn-primary" id="sync-library" {% if not library_sync_enabled %}style="display:none"{% endif %} title="{% if library_dir %}Sync purchased titles into {{ library_dir }}{% else %}Set LITRES_LIBRARY_DIR to enable{% endif %}">⬇ Sync library</button>
+            {# Renamed: with a second "download to a folder" action beside it,
+               "Sync library" no longer said which folder or which shape. This
+               one is the Audiobookshelf-compatible tree under
+               LITRES_LIBRARY_DIR; the one after Prepare zip is a plain mirror
+               in the save folder. #}
+            <button type="button" class="btn-primary" id="sync-library" {% if not library_sync_enabled %}style="display:none"{% endif %} title="{% if library_dir %}Sync purchased titles into {{ library_dir }} in Audiobookshelf layout{% else %}Set LITRES_LIBRARY_DIR to enable{% endif %}">⬇ Sync to Audiobookshelf</button>
             <button type="button" class="btn-primary" id="cancel-download" disabled>Stop</button>
             <button type="button" class="btn-primary" id="start-download" disabled>📦 Prepare zip</button>
+            <button type="button" class="btn-primary" id="download-files" disabled>⬇ Download as files</button>
           </div>
         </div>
         <div class="card-row" style="margin-bottom:0.9rem">
@@ -141,7 +147,7 @@
         <div id="book-list"><div class="empty-state">Loading your library…</div></div>
       </div>
 
-      <script src="/static/js/app.js"></script>
+      <script src="/static/js/app.js?v={{ asset_v }}"></script>
     {% else %}
       <div class="hero">
         <svg class="mascot" viewBox="0 0 120 132" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Lito, the BookVault mascot">
