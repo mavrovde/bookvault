@@ -415,6 +415,7 @@ Credentials in `.env` are used by the **MCP server only** (it's headless and boo
 | `LITRES_LIBRARY_CACHE_TTL` | `900` (15 min) | How long the cached library listing stays fresh |
 | `LITRES_FILES_CACHE_TTL` | `604800` (7 days) | How long a book's cached file listing stays fresh |
 | `LITRES_DOWNLOAD_TIMEOUT_MS` | `300000` (5 min) | Per-file download timeout (audiobook bundles can be ~2GB) |
+| `LITRES_LOGIN_PAGE_TIMEOUT_MS` | `30000` (30 s) | Playwright timeout for loading the litres.ru login page (login, session restore, cookie re-warm) |
 | `LITRES_HEADLESS` | `1` | Set `0` to watch the login flow in a real Chromium window (debugging) |
 | `LITRES_LOG_LEVEL` | `INFO` | Log verbosity: `DEBUG` / `INFO` / `WARNING` / `ERROR` |
 | `LITRES_MAX_RETRIES` | `3` | Retries on a transient anti-bot block (403 / 429 / 503) before giving up |

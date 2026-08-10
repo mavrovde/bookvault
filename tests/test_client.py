@@ -633,6 +633,8 @@ class FakeLoginPage:
         self._status = login_status
         self.closed = False
         self.reloaded = False
+        self.goto_calls = []
+        self.reload_timeout = None
 
     def on(self, event, cb):
         self._cb = cb
@@ -641,7 +643,10 @@ class FakeLoginPage:
         self._cb = None
 
     def goto(self, url, wait_until=None, timeout=None):
-        pass
+        self.goto_calls.append({"url": url, "wait_until": wait_until, "timeout": timeout})
+        # Session restore (_recapture_headers) only navigates; the SPA's
+        # /users/me siblings fire on load, not on a form click.
+        self._fire_users_me_if_configured()
 
     def fill(self, selector, value):
         pass
@@ -654,11 +659,12 @@ class FakeLoginPage:
 
     def reload(self, wait_until=None, timeout=None):
         self.reloaded = True
+        self.reload_timeout = timeout
 
     def close(self):
         self.closed = True
 
-    def click(self, selector):
+    def _fire_users_me_if_configured(self):
         from types import SimpleNamespace
 
         if self._cb is not None and self._headers is not None:
@@ -667,6 +673,10 @@ class FakeLoginPage:
                 url="https://api.litres.ru/foundation/api/users/me",
                 headers=dict(self._headers),
             ))
+
+    def click(self, selector):
+        # Interactive login sniffs headers on the post-submit SPA fetch.
+        self._fire_users_me_if_configured()
 
     def expect_response(self, predicate, timeout=None):
         from contextlib import contextmanager
@@ -690,6 +700,54 @@ def test_login_captures_app_headers_and_drops_transport_ones():
     # App-level headers kept; transport-managed ones (cookie/host) dropped.
     assert client._extra_headers == {"app-id": "115", "session-id": "abc"}
     assert page.closed is True
+    assert page.goto_calls == [
+        {
+            "url": client_mod.LOGIN_PAGE,
+            "wait_until": "networkidle",
+            "timeout": client_mod.LOGIN_PAGE_TIMEOUT_MS,
+        }
+    ]
+
+
+def test_login_page_goto_uses_configured_timeout(monkeypatch):
+    """LITRES_LOGIN_PAGE_TIMEOUT_MS must reach Playwright's login-page goto."""
+    monkeypatch.setattr(client_mod, "LOGIN_PAGE_TIMEOUT_MS", 77_000)
+    page = FakeLoginPage(request_headers={"app-id": "115"})
+    client = make_bare_client(lambda *a: None, extra_headers={})
+    client.context.new_page = lambda: page
+
+    client.login("user@example.com", "hunter2")
+
+    assert page.goto_calls[0]["timeout"] == 77_000
+
+
+def test_recapture_headers_uses_configured_login_page_timeout(monkeypatch):
+    monkeypatch.setattr(client_mod, "LOGIN_PAGE_TIMEOUT_MS", 88_000)
+    page = FakeLoginPage(request_headers={"app-id": "115", "session-id": "s"})
+    client = make_bare_client(lambda *a: None, extra_headers={})
+    client.context.new_page = lambda: page
+
+    assert client._recapture_headers() is True
+    assert page.goto_calls == [
+        {
+            "url": client_mod.LOGIN_PAGE,
+            "wait_until": "networkidle",
+            "timeout": 88_000,
+        }
+    ]
+
+
+def test_login_reload_fallback_uses_configured_timeout(monkeypatch):
+    monkeypatch.setattr(client_mod, "LOGIN_PAGE_TIMEOUT_MS", 66_000)
+    page = FakeLoginPage(request_headers=None)
+    client = make_bare_client(lambda *a: None, extra_headers={})
+    client.context.new_page = lambda: page
+    monkeypatch.setattr(client, "_recapture_headers", lambda: False)
+
+    with pytest.raises(LitresAuthError, match="headers could not be captured"):
+        client.login("user@example.com", "hunter2")
+    assert page.reloaded is True
+    assert page.reload_timeout == 66_000
 
 
 def test_login_raises_when_the_login_post_fails():

@@ -48,6 +48,11 @@
   you how far along the download really was. The total is marked `~` because
   it can only sum sizes already known — each file corrects it with its real
   size as it finishes.
+- **Configurable login page load timeout.** `LITRES_LOGIN_PAGE_TIMEOUT_MS`
+  (default `30000`) controls the Playwright timeout used when navigating to
+  litres.ru's login page during interactive login, session restore (header
+  recapture), and DDoS-Guard cookie re-warm. Raise it on slow networks if login
+  or restore fails waiting for `networkidle`.
 
 ### Changed
 - **Activity URLs now say what they act on**: `/activity/check-sizes`,
