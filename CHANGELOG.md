@@ -11,12 +11,22 @@
   becomes a plain mirror of your library that you can browse, sync, or point
   any reader at.
 
-  Run it again and it only fetches what's missing. A book already there **and
-  the right size** is reported as `Already saved` and left alone; one that's
-  there but the wrong size — an interrupted download — is re-fetched and
-  overwritten, so a damaged file repairs itself instead of being trusted
+  Run it again and it only fetches what's missing. A book that's still exactly
+  as BookVault left it is reported as `Already saved` and skipped; one that has
+  since been truncated — an interrupted download, a full disk — is re-fetched
+  and overwritten, so a damaged file repairs itself instead of being trusted
   forever. Files are written to a temporary name and renamed on success, so a
   failed transfer never leaves wreckage where a finished book belongs.
+
+  BookVault knows what "as it left it" means because each finished download is
+  recorded in a small `.bookvault-index.json` beside your files. It deliberately
+  does *not* compare against the file size litres.ru advertises: that number
+  does not match the bytes the site actually serves (measured across a real
+  239-book library, 10 files matched and 147 didn't), so trusting it would mean
+  re-downloading almost your entire library every single run. Books you copied
+  in yourself have no record, nothing to verify against, and are left alone
+  rather than re-fetched. Delete the index and everything present is simply
+  trusted; delete a book and it comes back on the next run.
 - **Prepare zip now reuses those files.** If a book is already in the folder,
   it's packed straight into the archive instead of being downloaded again —
   reported as `From your folder`. The saving that matters isn't the bytes, it's
@@ -47,9 +57,10 @@
   after upgrading** — see the fix below.
 - The Audiobookshelf sync button is now **⬇ Sync to Audiobookshelf**, since
   "Sync library" no longer distinguished it from downloading as files.
-- **The MCP `download_book` tool skips what it already has**, using the same
-  size check as the app, and stages its downloads the same way. An agent
-  looping over a library no longer re-downloads it on every run.
+- **The MCP `download_book` tool skips what it already has**, reading and
+  writing the same `.bookvault-index.json` as the app and staging its downloads
+  the same way. An agent looping over a library now converges on doing nothing
+  instead of re-downloading it on every run.
 - **The old "Save zip file" button is now "⬇ Download".** By the time it
   appears, the archive has already been saved to your folder, so the button was
   really offering a second copy via your browser's download location. Its name

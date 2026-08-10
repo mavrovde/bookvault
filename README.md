@@ -59,6 +59,7 @@ It comes in **three flavours** that share the same backend and login/session cod
 - **📖 Books &amp; 🎧 audiobooks** — pick exactly which titles to back up, with cover thumbnails, authors, and file sizes.
 - **🎯 Format of your choice** — set a preferred ebook format (epub, fb2, pdf, …) and audiobook format, with sensible fallbacks per title.
 - **📦 One tidy zip** — ebooks as single files, each audiobook as a folder of its tracks; packed so macOS Archive Utility opens it cleanly.
+- **🗂 …or a plain folder mirror** — download straight into your save folder with no archive around it. Re-run it and only what's missing is fetched; a ✓ on each cover shows what you already have, and the zip builder reuses those files instead of asking litres.ru twice.
 - **📁 Saved where you want it** — the finished archive lands in your Downloads folder by default, or any folder you point it at, chosen in your own OS folder dialog rather than typed by hand; timestamped, so a new build never overwrites the last one. Afterwards you can drop an **extra copy** somewhere else (an external drive, a shared folder) without touching the saved original.
 - **⏳ Live progress + Stop** — per-file bytes (`12.3 / 45.0 MB`) *and* the whole-build total (`~120.0 MB of ~600.0 MB`), so a single huge audiobook doesn't leave you guessing how far along you are. Stop interrupts even a mid-transfer download.
 - **✅ Results at a glance** — when a build finishes, a summary shows `✓ done · ! skipped · ✗ failed` as clickable filters, so a single rights-limited title never hides among hundreds of successes. The results and the download link survive a page reload.
@@ -125,6 +126,28 @@ Then open **http://127.0.0.1:8420** and log in. Your password is remembered in y
    - **💾 Save a copy to…** — picks a folder in your OS dialog and puts an *additional* copy there (an external drive, a shared folder). An existing file of the same name is never overwritten. Hidden where no dialog can be drawn (Docker, SSH).
 
 > Your selection, format choices, save folder, and progress are kept **on the server**, so opening the app in another browser/tab shows the same view — and the results and download link stick around after a reload.
+
+### Or skip the zip: download as plain files
+
+**⬇ Download as files**, beside *Prepare zip*, puts the selected books straight
+into your save folder as ordinary files — ebooks as files, each audiobook as a
+folder of its tracks. The result is a plain mirror of your library you can
+browse, back up, or point any reader at, with no archive to open first.
+
+Running it again only fetches what's missing. Each book is reported as
+`Downloaded`, `Re-downloaded`, or `Already saved`, and any book you already
+have shows a ✓ on its cover while you browse. *Prepare zip* reuses those files
+too, packing them straight into the archive (`From your folder`) rather than
+asking litres.ru for something already on your disk.
+
+> **How it knows.** A small `.bookvault-index.json` beside your files records
+> what each finished download actually wrote; a book still matching its record
+> is skipped, and one that's been truncated is fetched again. It deliberately
+> does **not** trust the file size litres.ru advertises — that number doesn't
+> match the bytes the site serves, so relying on it would re-download nearly
+> your whole library every run. Books you put in the folder yourself have no
+> record and are left alone. Delete the index and everything present is simply
+> trusted; delete a book and the next run brings it back.
 
 > The archive is named `litres-library-<date>-<time>.zip`, so a new build never overwrites one you still want. Nothing is written to your folder until a build actually succeeds; if the folder turns out to be unwritable, the zip stays available via the download button instead of being lost.
 
