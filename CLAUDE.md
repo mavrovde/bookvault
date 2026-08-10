@@ -48,6 +48,14 @@ Live tests (`tests/test_smoke_live.py`, marker `live`) are **deselected by defau
 
 **Desktop reuses the web app, it does not fork it.** `desktop/bookvault_desktop/app.py` does `from bookvault_web.app import app`, runs it on a background uvicorn thread on a private port, and points a native window at it. The backend starts/stops with the window (bounded graceful shutdown so Playwright/Chromium is never orphaned). Keep `core`/`web`/`mcp` unchanged when working on desktop.
 
+## Longer-form guidance
+
+This file is the short summary. `.claude/` holds the detail, composed in
+layers: `common/engineering.md` + `common/collaboration.md` (portable to any
+repo) as the baseline, `project/invariants.md` (this codebase, and it
+overrides the baseline) on top, with `agents/` and `skills/` building on both.
+See `.claude/README.md`.
+
 ## Conventions that will trip you up
 
 - **`LITRES_*` env vars and the `Litres*` names are intentional.** The project was renamed litres-assistant → bookvault, but the litres.ru *service* references (env var prefix, `LitresClient`, URLs, `.litres_*` data files) were deliberately kept as nominative references. Don't "fix" them to `BOOKVAULT_*`.
