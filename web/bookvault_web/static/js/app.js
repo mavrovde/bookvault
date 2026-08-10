@@ -157,10 +157,28 @@ function updateSelectedCount() {
     if (b.size_mb != null) sumMb += b.size_mb;
     else unknown += 1;
   }
-  // `unknown` books haven't had their size resolved yet (the backend's
-  // CHECKING sweep fills them in) -- say so explicitly, since a bare number
-  // here previously read as unexplained "estimating" noise.
-  const sizeSummary = n === 0 ? '' : `(~${formatSize(sumMb)} so far${unknown > 0 ? `, size of ${unknown} more still loading…` : ''})`;
+  // Only a sweep that is actually RUNNING counts as "loading". The sweep
+  // fired on page load is cache-only by design -- it never touches litres.ru
+  // (see check_sizes in activity.py) -- so on a library whose sizes aren't
+  // cached it resolves zero and finishes immediately. Claiming "still
+  // loading…" there described something that would never happen: the sizes
+  // only ever arrive via the explicit Refresh. Say which of those it is.
+  let sizeSummary = '';
+  if (n > 0) {
+    const known = n - unknown;
+    if (unknown === 0) {
+      sizeSummary = `(~${formatSize(sumMb)})`;
+    } else if (currentState === 'checking') {
+      sizeSummary = known === 0
+        ? '(checking sizes…)'
+        : `(~${formatSize(sumMb)} so far, ${unknown} more loading…)`;
+    } else {
+      // Idle with sizes still unknown: nothing is coming without a Refresh.
+      sizeSummary = known === 0
+        ? '(sizes unknown — hit ↻ Refresh)'
+        : `(~${formatSize(sumMb)} for ${known}, ${unknown} unknown — hit ↻ Refresh)`;
+    }
+  }
   document.getElementById('selected-size').textContent = sizeSummary;
 
   updateButtons();
@@ -368,6 +386,11 @@ async function poll() {
 
   applyPrefs(s.prefs);  // keep every browser's ticks/formats in sync while busy
   applySizes(s.sizes);
+  // The size summary's wording depends on whether a sweep is running, so a
+  // state change has to repaint it even when no size changed -- otherwise a
+  // cache-only sweep that resolves nothing leaves "checking sizes…" on screen
+  // permanently (applySizes only repaints when a size actually arrived).
+  if (prev !== currentState) updateSelectedCount();
   renderActivity(s);
   updateButtons();
 
