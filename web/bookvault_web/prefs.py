@@ -140,10 +140,6 @@ def allowed_download_roots() -> list[Path]:
     return out
 
 
-def _within_allowed_roots(path: Path) -> bool:
-    return any(path == root or root in path.parents for root in allowed_download_roots())
-
-
 def _normalise_download_dir(value: str) -> str | None:
     """Turn what the user typed into a storable absolute path, or None when
     they cleared the field. Raises ValueError on anything unusable so the
@@ -169,11 +165,23 @@ def _normalise_download_dir(value: str) -> str | None:
     # token by design -- so any page the user happens to be visiting can POST
     # here. Confining writes to the places a library plausibly lives turns that
     # from "choose any directory on the machine" into "choose a folder".
-    if not _within_allowed_roots(path):
+    # The guard is written out here rather than hidden behind a helper so that
+    # both a reader and a static analyser can see, at the point of use, that
+    # `path` is compared against a fixed set of roots before anything touches
+    # the filesystem with it.
+    allowed = False
+    for root in allowed_download_roots():
+        if path == root or root in path.parents:
+            allowed = True
+            break
+    if not allowed:
         raise InvalidDownloadDir("outside_allowed_roots")
-    if path.exists() and not path.is_dir():
+
+    # From here `path` is known to sit under one of those roots.
+    safe_path = path
+    if safe_path.exists() and not safe_path.is_dir():
         raise InvalidDownloadDir("not_a_folder")
-    return str(path)
+    return str(safe_path)
 
 
 def _effective_download_dir(state: dict) -> str | None:
