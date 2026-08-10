@@ -72,6 +72,17 @@ core, web, mcp, desktop) when releasing.
 - CI must be green: ruff, the 3.11–3.13 test matrix, the dependency audit, and
   CodeQL.
 
+### How your PR gets merged
+
+PRs from outside contributors are merged with a **merge commit**, never
+squashed, so your commit keeps your name in `git log` and on the contributor
+graph. Review changes are added as separate commits on top of yours rather
+than folded into it, so the difference between what you wrote and what shipped
+stays readable.
+
+If your branch has gone stale, we bring `main` *into* your branch rather than
+rebasing it, so your commit keeps its identity.
+
 ## AI-assisted contributions
 
 Much of this repo is maintained with [Claude Code](https://claude.com/claude-code),

@@ -155,9 +155,10 @@ def test_a_tilde_path_is_expanded_before_it_is_stored():
     assert "~" not in stored
 
 
-def test_surrounding_whitespace_is_trimmed():
-    prefs.update(download_dir="  /tmp/books  ")
-    assert prefs.snapshot()["download_dir"] == "/tmp/books"
+def test_surrounding_whitespace_is_trimmed(tmp_path):
+    books = tmp_path / "books"
+    prefs.update(download_dir=f"  {books}  ")
+    assert prefs.snapshot()["download_dir"] == str(books.resolve())
 
 
 def test_a_relative_path_is_rejected():
@@ -192,10 +193,11 @@ def test_a_rejected_folder_does_not_half_apply_the_rest_of_the_update():
     assert prefs.snapshot()["ebook_format"] == "epub"
 
 
-def test_download_dir_persists_across_a_reload():
-    prefs.update(download_dir="/tmp/books")
+def test_download_dir_persists_across_a_reload(tmp_path):
+    books = tmp_path / "books"
+    prefs.update(download_dir=str(books))
     prefs._state = None  # simulate a fresh process
-    assert prefs.snapshot()["download_dir"] == "/tmp/books"
+    assert prefs.snapshot()["download_dir"] == str(books.resolve())
 
 
 # -- the HTTP surface -------------------------------------------------------
@@ -277,12 +279,13 @@ def test_post_prefs_rejects_a_bad_save_folder_with_400():
         assert client.get("/prefs").json()["download_dir"] is None
 
 
-def test_the_save_folder_is_shared_across_browsers(monkeypatch):
+def test_the_save_folder_is_shared_across_browsers(monkeypatch, tmp_path):
     monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", None)
+    shared = tmp_path / "shared-books"
     with TestClient(app) as browser_a:
-        browser_a.post("/prefs", json={"download_dir": "/tmp/shared-books"})
+        browser_a.post("/prefs", json={"download_dir": str(shared)})
     with TestClient(app) as browser_b:
-        assert browser_b.get("/prefs").json()["download_dir"] == "/tmp/shared-books"
+        assert browser_b.get("/prefs").json()["download_dir"] == str(shared.resolve())
 
 
 def test_save_is_atomic_and_leaves_no_tmp_file_behind():
@@ -291,3 +294,33 @@ def test_save_is_atomic_and_leaves_no_tmp_file_behind():
     prefs.update(selected=[1, 2])
     assert not prefs.STATE_PATH.with_name(prefs.STATE_PATH.name + ".tmp").exists()
     assert json.loads(prefs.STATE_PATH.read_text())["selected"] == [1, 2]
+
+
+def test_a_traversal_path_is_normalised_before_it_is_stored(tmp_path):
+    """The value arrives over HTTP and later decides where a multi-gigabyte
+    archive is written. The app is 127.0.0.1-only with no auth or CSRF token,
+    so what gets stored must be the path that was actually validated -- not a
+    `..` chain that resolves somewhere else."""
+    target = tmp_path / "books"
+    target.mkdir()
+    sneaky = str(tmp_path / "books" / ".." / ".." / tmp_path.name / "books")
+    prefs.update(download_dir=sneaky)
+    stored = prefs.snapshot()["download_dir"]
+    assert ".." not in stored
+    assert stored == str(target.resolve())
+
+
+def test_a_path_containing_a_nul_byte_is_rejected():
+    """A NUL truncates the path at the C level, so the validated string and the
+    one the OS opens could differ."""
+    with pytest.raises(prefs.InvalidDownloadDir):
+        prefs.update(download_dir="/tmp/books\x00/etc")
+
+
+def test_a_symlinked_folder_is_stored_as_its_real_target(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    prefs.update(download_dir=str(link))
+    assert prefs.snapshot()["download_dir"] == str(real.resolve())

@@ -41,6 +41,28 @@ All three are unsigned dev builds. Don't claim otherwise in release notes.
 **Pin GitHub Actions consistently.** When bumping one action, bump every
 workflow that uses it, and check the major jump doesn't change inputs.
 
+## Merging pull requests
+
+**Squash your own PRs. Never squash someone else's.** A squash collapses the
+branch into one commit authored by whoever merged it, so an outside
+contributor vanishes from `git log` and from GitHub's contributor graph, with
+no `Co-authored-by` trailer to fall back on. Use `gh pr merge <n> --merge` for
+any PR you did not write, then verify:
+
+```bash
+git log origin/main --author="<their name>" --format='%h | %an | %s'
+```
+
+This is unrecoverable once released -- amending published history is not an
+option. See the `merge-a-contribution` skill, including how to make a stale
+fork PR mergeable with a fast-forward push instead of a rebase + force-push.
+
+**Never push a revert to `main` you cannot immediately finish.** If a fix is
+"revert, then re-merge elsewhere", confirm every step is permitted *first*
+(`git push --dry-run`), build and test the end state locally, and only then
+push -- otherwise `main` sits broken between two commits. On a released
+project that is a live outage, not a tidiness problem.
+
 ## Release checklist
 
 Use the `release` skill. In short: confirm `main` is green → bump five

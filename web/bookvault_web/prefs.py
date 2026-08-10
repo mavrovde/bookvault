@@ -118,9 +118,20 @@ def _normalise_download_dir(value: str) -> str | None:
     text = os.path.expanduser(str(value).strip())
     if not text:
         return None  # cleared -- fall back to the system/env default
+    # A NUL truncates the path at the C level, so what gets validated here and
+    # what the OS eventually opens can differ. Refuse outright.
+    if "\x00" in text:
+        raise InvalidDownloadDir("not_absolute")
     if not os.path.isabs(text):
         raise InvalidDownloadDir("not_absolute")
-    path = Path(text)
+    # Resolve before storing: this value arrives over HTTP and is later used to
+    # build (and write) a multi-gigabyte archive. The app is 127.0.0.1-only and
+    # has no auth or CSRF token, so a page the user happens to be visiting can
+    # POST here -- normalising `..` and symlinks means the stored path is the
+    # one that was actually checked, not a traversal that resolves elsewhere.
+    path = Path(text).resolve()
+    if not path.is_absolute():  # defensive: resolve() should guarantee this
+        raise InvalidDownloadDir("not_absolute")
     if path.exists() and not path.is_dir():
         raise InvalidDownloadDir("not_a_folder")
     return str(path)

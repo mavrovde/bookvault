@@ -7,7 +7,7 @@ Checked-in harness config so every contributor gets the same setup.
   its area: the things that aren't obvious from the code and that a fresh
   context will otherwise get wrong.
 - **`skills/`** — the repeatable workflows: `dev-setup`, `run-app`,
-  `add-a-pref`, `release`, `build-installers`.
+  `add-a-pref`, `merge-a-contribution`, `release`, `build-installers`.
 - **`settings.json`** — an allowlist for routine read-only commands, a deny
   list covering the secret files, and a ruff hook that runs after edits.
   `settings.local.json` is git-ignored for per-machine overrides.

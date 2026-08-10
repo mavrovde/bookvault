@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bookvault-web"
-version = "1.3.1"
+version = "1.3.2"
 description = "Local, single-user web app to browse and back up your litres.ru library."
 requires-python = ">=3.11"
 dependencies = [

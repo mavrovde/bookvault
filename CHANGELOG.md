@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.3.2] - Contributor attribution
+
+Same code as 1.3.1 — this release exists to record authorship correctly.
+
+Both features in 1.3.1 were written by
+[@yuri-tceretian](https://github.com/yuri-tceretian), but the metadata work
+was merged with a squash, which collapsed their commit and left their name out
+of the history. Their PRs are now merged with merge commits, so both commits
+appear in `git log` under their name.
+
+### Changed
+- Contributor PRs are merged, never squashed. Recorded in `CONTRIBUTING.md`,
+  the `packaging-release` agent, and a new `merge-a-contribution` skill —
+  including how to make a stale fork PR mergeable with a fast-forward push
+  rather than a rebase and force-push, which rewrites the contributor's commit.
+
+
 ## [1.3.1] - Audiobookshelf library sync
 
 Adds an optional on-disk library: point `LITRES_LIBRARY_DIR` at a folder and
