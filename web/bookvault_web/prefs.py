@@ -72,7 +72,8 @@ class InvalidDownloadDir(ValueError):
 # The only strings the /prefs route will send back for a rejected folder.
 DOWNLOAD_DIR_ERRORS = {
     "not_absolute": "Please give a full folder path (starting with / or ~).",
-    "not_a_folder": "That path is a file, not a folder.",
+    "not_a_folder": "That path is a file, not a folder -- pick a folder instead.",
+    "not_writable": "That folder is read-only -- pick one you can write to.",
     "outside_allowed_roots": (
         "Pick a folder in your home directory or on a mounted drive."
     ),
@@ -87,6 +88,27 @@ _DEFAULTS = {
     "audiobook_format": None,
     "download_dir": None,
 }
+
+
+def warn_if_state_is_cwd_relative() -> None:
+    """Say so, once at startup, when the shared UI state is being kept
+    relative to the working directory (issue #42).
+
+    Launch `bookvault-web` from a different folder and every preference reads
+    as unset -- nothing is lost, but the old file simply isn't found, which
+    looks exactly like "the setting didn't persist". The packaged desktop app
+    and Docker both pin an absolute LITRES_STATE_FILE and never hit this.
+
+    Relocating the default to a per-user data dir is the real fix, but it
+    would move existing users' state and needs a migration decision, so this
+    only makes the situation visible in the log."""
+    if not STATE_PATH.is_absolute():
+        logger.warning(
+            "Shared UI state is stored at %s, relative to the current working directory "
+            "(%s). Launching from elsewhere will read preferences as unset -- set "
+            "LITRES_STATE_FILE to an absolute path to pin it.",
+            STATE_PATH, Path.cwd(),
+        )
 
 
 def _load() -> dict:
@@ -175,13 +197,55 @@ def _normalise_download_dir(value: str) -> str | None:
             allowed = True
             break
     if not allowed:
+        # The code, not the path: this is the one validation branch a hostile
+        # page can drive, and the log shouldn't become a place to read back
+        # what it probed for. The other rejections log the same way below.
+        logger.info("Rejected a save folder: outside the allowed roots")
         raise InvalidDownloadDir("outside_allowed_roots")
 
     # From here `path` is known to sit under one of those roots.
     safe_path = path
-    if safe_path.exists() and not safe_path.is_dir():
-        raise InvalidDownloadDir("not_a_folder")
+    # Folders only. `resolve()` above already followed any symlink, so this
+    # also catches a link pointing at a file. A path that doesn't exist yet is
+    # fine and stays fine -- _save_archive mkdirs it when a build finishes --
+    # but it gets a warning (see _download_dir_warning) so a typo doesn't
+    # surface for the first time at the end of a multi-gigabyte build.
+    if safe_path.exists():
+        if not safe_path.is_dir():
+            logger.info("Rejected a save folder: it is a file, not a folder")
+            raise InvalidDownloadDir("not_a_folder")
+        # An existing but read-only folder fails at the very last step of a
+        # build, after everything is downloaded. Refuse it now instead.
+        if not os.access(safe_path, os.W_OK):
+            logger.info("Rejected a save folder: not writable")
+            raise InvalidDownloadDir("not_writable")
+    else:
+        logger.info("Accepted a save folder that does not exist yet -- it will be created on save")
     return str(safe_path)
+
+
+def _download_dir_warning(state: dict) -> str | None:
+    """A non-blocking caveat about the destination in force.
+
+    Distinct from InvalidDownloadDir: that rejects a value outright, this
+    accepts it and says what to expect. It's derived on read (like
+    `download_dir_effective`) rather than stored, so it also covers a
+    destination that came from LITRES_DOWNLOAD_DIR and one that was fine when
+    it was set but has since been deleted or unmounted."""
+    effective = _effective_download_dir(state)
+    if not effective:
+        return None
+    path = Path(effective)
+    try:
+        if not path.exists():
+            return "This folder doesn't exist yet -- it will be created when a build finishes."
+        if not path.is_dir():
+            return "This is a file, not a folder -- the archive can't be saved here."
+        if not os.access(path, os.W_OK):
+            return "This folder is read-only -- the archive can't be saved here."
+    except OSError:  # pragma: no cover -- e.g. an unreachable network mount
+        return "This folder can't be reached right now."
+    return None
 
 
 def _effective_download_dir(state: dict) -> str | None:
@@ -212,6 +276,7 @@ def snapshot() -> dict:
             "audiobook_format": state["audiobook_format"],
             "download_dir": state["download_dir"],
             "download_dir_effective": _effective_download_dir(state),
+            "download_dir_warning": _download_dir_warning(state),
         }
 
 
@@ -259,6 +324,7 @@ def update(
             "audiobook_format": state["audiobook_format"],
             "download_dir": state["download_dir"],
             "download_dir_effective": _effective_download_dir(state),
+            "download_dir_warning": _download_dir_warning(state),
         }
 
 

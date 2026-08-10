@@ -22,6 +22,9 @@ NO_PREFS = {
     "audiobook_format": None,
     "download_dir": None,
     "download_dir_effective": None,
+    # Also derived: a caveat about the destination in force (missing folder,
+    # read-only, gone away). None here because there is no destination at all.
+    "download_dir_warning": None,
 }
 
 
@@ -364,3 +367,108 @@ def test_the_rejection_message_is_actionable():
     """The user has to be able to tell what to do differently."""
     msg = prefs.DOWNLOAD_DIR_ERRORS["outside_allowed_roots"]
     assert "home" in msg.lower() and "drive" in msg.lower()
+
+
+# -- folders only, and warnings for the rest --------------------------------
+# A save folder that turns out to be unusable only shows up at the very end of
+# a build, after everything has been downloaded. So: reject what can't work,
+# and warn about what merely might not.
+
+
+def test_a_file_is_rejected_as_a_save_folder(tmp_path):
+    a_file = tmp_path / "library.zip"
+    a_file.write_text("not a folder")
+    with pytest.raises(prefs.InvalidDownloadDir) as caught:
+        prefs.update(download_dir=str(a_file))
+    assert caught.value.code == "not_a_folder"
+
+
+def test_a_symlink_pointing_at_a_file_is_rejected(tmp_path):
+    """resolve() runs first, so the check sees the file, not the link."""
+    a_file = tmp_path / "library.zip"
+    a_file.write_text("x")
+    link = tmp_path / "looks-like-a-folder"
+    link.symlink_to(a_file)
+    with pytest.raises(prefs.InvalidDownloadDir) as caught:
+        prefs.update(download_dir=str(link))
+    assert caught.value.code == "not_a_folder"
+
+
+def test_a_read_only_folder_is_rejected_up_front(tmp_path):
+    """Otherwise the archive is built, then fails to move at the last step."""
+    locked = tmp_path / "read-only"
+    locked.mkdir()
+    locked.chmod(0o500)
+    try:
+        with pytest.raises(prefs.InvalidDownloadDir) as caught:
+            prefs.update(download_dir=str(locked))
+        assert caught.value.code == "not_writable"
+    finally:
+        locked.chmod(0o700)  # so tmp_path cleanup can remove it
+
+
+def test_the_folder_only_messages_say_to_pick_a_folder():
+    assert "folder" in prefs.DOWNLOAD_DIR_ERRORS["not_a_folder"].lower()
+    assert "read-only" in prefs.DOWNLOAD_DIR_ERRORS["not_writable"].lower()
+
+
+def test_a_folder_that_does_not_exist_yet_is_accepted_with_a_warning(tmp_path):
+    """_save_archive mkdirs it, so this is legal -- but a typo shouldn't stay
+    invisible until the end of a multi-gigabyte build."""
+    planned = tmp_path / "not-created-yet"
+    prefs.update(download_dir=str(planned))
+    snap = prefs.snapshot()
+    assert snap["download_dir"] == str(planned)  # accepted
+    assert "doesn't exist yet" in snap["download_dir_warning"]
+
+
+def test_a_usable_folder_produces_no_warning(tmp_path):
+    prefs.update(download_dir=str(tmp_path))
+    assert prefs.snapshot()["download_dir_warning"] is None
+
+
+def test_a_folder_deleted_after_it_was_set_starts_warning(tmp_path):
+    """The warning is derived on read, not stored -- so an unmounted drive or a
+    deleted folder is noticed without the user touching the setting."""
+    gone = tmp_path / "external-drive"
+    gone.mkdir()
+    prefs.update(download_dir=str(gone))
+    assert prefs.snapshot()["download_dir_warning"] is None
+    gone.rmdir()
+    assert "doesn't exist yet" in prefs.snapshot()["download_dir_warning"]
+
+
+def test_a_warning_also_covers_a_destination_that_came_from_the_environment(monkeypatch, tmp_path):
+    """The user never typed this one -- LITRES_DOWNLOAD_DIR did -- and it still
+    has to be flagged if it can't be written to."""
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", str(tmp_path / "never-made"))
+    assert "doesn't exist yet" in prefs.snapshot()["download_dir_warning"]
+
+
+def test_the_warning_is_visible_in_the_activity_poll(monkeypatch, tmp_path):
+    """Every browser polls /activity, so that's where the warning has to land
+    for all of them to see it."""
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", str(tmp_path))
+    prefs.update(download_dir=str(tmp_path / "planned"))
+    with TestClient(app) as client:
+        body = client.get("/activity").json()
+    assert "doesn't exist yet" in body["prefs"]["download_dir_warning"]
+
+
+# -- issue #42: a CWD-relative state file is at least visible ---------------
+
+def test_a_cwd_relative_state_file_warns_at_startup(monkeypatch, caplog):
+    """Launching from a different folder reads every pref as unset. Nothing is
+    lost, but silence looks exactly like "it didn't persist" -- so say it."""
+    monkeypatch.setattr(prefs, "STATE_PATH", Path(".litres_state.json"))
+    with caplog.at_level("WARNING"):
+        prefs.warn_if_state_is_cwd_relative()
+    assert "LITRES_STATE_FILE" in caplog.text
+
+
+def test_an_absolute_state_file_warns_about_nothing(monkeypatch, tmp_path, caplog):
+    """Docker and the packaged desktop app both pin an absolute path."""
+    monkeypatch.setattr(prefs, "STATE_PATH", tmp_path / ".litres_state.json")
+    with caplog.at_level("WARNING"):
+        prefs.warn_if_state_is_cwd_relative()
+    assert caplog.text == ""

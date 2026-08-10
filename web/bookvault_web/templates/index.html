@@ -43,8 +43,15 @@
             <input type="text" id="download-dir" class="dir-input" spellcheck="false"
                    value="{{ download_dir or '' }}"
                    placeholder="{{ download_dir_effective or 'Save folder' }}">
+            {% if folder_picker %}
+              {# Opens the OS folder picker on the machine running the server; hidden
+                 where no dialog can be drawn (Docker, SSH) so the field is the way in. #}
+              <button type="button" id="browse-dir" class="btn-ghost btn-browse"
+                      title="Choose the save folder in a native dialog">Browse…</button>
+            {% endif %}
           </label>
           <span id="download-dir-error" class="dir-error" style="display:none"></span>
+          <span id="download-dir-warning" class="dir-warning" style="display:none"></span>
         </div>
         <span class="account-chip" title="{{ login or 'Signed in' }}">
           <svg class="account-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">

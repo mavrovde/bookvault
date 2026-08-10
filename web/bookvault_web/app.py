@@ -17,6 +17,7 @@ from bookvault_core.client import (
     AUDIOBOOK_FILE_TYPES,
     EBOOK_EXTENSIONS,
     LitresAuthError,
+    LitresBrowserUnavailable,
 )
 from bookvault_core.library_fs import library_root_from_env
 from fastapi import FastAPI, Form
@@ -26,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from . import activity, autosync, prefs
+from . import activity, autosync, folder_dialog, prefs
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI):
     # credentials -- it restores a saved session (or re-logs-in from the OS
     # keychain), and otherwise shows its login form. LITRES_LOGIN/PASSWORD
     # in .env are for the headless MCP server only (see session.py).
+    prefs.warn_if_state_is_cwd_relative()
     await anyio.to_thread.run_sync(partial(session.restore_session, allow_env_login=False))
     autosync.start_background_scheduler(session.current_client, prefs.snapshot)
     try:
@@ -77,7 +79,24 @@ def index(request: Request):
             "download_dir_effective": saved["download_dir_effective"],
             "library_sync_enabled": library_root is not None,
             "library_dir": str(library_root) if library_root else None,
+            # Hides the Browse button where no dialog can be drawn (Docker,
+            # plain SSH) -- the text field stays as the way in there.
+            "folder_picker": folder_dialog.is_available(),
         },
+    )
+
+
+def _login_page(request: Request, error: str, *, status_code: int):
+    """Re-render the logged-out page with an error banner.
+
+    The template's logged-out branch only reads `logged_in`/`login`/`error`,
+    so the format/prefs context the logged-in branch needs is deliberately
+    omitted here (undefined is falsy in Jinja)."""
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {"logged_in": False, "login": None, "error": error},
+        status_code=status_code,
     )
 
 
@@ -85,13 +104,27 @@ def index(request: Request):
 def do_login(request: Request, login: str = Form(...), password: str = Form(...)):
     try:
         session.login(login, password)
+    except LitresBrowserUnavailable as exc:
+        # A local setup problem (Chromium not installed), not a bad password
+        # -- so it gets its own banner with the fix, and a 503 rather than a
+        # 401. Checked before LitresAuthError: it's a subclass of it.
+        logger.warning("Login could not start a browser: %s", exc)
+        return _login_page(request, str(exc), status_code=503)
     except LitresAuthError as exc:
         logger.warning("Login attempt failed for %s: %s", login, exc)
-        return templates.TemplateResponse(
+        return _login_page(request, str(exc), status_code=401)
+    except Exception:
+        # Anything else at all: the user gets a readable banner on the login
+        # page instead of Starlette's "Internal Server Error" plain-text page,
+        # which tells them nothing and loses the form. The traceback goes to
+        # the log (exc_info), never into the response -- same contract as
+        # /library's 503 above.
+        logger.exception("Unexpected error during login for %s", login)
+        return _login_page(
             request,
-            "index.html",
-            {"logged_in": False, "login": None, "error": str(exc)},
-            status_code=401,
+            "Something went wrong while signing in. The details are in the app's "
+            "log; wait a moment and try again.",
+            status_code=503,
         )
     logger.info("Login attempt succeeded for %s", login)
     return RedirectResponse("/", status_code=303)
@@ -221,6 +254,51 @@ def get_activity():
 @app.get("/prefs")
 def get_prefs():
     return {"ok": True, **prefs.snapshot()}
+
+
+@app.post("/prefs/browse")
+def browse_download_dir():
+    """Open the machine's native folder picker and store what the user chose.
+
+    A sync def on purpose: the dialog blocks until a human answers it, so
+    FastAPI runs this on the threadpool and the event loop keeps serving the
+    /activity poll while the dialog is open. It deliberately does NOT go
+    through session.run -- that's the single Playwright worker thread, and
+    parking it behind a dialog would stall any running download.
+
+    The picked path is validated by prefs.update() like any typed one; this
+    route grants no extra reach into the filesystem."""
+    if not folder_dialog.is_available():
+        return JSONResponse(
+            {"ok": False, "error": "No folder picker is available here -- type the path instead."},
+            status_code=501,
+        )
+    try:
+        chosen = folder_dialog.choose_folder(prefs.snapshot()["download_dir_effective"])
+    except folder_dialog.DialogBusy:
+        return JSONResponse(
+            {"ok": False, "error": "A folder dialog is already open."}, status_code=409
+        )
+    except folder_dialog.FolderDialogError as exc:
+        logger.warning("Folder dialog failed: %s", exc)
+        return JSONResponse(
+            {"ok": False, "error": "The folder picker could not be opened."}, status_code=503
+        )
+    if chosen is None:
+        # Cancelled -- not an error, and nothing changes. The current snapshot
+        # comes back so the UI can just re-render from one shape either way.
+        logger.info("Folder picker cancelled -- save folder unchanged")
+        return {"ok": True, "cancelled": True, **prefs.snapshot()}
+    try:
+        updated = prefs.update(download_dir=chosen)
+    except prefs.InvalidDownloadDir as exc:
+        # The picker can reach folders the guard won't accept (e.g. /Library).
+        # Same fixed-table message as the typed path -- no filesystem detail.
+        logger.info("Picked folder rejected by the save-folder guard (%s)", exc.code)
+        message = prefs.DOWNLOAD_DIR_ERRORS.get(exc.code, "That folder can't be used.")
+        return JSONResponse({"ok": False, "error": message}, status_code=400)
+    logger.info("Save folder set from the native picker")
+    return {"ok": True, "cancelled": False, **updated}
 
 
 @app.post("/prefs")

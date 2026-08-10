@@ -120,6 +120,10 @@ button:active { transform: scale(0.97); }
   text-overflow: ellipsis;
 }
 .dir-error { color: var(--danger); font-size: 0.78rem; }
+/* Amber, not red: the folder was accepted -- this is a heads-up (it doesn't
+   exist yet, it's gone away), not a rejection. */
+.dir-warning { color: var(--warning); font-size: 0.78rem; }
+.btn-browse { padding: 0.3rem 0.6rem; font-size: 0.8rem; border: 1px solid var(--border); flex-shrink: 0; }
 .account-chip { display: flex; align-items: center; gap: 0.4rem; }
 .account-icon { width: 16px; height: 16px; color: var(--text-faint); flex-shrink: 0; }
 .account-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
