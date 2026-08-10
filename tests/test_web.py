@@ -260,7 +260,7 @@ def test_library_serves_stale_cache_while_an_activity_is_busy(monkeypatch):
         client.post("/login", data={"login": "u@example.com", "password": "pw"})
         warm = client.get("/library")  # warms the cache (one live fetch)
         monkeypatch.setattr(cache, "LIBRARY_TTL", 0)  # fresh cache now considered expired
-        monkeypatch.setattr(activity, "_state", {**activity._state, "state": activity.PREPARING})
+        monkeypatch.setattr(activity.state, "_state", {**activity.state._state, "state": activity.PREPARING})
         resp = client.get("/library")
 
     assert resp.status_code == 200

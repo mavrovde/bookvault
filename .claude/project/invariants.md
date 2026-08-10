@@ -267,3 +267,23 @@ operation and then asks the question the app asks next**:
   between them is invisible to per-consumer tests.
 - To check a test can actually fail, reintroduce the bug and watch it go red.
   A test that passes against the broken version is decoration.
+
+## 18. Patch the module that owns the name
+
+`web/bookvault_web/activity/` is a package with a façade `__init__.py`. Two
+rules keep that structure testable, and both exist because breaking them fails
+*silently*:
+
+- **Cross-module references go through the module object** —
+  `library._iter_books(...)`, `state._state`, not
+  `from .library import _iter_books`. A `from` import binds the object at
+  import time, so a later `monkeypatch.setattr` on the owning module is never
+  seen by the caller: the test injects nothing and passes anyway.
+- **Tests patch the owning module** (`activity.library.PACE_SECONDS`), not the
+  façade. Rebinding a name on `__init__.py` changes only its own copy.
+
+The façade therefore re-exports the *public* surface only. Patchable internals
+are deliberately absent from it, so a mis-aimed `monkeypatch.setattr` raises
+`AttributeError` — loud and immediate — rather than quietly binding a copy
+nothing reads. When adding to the façade, ask whether a test might want to
+patch the name; if so, leave it off.

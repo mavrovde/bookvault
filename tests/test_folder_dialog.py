@@ -433,8 +433,8 @@ def test_save_copy_puts_a_copy_where_the_user_picked(monkeypatch, tmp_path):
     saved = tmp_path / "configured" / "litres-library.zip"
     saved.parent.mkdir()
     saved.write_bytes(b"archive")
-    activity._state["zip_path"] = str(saved)
-    activity._state["saved_path"] = str(saved)
+    activity.state._state["zip_path"] = str(saved)
+    activity.state._state["saved_path"] = str(saved)
     dest = tmp_path / "external"
     dest.mkdir()
 
@@ -458,7 +458,7 @@ def test_save_copy_does_not_change_the_configured_save_folder(monkeypatch, tmp_p
     saved = tmp_path / "configured" / "litres-library.zip"
     saved.parent.mkdir()
     saved.write_bytes(b"archive")
-    activity._state["zip_path"] = activity._state["saved_path"] = str(saved)
+    activity.state._state["zip_path"] = activity.state._state["saved_path"] = str(saved)
     dest = tmp_path / "elsewhere"
     dest.mkdir()
 
@@ -475,7 +475,7 @@ def test_save_copy_does_not_change_the_configured_save_folder(monkeypatch, tmp_p
 def test_save_copy_without_a_finished_build_is_refused(monkeypatch):
     from bookvault_web import activity
 
-    activity._state["zip_path"] = None
+    activity.state._state["zip_path"] = None
     monkeypatch.setattr(folder_dialog, "is_available", lambda: True)
     with TestClient(app) as client:
         resp = client.post("/download/save-copy")
@@ -487,7 +487,7 @@ def test_save_copy_destination_is_subject_to_the_allowed_roots_guard(monkeypatch
 
     saved = tmp_path / "litres-library.zip"
     saved.write_bytes(b"archive")
-    activity._state["zip_path"] = activity._state["saved_path"] = str(saved)
+    activity.state._state["zip_path"] = activity.state._state["saved_path"] = str(saved)
 
     monkeypatch.setattr(folder_dialog, "is_available", lambda: True)
     monkeypatch.setattr(folder_dialog, "choose_folder", lambda initial=None: "/etc")
@@ -502,7 +502,7 @@ def test_save_copy_cancel_copies_nothing(monkeypatch, tmp_path):
 
     saved = tmp_path / "litres-library.zip"
     saved.write_bytes(b"archive")
-    activity._state["zip_path"] = activity._state["saved_path"] = str(saved)
+    activity.state._state["zip_path"] = activity.state._state["saved_path"] = str(saved)
 
     monkeypatch.setattr(folder_dialog, "is_available", lambda: True)
     monkeypatch.setattr(folder_dialog, "choose_folder", lambda initial=None: None)

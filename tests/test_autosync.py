@@ -64,6 +64,6 @@ def test_autosync_does_not_start_while_another_activity_runs(monkeypatch, tmp_pa
     run alongside a zip build competing for the one Playwright thread."""
     monkeypatch.setenv("LITRES_LIBRARY_DIR", str(tmp_path / "lib"))
     monkeypatch.setenv("LITRES_AUTOSYNC", "1")
-    monkeypatch.setattr(activity, "_state", {**activity._state, "state": activity.PREPARING})
+    monkeypatch.setattr(activity.state, "_state", {**activity.state._state, "state": activity.PREPARING})
     monkeypatch.setattr(activity, "start_sync", lambda *a, **k: pytest.fail("must not start"))
     assert autosync.try_start_sync(lambda: object(), dict) is False

@@ -546,11 +546,11 @@ def test_cancel_returns_false_when_nothing_running():
 def test_cancel_returns_false_during_refresh_reload_phase():
     """Cancel only stops CHECKING/PREPARING; the REFRESHING reload itself is
     a single call that isn't interruptible, so cancel() no-ops there."""
-    activity._state["state"] = activity.REFRESHING
+    activity.state._state["state"] = activity.REFRESHING
     try:
         assert activity.cancel() is False
     finally:
-        activity._state["state"] = activity.IDLE
+        activity.state._state["state"] = activity.IDLE
 
 
 # ==========================================================================
@@ -605,21 +605,21 @@ def test_fetch_size_returns_size_and_raw_files():
 
 
 def test_friendly_error_recognizes_ddos_guard_block():
-    assert "anti-bot" in activity._friendly_error(RuntimeError("Download failed for art 1 (403): DDoS-Guard"))
+    assert "anti-bot" in activity.state._friendly_error(RuntimeError("Download failed for art 1 (403): DDoS-Guard"))
 
 
 def test_friendly_error_recognizes_stale_client_after_relogin():
-    msg = activity._friendly_error(RuntimeError("Event loop is closed! Is Playwright already stopped?"))
+    msg = activity.state._friendly_error(RuntimeError("Event loop is closed! Is Playwright already stopped?"))
     assert "session changed" in msg.lower()
 
 
 def test_friendly_error_recognizes_dropped_connection():
-    msg = activity._friendly_error(RuntimeError("APIRequestContext.get: socket hang up"))
+    msg = activity.state._friendly_error(RuntimeError("APIRequestContext.get: socket hang up"))
     assert "interrupted" in msg.lower()
 
 
 def test_friendly_error_falls_back_to_raw_text_for_unrecognized_errors():
-    assert "something truly unexpected" in activity._friendly_error(RuntimeError("something truly unexpected"))
+    assert "something truly unexpected" in activity.state._friendly_error(RuntimeError("something truly unexpected"))
 
 
 # ==========================================================================
@@ -805,7 +805,7 @@ def test_a_build_with_no_successes_leaves_no_workdir_behind(monkeypatch):
         made.append(path)
         return path
 
-    monkeypatch.setattr(activity.tempfile, "mkdtemp", recording_mkdtemp)
+    monkeypatch.setattr(activity.archive.tempfile, "mkdtemp", recording_mkdtemp)
     client = _make_client(_book(1, "Book A", TEXT_FILES))
     client.fail_downloads = {1}
     activity.prepare(client)
@@ -850,7 +850,7 @@ def test_saving_moves_the_zip_out_and_removes_the_workdir(tmp_path):
     client = _make_client(_book(1, "Book A", TEXT_FILES))
     activity.prepare(client, dest_dir=dest)
     wait_until_idle()
-    assert activity._state["workdir"] is None
+    assert activity.state._state["workdir"] is None
     assert not list(tmp_path.glob("litres-*/"))  # nothing staged left behind
 
 
@@ -878,7 +878,7 @@ def test_a_new_build_never_deletes_the_users_download_folder(tmp_path):
 def test_two_builds_in_the_same_second_do_not_collide(tmp_path, monkeypatch):
     """The name is timestamped to the second, so two quick builds would
     otherwise land on the same filename."""
-    monkeypatch.setattr(activity.time, "strftime", lambda fmt: "20260809-120000")
+    monkeypatch.setattr(activity.archive.time, "strftime", lambda fmt: "20260809-120000")
     dest = tmp_path / "out"
     client = _make_client(_book(1, "Book A", TEXT_FILES))
     for _ in range(2):
@@ -903,7 +903,7 @@ def test_an_unwritable_destination_keeps_the_archive_downloadable(tmp_path):
     assert snap["zip_path"] and pathlib.Path(snap["zip_path"]).exists()
     assert "Couldn't save" in snap["message"]
     # Still tracked, so the next prepare() cleans it up.
-    assert activity._state["workdir"] == str(pathlib.Path(snap["zip_path"]).parent)
+    assert activity.state._state["workdir"] == str(pathlib.Path(snap["zip_path"]).parent)
 
 
 def test_a_failed_build_writes_nothing_into_the_destination(tmp_path):
@@ -951,9 +951,13 @@ def test_a_crashed_build_removes_its_workdir(monkeypatch):
         made.append(path)
         return path
 
-    monkeypatch.setattr(activity.tempfile, "mkdtemp", recording_mkdtemp)
+    monkeypatch.setattr(activity.archive.tempfile, "mkdtemp", recording_mkdtemp)
     client = _make_client(_book(1, "Book A", TEXT_FILES))
-    monkeypatch.setattr(activity, "_iter_books", lambda c: (_ for _ in ()).throw(RuntimeError("boom")))
+    # The zip build reaches the listing through `library._iter_books`, so the
+    # patch has to land on the module that owns it.
+    monkeypatch.setattr(
+        activity.library, "_iter_books", lambda c: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
     activity.prepare(client)
     snap = wait_until_idle()
 
@@ -982,10 +986,10 @@ def test_refresh_cancelled_during_reload_stops_before_the_sweep(monkeypatch):
     already be set when the reload finishes -- the refresh must then stop
     cleanly instead of rolling into the size sweep."""
     def build_and_cancel(client):
-        activity._cancel_event.set()
+        activity.state._cancel_event.set()
         return [{"id": 1, "title": "Book A", "is_audio": False}]
 
-    monkeypatch.setattr(activity, "build_books", build_and_cancel)
+    monkeypatch.setattr(activity.library, "build_books", build_and_cancel)
     client = _make_client(_book(1, "Book A", TEXT_FILES))
     activity.refresh(client)
     snap = wait_until_idle()
@@ -1001,7 +1005,7 @@ def test_friendly_error_maps_common_statuses():
         "Timeout 300000ms exceeded": "timed out",
     }
     for raw, expected in cases.items():
-        assert expected in activity._friendly_error(Exception(raw)), raw
+        assert expected in activity.state._friendly_error(Exception(raw)), raw
 
 
 # ==========================================================================
@@ -1065,7 +1069,7 @@ def test_a_cache_only_sweep_uses_the_stale_library_when_the_fresh_one_expired(mo
     monkeypatch.setattr(cache, "get_library_stale", lambda: books)   # but we still know the ids
     monkeypatch.setattr(cache, "get_files", lambda art_id: [{"id": 9, "extension": "epub", "size": 5_000_000}])
 
-    activity._run_check(object(), None, live=False)
+    activity.library._run_check(object(), None, live=False)
 
     snap = activity.snapshot()
     assert snap["sizes"], "a stale library must still let cached sizes resolve"
@@ -1076,15 +1080,15 @@ def test_starting_an_activity_keeps_the_sizes_already_resolved():
     """Downloading, refreshing, or the automatic check on page load must not
     blank sizes the app already had -- they come from the durable file-listing
     cache, not from the activity that happens to be running."""
-    activity._state["sizes"] = {1: 12.5, 2: 30.0}
-    assert activity._begin(activity.PREPARING) is True
+    activity.state._state["sizes"] = {1: 12.5, 2: 30.0}
+    assert activity.state._begin(activity.PREPARING) is True
     assert activity.snapshot()["sizes"] == {1: 12.5, 2: 30.0}
 
 
 def test_logout_drops_the_sizes_so_they_cannot_cross_accounts():
     """The flip side of surviving _begin: entries are keyed by art_id, so a
     previous account's sizes must not paint onto the next one's rows."""
-    activity._state["sizes"] = {1: 12.5}
+    activity.state._state["sizes"] = {1: 12.5}
     activity.forget_sizes()
     assert activity.snapshot()["sizes"] == {}
 
@@ -1096,7 +1100,7 @@ def test_copy_archive_leaves_the_original_where_it_was(tmp_path):
     saved = tmp_path / "configured" / "litres-library.zip"
     saved.parent.mkdir()
     saved.write_bytes(b"archive")
-    activity._state["saved_path"] = str(saved)
+    activity.state._state["saved_path"] = str(saved)
 
     elsewhere = tmp_path / "external-drive"
     target = activity.copy_archive_to(elsewhere)
@@ -1112,8 +1116,8 @@ def test_copy_archive_falls_back_to_the_temp_zip_when_the_save_failed(tmp_path):
     temp_zip = tmp_path / "workdir" / "litres-library.zip"
     temp_zip.parent.mkdir()
     temp_zip.write_bytes(b"archive")
-    activity._state["saved_path"] = None
-    activity._state["zip_path"] = str(temp_zip)
+    activity.state._state["saved_path"] = None
+    activity.state._state["zip_path"] = str(temp_zip)
 
     target = activity.copy_archive_to(tmp_path / "dest")
     assert target.exists() and temp_zip.exists()
@@ -1126,7 +1130,7 @@ def test_copy_archive_never_overwrites_an_existing_file(tmp_path):
     dest = tmp_path / "b"
     dest.mkdir()
     (dest / "litres-library.zip").write_bytes(b"older archive worth keeping")
-    activity._state["saved_path"] = str(saved)
+    activity.state._state["saved_path"] = str(saved)
 
     target = activity.copy_archive_to(dest)
     assert target.name == "litres-library (2).zip"
@@ -1137,7 +1141,7 @@ def test_copying_into_the_folder_it_already_lives_in_is_a_no_op(tmp_path):
     """Copying a file onto itself would truncate it."""
     saved = tmp_path / "litres-library.zip"
     saved.write_bytes(b"archive")
-    activity._state["saved_path"] = str(saved)
+    activity.state._state["saved_path"] = str(saved)
 
     target = activity.copy_archive_to(tmp_path)
     assert target == saved
@@ -1146,8 +1150,8 @@ def test_copying_into_the_folder_it_already_lives_in_is_a_no_op(tmp_path):
 
 
 def test_copy_archive_without_a_finished_build_raises(tmp_path):
-    activity._state["saved_path"] = None
-    activity._state["zip_path"] = None
+    activity.state._state["saved_path"] = None
+    activity.state._state["zip_path"] = None
     with pytest.raises(FileNotFoundError):
         activity.copy_archive_to(tmp_path)
 
@@ -1168,8 +1172,8 @@ def test_expected_total_sums_the_files_the_build_will_actually_pick(monkeypatch)
     }
     monkeypatch.setattr(cache, "get_files", lambda art_id: listings.get(art_id))
 
-    assert activity._expected_total_bytes(None) == 3_500_000
-    assert activity._expected_total_bytes({1}) == 1_000_000
+    assert activity.library._expected_total_bytes(None) == 3_500_000
+    assert activity.library._expected_total_bytes({1}) == 1_000_000
 
 
 def test_expected_total_is_none_when_nothing_is_known(monkeypatch):
@@ -1179,14 +1183,14 @@ def test_expected_total_is_none_when_nothing_is_known(monkeypatch):
 
     monkeypatch.setattr(cache, "get_library", lambda: [{"id": 1}])
     monkeypatch.setattr(cache, "get_files", lambda art_id: None)
-    assert activity._expected_total_bytes(None) is None
+    assert activity.library._expected_total_bytes(None) is None
 
 
 def test_byte_progress_resets_when_a_new_activity_starts():
     """Unlike sizes, these ARE progress for one build and must not carry over."""
-    activity._state["bytes_done"] = 500
-    activity._state["bytes_total"] = 1000
-    activity._begin(activity.PREPARING)
+    activity.state._state["bytes_done"] = 500
+    activity.state._state["bytes_total"] = 1000
+    activity.state._begin(activity.PREPARING)
     snap = activity.snapshot()
     assert snap["bytes_done"] == 0 and snap["bytes_total"] is None
 
@@ -1677,7 +1681,7 @@ def test_books_on_disk_uses_the_same_decollided_names_a_run_would(tmp_path, monk
 
 
 def _audio_on_disk(root, art_id, name, is_audio=True):
-    return activity._is_on_disk(root, read_mirror_index(root), art_id, name, "m4b", is_audio)
+    return activity.mirror._is_on_disk(root, read_mirror_index(root), art_id, name, "m4b", is_audio)
 
 
 def test_an_audiobook_folder_with_no_record_is_not_complete(tmp_path):
@@ -1741,7 +1745,7 @@ def test_bookkeeping_files_are_not_counted_as_tracks(tmp_path):
     (book / "01.mp3").write_bytes(b"track")
     (book / ".bookvault-index.json").write_text("{}")
     (book / ".02.mp3.part").write_bytes(b"half")
-    assert activity._audio_media_count(book) == 1
+    assert activity.mirror._audio_media_count(book) == 1
 
 
 # -- the badge scan must not make the app unresponsive ----------------------

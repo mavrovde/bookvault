@@ -37,7 +37,10 @@ def isolated_module_state(tmp_path, monkeypatch):
     monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", None)
     # No real pacing sleep between size fetches in tests -- the sweep's
     # behaviour is what's under test, not litres.ru-friendliness timing.
-    monkeypatch.setattr(activity, "PACE_SECONDS", 0)
+    # Patch the module that OWNS the name, not the activity façade: the sweep
+    # reads its own module global, so a patch on the façade would bind a copy
+    # nothing consults -- the suite would sleep for real and still pass.
+    monkeypatch.setattr(activity.library, "PACE_SECONDS", 0)
     # Likewise, anti-bot retry backoff runs with zero delay in tests, so the
     # retry *logic* is exercised without the suite actually sleeping. A test
     # that cares about timing overrides these locally.
@@ -47,12 +50,12 @@ def isolated_module_state(tmp_path, monkeypatch):
     def _reset():
         session._state["client"] = None
         session._state["login"] = None
-        activity._cancel_event.clear()
+        activity.state._cancel_event.clear()
         # Memoised "which books are already on disk" scan -- module-level like
         # the rest, so it has to be dropped or one test's folder leaks into the
         # next one's badges.
         activity.forget_books_on_disk()
-        activity._state.update(
+        activity.state._state.update(
             state=activity.IDLE,
             result=None,
             message="",
