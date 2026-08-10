@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [1.4.1] - Audiobooks download again
+
+### Fixed
+- **Audiobooks failed with "File is not a zip file".** Introduced in 1.4.0 and
+  hit by anyone whose audiobook format is a single file rather than a bundle
+  (`mobile_version_mp4` and friends) -- for them, *every* audiobook failed.
+  Downloading as files assumed an audiobook always arrives as a zip of tracks
+  to unpack, but only `zip_with_mp3` does; the rest are one file, exactly like
+  an ebook. The mirror now decides by looking at the downloaded file, the same
+  way the zip build and the Audiobookshelf sync already did. Ebooks that are
+  themselves zips (epub, fb2.zip) are still never unpacked.
+- **Audiobooks you already had were not recognised.** A folder downloaded
+  before 1.4.0 has no entry in the index, and that was read as "not there",
+  so every one of them queued a needless re-download on upgrade. Missing
+  history is not damage: anything already present is now left alone, matching
+  how ebooks were already treated. A book *is* still re-fetched when we have a
+  record and the files no longer match it.
+
 ## [1.4.0] - Download your library as plain files
 
 ### Added

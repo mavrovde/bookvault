@@ -1401,6 +1401,140 @@ def test_an_unwritable_destination_ends_in_error_not_a_wedged_machine(tmp_path):
 # -- so every path out of a transfer has to clean up after itself.
 
 
+# -- every delivered shape must work, not just the bundle ------------------
+# `is_audio` describes the TITLE; it says nothing about the file litres.ru
+# serves. Only zip_with_mp3 arrives as a zip of tracks -- mobile_version_mp4
+# and friends are a single file, exactly like an ebook. Branching on is_audio
+# instead of on the bytes made every single-file audiobook die on "File is
+# not a zip file", i.e. an entire format, for every user who prefers it.
+
+M4B_FILES = [{"id": 300, "extension": "m4b", "is_additional": False,
+              "file_type": "mobile_version_mp4", "size": 1_000_000}]
+
+
+def _audiobook(art_id, title, files):
+    return {"id": art_id, "title": title, "art_type": 1}, files
+
+
+def test_a_single_file_audiobook_is_saved_as_a_file_not_unpacked(tmp_path):
+    """mobile_version_mp4: one file, no archive. The regression case."""
+    client = _make_client(_audiobook(1, "An Audiobook", M4B_FILES))
+
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    assert [e["status"] for e in result["log"]] == ["done"], result["log"]
+    assert (tmp_path / "An Audiobook.m4b").is_file()
+    assert not (tmp_path / "An Audiobook").exists(), "must not be unpacked into a folder"
+
+
+def test_a_bundle_audiobook_is_still_unpacked_into_tracks(tmp_path):
+    """The other audio shape must keep working exactly as before."""
+    client = _make_client(_audiobook(1, "Bundle Book", TEXT_FILES))
+
+    def download_bundle(art_id, release_file_id, filename, dest, subscr=False,
+                        should_cancel=None, on_progress=None):
+        _write_zip(dest, [("01.mp3", b"\xff\xfbone" * 40), ("02.mp3", b"\xff\xfbtwo" * 40)])
+        client.download_calls.append(art_id)
+        return dest
+
+    client.download_file = download_bundle
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    assert [e["status"] for e in result["log"]] == ["done"]
+    assert sorted(p.name for p in (tmp_path / "Bundle Book").iterdir()) == ["01.mp3", "02.mp3"]
+
+
+def test_an_ebook_that_is_itself_a_zip_is_never_unpacked(tmp_path):
+    """epub and fb2.zip *are* zips. Unpacking on 'is it a zip' alone would
+    shred every ebook into loose files -- the guard is audio AND zip."""
+    client = _make_client(_book(1, "Zippy Ebook", TEXT_FILES))
+
+    def download_epub(art_id, release_file_id, filename, dest, subscr=False,
+                      should_cancel=None, on_progress=None):
+        _write_zip(dest, [("mimetype", b"application/epub+zip"), ("content.opf", b"<xml/>")])
+        client.download_calls.append(art_id)
+        return dest
+
+    client.download_file = download_epub
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    assert [e["status"] for e in result["log"]] == ["done"]
+    assert (tmp_path / "Zippy Ebook.epub").is_file()
+    assert not (tmp_path / "Zippy Ebook").is_dir()
+
+
+def test_a_single_file_audiobook_is_recognised_on_the_second_run(tmp_path):
+    """The round trip for this shape: it must be skipped, badged, and reused."""
+    client = _make_client(_audiobook(1, "An Audiobook", M4B_FILES))
+    activity.download_files(client, dest_root=tmp_path)
+    assert wait_until_idle()["result"] == "done"
+
+    client.download_calls.clear()
+    activity.download_files(client, dest_root=tmp_path)
+    assert [e["status"] for e in wait_until_idle()["log"]] == ["exists"]
+    assert client.download_calls == [], "a single-file audiobook must not be re-fetched"
+
+
+def test_a_single_file_audiobook_lights_the_badge_and_is_reused_by_the_zip(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "get_library", lambda: [
+        {"id": 1, "title": "An Audiobook", "is_audio": True},
+    ])
+    monkeypatch.setattr(cache, "get_files", lambda art_id: M4B_FILES)
+    client = _make_client(_audiobook(1, "An Audiobook", M4B_FILES))
+
+    activity.download_files(client, dest_root=tmp_path)
+    assert wait_until_idle()["result"] == "done"
+
+    activity.forget_books_on_disk()
+    assert activity.books_on_disk(tmp_path) == [1]
+
+    client.download_calls.clear()
+    activity.prepare(client, mirror_root=tmp_path)
+    zipped = wait_until_idle()
+    assert [e["status"] for e in zipped["log"]] == ["reused"]
+    assert client.download_calls == []
+    with zipfile.ZipFile(zipped["zip_path"]) as zf:
+        assert zf.namelist() == ["An Audiobook.m4b"], "packed as one file, not a folder"
+
+
+def test_a_redownload_clears_a_stale_folder_of_the_other_shape(tmp_path):
+    """When a re-download *does* happen and the book now arrives as a single
+    file, the folder left by the previous bundle-shaped download must go --
+    otherwise two copies of the same book sit in the mirror and the older one
+    still looks like it."""
+    stale = tmp_path / "An Audiobook"
+    stale.mkdir()
+    (stale / "01.mp3").write_bytes(b"old track")
+    # A record that no longer matches the folder forces the re-download.
+    record_in_mirror_index(tmp_path, 1, "An Audiobook", 0, tracks=9)
+    client = _make_client(_audiobook(1, "An Audiobook", M4B_FILES))
+
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    assert [e["status"] for e in result["log"]] == ["replaced"]
+    assert (tmp_path / "An Audiobook.m4b").is_file()
+    assert not stale.exists(), "the old unpacked folder must not be left behind"
+
+
+def test_an_audiobook_folder_from_before_the_index_is_trusted(tmp_path):
+    """Upgrade path: folders written before the index existed have no record.
+    Nothing to verify against is not a reason to re-download a library."""
+    book = tmp_path / "Old Audiobook"
+    book.mkdir()
+    (book / "01.mp3").write_bytes(b"track")
+    client = _make_client(_audiobook(1, "Old Audiobook", TEXT_FILES))
+
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    assert [e["status"] for e in result["log"]] == ["exists"]
+    assert client.download_calls == []
+
+
 def test_a_corrupt_audio_bundle_leaves_no_staging_file(tmp_path):
     """The transfer succeeded, so the client has already washed its hands of
     the staging file; everything after it can still fail. The bundle not being
@@ -1408,13 +1542,16 @@ def test_a_corrupt_audio_bundle_leaves_no_staging_file(tmp_path):
     client = _make_client(({"id": 1, "title": "An Audiobook", "art_type": 1},
                            [{"id": 100, "extension": "zip", "is_additional": False, "size": 1000}]))
 
-    def not_really_a_zip(art_id, release_file_id, filename, dest, subscr=False,
-                         should_cancel=None, on_progress=None):
-        dest.write_bytes(b"this is not a zip at all")
+    # A real zip that unpacks to nothing -- a genuinely broken bundle, which
+    # extract_audio_zip rejects. (A file that merely *isn't* a zip is no longer
+    # an error: that is what a single-file audiobook looks like.)
+    def empty_bundle(art_id, release_file_id, filename, dest, subscr=False,
+                     should_cancel=None, on_progress=None):
+        _write_zip(dest, [])
         client.download_calls.append(art_id)
         return dest
 
-    client.download_file = not_really_a_zip
+    client.download_file = empty_bundle
     activity.download_files(client, dest_root=tmp_path)
     result = wait_until_idle()
 
@@ -1684,14 +1821,26 @@ def _audio_on_disk(root, art_id, name, is_audio=True):
     return activity.mirror._is_on_disk(root, read_mirror_index(root), art_id, name, "m4b", is_audio)
 
 
-def test_an_audiobook_folder_with_no_record_is_not_complete(tmp_path):
-    """A folder that merely exists proves nothing -- an extract may have died
-    halfway, leaving three of forty tracks. Unlike a single file (which we
-    trust when unrecorded), a directory carries no evidence at all."""
+def test_an_audiobook_folder_with_no_record_is_trusted(tmp_path):
+    """Deliberately the same rule as for a single file: no record means there
+    is nothing to verify against, not that the folder is damaged.
+
+    This used to assert the opposite, reasoning that a folder proves nothing
+    about an extract that died on track 3 of 40. True, but it made every
+    audiobook that predates the index -- i.e. all of them, on upgrade -- report
+    as missing and queue a full re-download of the library. Re-fetching tens of
+    gigabytes because we lack a *history* is far worse than the rare stale
+    folder, and it is exactly the request pattern that gets an account
+    flagged. A partial extract is still caught whenever we do have a record."""
     book = tmp_path / "Audiobook"
     book.mkdir()
     (book / "01.mp3").write_bytes(b"partial")
-    assert _audio_on_disk(tmp_path, 1, "Audiobook") is False
+    assert _audio_on_disk(tmp_path, 1, "Audiobook") is True
+
+    # An empty folder is still not a book -- there is nothing there at all.
+    empty = tmp_path / "Empty"
+    empty.mkdir()
+    assert _audio_on_disk(tmp_path, 2, "Empty") is False
 
 
 def test_an_audiobook_matching_its_recorded_track_count_is_complete(tmp_path):

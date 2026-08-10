@@ -287,3 +287,28 @@ are deliberately absent from it, so a mis-aimed `monkeypatch.setattr` raises
 `AttributeError` — loud and immediate — rather than quietly binding a copy
 nothing reads. When adding to the façade, ask whether a test might want to
 patch the name; if so, leave it off.
+
+## 19. The catalogue's *type* does not tell you the file's *shape*
+
+`is_audio` says the title is an audiobook. It says nothing about what
+litres.ru actually serves: only `zip_with_mp3` is a zip of tracks to unpack,
+while `mobile_version_mp4` and friends are a single file, exactly like an
+ebook. Branching on the type instead of the bytes broke every single-file
+audiobook with "File is not a zip file" — an entire format, for every user who
+prefers it.
+
+- **Decide by inspecting the artefact** (`zipfile.is_zipfile(path)`), after it
+  has arrived — never by a category from the listing.
+- The guard is `is_audio AND is a zip`, never either alone: epub and fb2.zip
+  *are* zips, and unpacking them would shred every ebook into loose files.
+- One book therefore has two possible on-disk shapes. Anything asking "do I
+  have this?" must accept both, and the record of what was written (`tracks`
+  vs `size`) is what says which one to check.
+- When a new download lands in the other shape, remove the stale one, or the
+  mirror holds two copies and the older still looks like the book.
+
+More generally: this codebase already had two correct implementations of this
+exact decision (`library_fs.install_book` and the zip build, both probing
+`is_zipfile`) when a third was written that guessed instead. Before writing a
+rule about what the service delivers, grep for how the existing paths decide
+it — see also §14 and §15.

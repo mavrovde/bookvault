@@ -17,6 +17,7 @@ import logging
 import os
 import shutil
 import time
+import zipfile
 from pathlib import Path
 
 from bookvault_core import cache, session
@@ -180,9 +181,16 @@ def _run_download_files(
                     is_audio = art.get("art_type") == 1
                 safe_title = _safe_book_name(title, art_id, used_names)
 
+                # Where the book could land. Which one it *does* land in is
+                # only known once the file is here and we can look at it (a
+                # zip_with_mp3 bundle unpacks into a folder; every other
+                # format, audio or not, is a single file), so both candidates
+                # are computed here and the choice is made after the transfer.
+                folder_target = dest_root / safe_title
+                single_target = dest_root / f"{safe_title}.{ext}"
+
                 # Already here and intact? Say so and move on -- the whole
                 # point of a mirror is that running it twice is cheap.
-                target = dest_root / (safe_title if is_audio else f"{safe_title}.{ext}")
                 if _is_on_disk(dest_root, mirror_index, art_id, safe_title, ext, is_audio):
                     logger.info("Already on disk, skipping %r (art %s)", title, art_id)
                     with state._lock:
@@ -196,7 +204,7 @@ def _run_download_files(
                 # transfer, a file truncated by a full disk). Worth telling the
                 # user apart from a fresh download: "re-downloaded" explains
                 # why a book they thought they had is being fetched again.
-                existed_but_wrong = target.exists()
+                existed_but_wrong = folder_target.exists() or single_target.exists()
 
                 state._update(current_downloaded=0, current_total=expected)
                 started_at = time.monotonic()
@@ -231,11 +239,21 @@ def _run_download_files(
                     completed_bytes += staging.stat().st_size
                     state._update(bytes_done=completed_bytes)
 
-                    if is_audio:
-                        # An audiobook arrives as a zip of tracks; unpack it into
-                        # a folder per book so the mirror holds playable files,
-                        # not archives. Rebuilt from scratch so a re-download
-                        # can't leave the last attempt's tracks behind.
+                    # Unpack only what is actually an archive. `is_audio` says
+                    # the title is an audiobook, NOT that the file we were
+                    # served is a zip of tracks: only `zip_with_mp3` is: the
+                    # other audio formats (`mobile_version_mp4` and friends,
+                    # a common preference) arrive as one file, exactly like an
+                    # ebook. Branching on is_audio made every such audiobook
+                    # die on "File is not a zip file". Both older paths --
+                    # library_fs.install_book and the zip build -- already ask
+                    # zipfile.is_zipfile; this one now agrees with them.
+                    if is_audio and zipfile.is_zipfile(staging):
+                        # A bundle: unpack into a folder per book so the mirror
+                        # holds playable tracks, not archives. Rebuilt from
+                        # scratch so a re-download can't leave the last
+                        # attempt's tracks behind.
+                        target = folder_target
                         if target.exists():
                             shutil.rmtree(target, ignore_errors=True)
                         target.mkdir(parents=True, exist_ok=True)
@@ -246,6 +264,13 @@ def _run_download_files(
                             dest_root, art_id, target.name, 0, tracks=_audio_media_count(target)
                         )
                     else:
+                        # A single file, whether ebook or single-file audiobook.
+                        target = single_target
+                        # A folder left by an earlier bundle-shaped download of
+                        # the same book (the user changed format) would other-
+                        # wise sit there forever looking like the book.
+                        if folder_target.is_dir():
+                            shutil.rmtree(folder_target, ignore_errors=True)
                         # os.replace: atomic, and overwrites in place -- which is
                         # exactly what a mismatch should do to a partial file.
                         os.replace(staging, target)
@@ -353,19 +378,31 @@ def _is_on_disk(mirror_root: Path | None, index: dict, art_id, safe_title: str, 
     size -- that size does not describe the bytes the site serves, so comparing
     to it would call almost every book incomplete forever.
 
-    With no record we cannot verify anything, so a present file is trusted
-    rather than re-downloaded."""
+    **An audiobook is not necessarily a folder.** Only a `zip_with_mp3` bundle
+    unpacks into tracks; the other audio formats (`mobile_version_mp4` and
+    friends) are a single file, exactly like an ebook. So the shape is decided
+    by what we recorded writing -- `tracks` means a folder, `size` means a file
+    -- and never by `is_audio`, which says nothing about the delivered form.
+
+    With no record there is nothing to verify against: the user may have put
+    the files there themselves. Trust what is present rather than re-fetching a
+    library we simply have no history for."""
     if mirror_root is None:
         return False
     rec = _recorded(index, art_id)
-    target = mirror_root / (safe_title if is_audio else f"{safe_title}.{ext}")
-    if is_audio:
-        if not target.is_dir():
-            return False
-        tracks = rec.get("tracks")
-        # No record, or the folder lost a track since we wrote it.
-        return bool(tracks) and _audio_media_count(target) == int(tracks)
-    return file_is_complete(target, rec.get("size"))
+    folder = mirror_root / safe_title
+    single = mirror_root / f"{safe_title}.{ext}"
+
+    # A record tells us which of the two shapes we wrote, so verify that one.
+    if rec.get("tracks") is not None:
+        return folder.is_dir() and _audio_media_count(folder) == int(rec["tracks"])
+    if rec.get("size"):
+        return file_is_complete(single, rec["size"])
+
+    # No record. Accept either shape if it holds anything at all.
+    if is_audio and folder.is_dir():
+        return _audio_media_count(folder) > 0
+    return file_is_complete(single, None)
 
 def _local_copy_for(mirror_root: Path | None, index: dict, art_id, safe_title: str, ext: str,
                     is_audio: bool):
@@ -385,4 +422,7 @@ def _local_copy_for(mirror_root: Path | None, index: dict, art_id, safe_title: s
         return None
     if not _is_on_disk(mirror_root, index, art_id, safe_title, ext, is_audio):
         return None
-    return mirror_root / (safe_title if is_audio else f"{safe_title}.{ext}")
+    # Same shape question as _is_on_disk: return the folder only when one is
+    # really there, since a single-file audiobook lives at `<title>.<ext>`.
+    folder = mirror_root / safe_title
+    return folder if folder.is_dir() else mirror_root / f"{safe_title}.{ext}"

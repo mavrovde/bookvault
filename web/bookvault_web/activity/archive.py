@@ -252,7 +252,12 @@ def _run_prepare(
                     # file is never packed as though it were the book.
                     local = mirror._local_copy_for(mirror_root, mirror_index, art_id, safe_title, ext, is_audio)
                     if local is not None:
-                        if is_audio:
+                        # Dispatch on what the local copy *is*, not on
+                        # is_audio: only a zip_with_mp3 bundle is stored as a
+                        # folder of tracks. Every other format -- including
+                        # single-file audiobooks like mobile_version_mp4 -- is
+                        # one file and must be packed as one.
+                        if local.is_dir():
                             _add_folder_to_zip(zf, local, safe_title)
                         else:
                             _add_to_zip(zf, local, safe_title, is_audio)
