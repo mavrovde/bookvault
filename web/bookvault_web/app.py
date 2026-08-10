@@ -10,6 +10,7 @@ import logging
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
+from urllib.parse import urlparse
 
 import anyio
 from bookvault_core import cache, session
@@ -56,6 +57,52 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+
+
+# Verbs that change something. GETs stay open: they're what a bookmark, the
+# desktop window, and the live smoke tests all use, and none of them mutate.
+_STATE_CHANGING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+@app.middleware("http")
+async def block_cross_origin_writes(request: Request, call_next):
+    """Refuse state-changing requests that a *foreign page* made (issue #41).
+
+    The app binds 127.0.0.1 with no auth and no CSRF token -- deliberate for a
+    single-user local tool, but it means any website the user happens to have
+    open can POST here: start a multi-gigabyte build, fire a library-wide sweep
+    that gets the account anti-bot flagged, change the save folder, log them
+    out. Nothing escalates privileges, but none of it should be a page's to
+    trigger.
+
+    Checked in two steps, most reliable first:
+
+    1. `Sec-Fetch-Site` -- set by the browser itself and unforgeable by page
+       JS. `same-origin` is our own UI; `none` is a typed URL or a bookmark.
+       Anything else (`cross-site`, `same-site`) is another page and is out.
+    2. `Origin` -- the fallback for engines that don't send Sec-Fetch-Site
+       (older WebKitGTK, which the Linux desktop build runs on). A browser
+       always sends Origin on a cross-origin POST, so a mismatch is decisive.
+
+    Neither header present means the caller isn't a browser at all -- curl, the
+    live smoke tests, a local script. Those are allowed through: the threat
+    model here is a web page the user visited, not code already running as the
+    user, which could talk to the app anyway.
+    """
+    if request.method in _STATE_CHANGING:
+        site = request.headers.get("sec-fetch-site")
+        origin = request.headers.get("origin")
+        if site is not None and site not in ("same-origin", "none"):
+            logger.warning("Refused a %s %s from a %s page", request.method, request.url.path, site)
+            return JSONResponse(
+                {"ok": False, "error": "Cross-origin requests are not allowed."}, status_code=403
+            )
+        if site is None and origin is not None and urlparse(origin).netloc != request.headers.get("host"):
+            logger.warning("Refused a %s %s from a foreign origin", request.method, request.url.path)
+            return JSONResponse(
+                {"ok": False, "error": "Cross-origin requests are not allowed."}, status_code=403
+            )
+    return await call_next(request)
 
 
 @app.get("/", response_class=HTMLResponse)

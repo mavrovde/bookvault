@@ -6,6 +6,7 @@ from __future__ import annotations
 import time
 
 from bookvault_core import credentials, session
+from bookvault_core.client import LitresBrowserUnavailable
 from bookvault_web import activity, prefs
 from bookvault_web.app import app
 from fastapi.testclient import TestClient
@@ -76,6 +77,90 @@ def test_login_failure_shows_error(monkeypatch):
         )
     assert resp.status_code == 401
     assert "Login failed" in resp.text
+    assert session.current_client() is None
+
+
+def test_login_without_a_browser_explains_how_to_install_it(monkeypatch):
+    """Chromium missing (a fresh clone before `playwright install`) used to
+    escape as a bare "Internal Server Error" with the form gone. It has to come
+    back as the login page with an actionable banner."""
+    def no_browser(*a, **k):
+        raise LitresBrowserUnavailable(
+            "BookVault needs Playwright's Chromium to sign in to litres.ru, and it "
+            "isn't installed yet. Run `python -m playwright install chromium` in the "
+            "project's virtualenv, then try again."
+        )
+
+    monkeypatch.setattr(session, "login", no_browser)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/login", data={"login": "user@example.com", "password": "pw"}, follow_redirects=False
+        )
+    # 503, not 401: nothing is wrong with the credentials.
+    assert resp.status_code == 503
+    assert "playwright install chromium" in resp.text
+    assert 'name="login"' in resp.text      # the form is still there to retry with
+    assert "error-banner" in resp.text
+
+
+def test_an_unexpected_login_failure_still_renders_the_login_page(monkeypatch):
+    """The catch-all. Whatever breaks, the user gets a readable page and the
+    form back -- never Starlette's plain-text 500."""
+    def boom(*a, **k):
+        raise RuntimeError("something nobody predicted")
+
+    monkeypatch.setattr(session, "login", boom)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/login", data={"login": "user@example.com", "password": "pw"}, follow_redirects=False
+        )
+    assert resp.status_code == 503
+    assert 'name="login"' in resp.text
+    assert "Something went wrong" in resp.text
+
+
+def test_an_unexpected_login_failure_leaks_no_internal_detail(monkeypatch):
+    """The traceback goes to the log, never into the response body."""
+    def boom(*a, **k):
+        raise RuntimeError("/Users/someone/secret/path.py exploded at line 42")
+
+    monkeypatch.setattr(session, "login", boom)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/login", data={"login": "user@example.com", "password": "pw"}, follow_redirects=False
+        )
+    assert "/Users/someone" not in resp.text
+    assert "Traceback" not in resp.text
+    assert "line 42" not in resp.text
+
+
+def test_a_failed_login_does_not_leave_a_half_logged_in_session(monkeypatch):
+    def no_browser(*a, **k):
+        raise LitresBrowserUnavailable("no browser")
+
+    monkeypatch.setattr(session, "login", no_browser)
+    with TestClient(app) as client:
+        client.post("/login", data={"login": "user@example.com", "password": "pw"})
+    assert session.current_client() is None
+    assert session.current_login() is None
+
+
+def test_startup_survives_a_missing_browser_and_stays_logged_out(monkeypatch, tmp_path):
+    """The same missing Chromium during the unattended keychain re-login must
+    degrade to "logged out", not crash the app's boot -- otherwise the user
+    can't even reach the login form to read the explanation."""
+    from bookvault_core import credentials
+
+    monkeypatch.setattr(credentials, "load_last", lambda: ("user@example.com", "pw"))
+
+    def no_browser(*a, **k):
+        raise LitresBrowserUnavailable("Chromium is not installed")
+
+    monkeypatch.setattr(session, "LitresClient", no_browser)
+    with TestClient(app) as client:          # lifespan runs restore_session
+        resp = client.get("/")
+    assert resp.status_code == 200
+    assert 'name="login"' in resp.text
     assert session.current_client() is None
 
 
