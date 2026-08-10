@@ -59,8 +59,8 @@ It comes in **three flavours** that share the same backend and login/session cod
 - **📖 Books &amp; 🎧 audiobooks** — pick exactly which titles to back up, with cover thumbnails, authors, and file sizes.
 - **🎯 Format of your choice** — set a preferred ebook format (epub, fb2, pdf, …) and audiobook format, with sensible fallbacks per title.
 - **📦 One tidy zip** — ebooks as single files, each audiobook as a folder of its tracks; packed so macOS Archive Utility opens it cleanly.
-- **📁 Saved where you want it** — the finished archive lands in your Downloads folder by default, or any folder you point it at; timestamped, so a new build never overwrites the last one.
-- **⏳ Live progress + Stop** — a byte-level progress bar (`12.3 / 45.0 MB`) and a Stop button that interrupts even a mid-transfer download.
+- **📁 Saved where you want it** — the finished archive lands in your Downloads folder by default, or any folder you point it at, chosen in your own OS folder dialog rather than typed by hand; timestamped, so a new build never overwrites the last one. Afterwards you can drop an **extra copy** somewhere else (an external drive, a shared folder) without touching the saved original.
+- **⏳ Live progress + Stop** — per-file bytes (`12.3 / 45.0 MB`) *and* the whole-build total (`~120.0 MB of ~600.0 MB`), so a single huge audiobook doesn't leave you guessing how far along you are. Stop interrupts even a mid-transfer download.
 - **✅ Results at a glance** — when a build finishes, a summary shows `✓ done · ! skipped · ✗ failed` as clickable filters, so a single rights-limited title never hides among hundreds of successes. The results and the download link survive a page reload.
 - **🔄 Same view in every browser** — your selection, format choices, save folder, and live progress live on the server (not per-browser), so a second browser or tab — or another device on your machine — shows exactly the same thing.
 - **🛡️ Anti-bot resilient** — matches the browser's TLS fingerprint on downloads and retries transient DDoS-Guard blocks automatically (details [below](#-how-it-works)).
@@ -118,9 +118,11 @@ Then open **http://127.0.0.1:8420** and log in. Your password is remembered in y
 3. **Select** the titles you want (nothing is pre-selected, so you never start a huge download by accident).
 4. **Pick a format** (optional) — your preferred ebook and audiobook formats, used when available.
 5. **Pick a save folder** (optional) — the 📁 box in the toolbar. Hit **Browse…** to choose it in your operating system's own folder dialog, or type a path. Leave it empty to use your system **Downloads** folder. A folder that doesn't exist yet is fine — it's created when a build finishes, and the app says so. (**Browse…** is hidden when the app can't open a dialog, e.g. in Docker or over SSH; type the path there.)
-6. **Prepare zip** — watch the live progress bar; hit **Stop** anytime.
+6. **Prepare zip** — watch the live progress bar; hit **Stop** anytime. Alongside the book count you get the whole-build total (`~120.0 MB of ~600.0 MB`), so you can see how far along the download really is — a single audiobook can outweigh fifty ebooks, which the book count alone never shows. The total is an estimate (marked `~`) because it sums the sizes already known; see [size estimates](#a-note-on-sizes).
 7. **Review results** — the summary tallies `✓ done · ! skipped · ✗ failed`; click a pill to filter to just those (e.g. the one rights-limited title that couldn't be downloaded).
-8. **Find your zip** — it's saved to that folder automatically (the path is shown under the progress bar), and **💾 Save zip file** still downloads it through the browser if you'd rather.
+8. **Find your zip** — it's saved to your chosen folder automatically, and the path is shown under the progress bar. Two extra buttons appear next to it, neither of which moves or replaces that saved file:
+   - **⬇ Download** — streams it through your browser, landing wherever your browser saves downloads.
+   - **💾 Save a copy to…** — picks a folder in your OS dialog and puts an *additional* copy there (an external drive, a shared folder). An existing file of the same name is never overwritten. Hidden where no dialog can be drawn (Docker, SSH).
 
 > Your selection, format choices, save folder, and progress are kept **on the server**, so opening the app in another browser/tab shows the same view — and the results and download link stick around after a reload.
 
@@ -129,6 +131,25 @@ Then open **http://127.0.0.1:8420** and log in. Your password is remembered in y
 > **Opening the zip:** double-click it (Finder / Archive Utility) or any modern tool.
 > ⚠️ macOS's built-in Terminal `unzip` garbles Cyrillic filenames — extract via Finder, or run
 > `ditto -x -k litres-library.zip dest/` for correct names.
+
+### A note on sizes
+
+Sizes are shown per book and totalled for your selection. They're read from a
+local cache, and the app **never contacts litres.ru just to show you a number**:
+asking for a file listing per book on every page load is exactly the traffic
+pattern that gets an account flagged as a bot.
+
+The consequence is that sizes appear as you go rather than all at once:
+
+- A freshly-restored session may show `sizes unknown — hit ↻ Refresh`. That's
+  literal, not a stalled spinner: nothing is loading, and **Refresh** is what
+  actually fetches them (it's paced deliberately).
+- Once fetched, sizes are cached for a week and survive restarts, page reloads
+  and downloads.
+- During a build the total is written `~120.0 MB of ~600.0 MB`. The `~` is
+  honest: it can only sum books whose sizes are already known, so the real
+  total may come in higher. Each finished file corrects the figure with its
+  true size as it lands.
 
 ---
 
@@ -470,6 +491,20 @@ There's also an **opt-in live smoke suite** (`tests/test_smoke_live.py`) that hi
 # or point it elsewhere: BOOKVAULT_BASE_URL=http://127.0.0.1:8420 pytest -m live
 ```
 
+And an opt-in **browser-layer suite** (`tests/test_ui.py`) that drives the
+rendered page through Chromium — the layer where a button can be perfectly
+wired server-side and still do nothing when clicked. It's deselected by default
+so the everyday suite stays fast and browser-free; CI runs it in its own job.
+
+```bash
+.venv/bin/playwright install chromium     # one-time
+.venv/bin/python -m pytest -m ui
+```
+
+It stays offline like everything else: the app is served against the fake
+client, and constructing a real one is a test failure — so these can never
+reach litres.ru.
+
 Contributing? See **[`CONTRIBUTING.md`](CONTRIBUTING.md)** for the setup, the rules that matter (offline tests, the single Playwright worker thread, the deliberate `LITRES_*` naming), and how AI-assisted PRs are reviewed. This repo checks in its [Claude Code configuration](.claude/README.md) — per-area agent roles and skills for the repeatable workflows — so everyone gets the same setup.
 
 ---
@@ -498,6 +533,17 @@ You are responsible for using this tool in line with litres.ru's Terms of Servic
 - 🍪 Your browser **session cookies** are cached in a local JSON file so you don't re-login every run. It's gitignored — **treat it like being logged in; don't share it.**
 - 🚫 `.env`, `.venv/`, and the session/cache files are all gitignored.
 - 🏠 All three front-ends (web, desktop, MCP) are **single-user and local-only by design** — bound to `127.0.0.1` (or published only to it in Docker; the desktop app serves on a private localhost port inside its own process). There's no multi-user support, and none is planned: this is intentionally *not* built to hold other people's credentials.
+- 🌐 **Other websites can't drive the app.** Binding to localhost doesn't stop a
+  page you happen to be visiting from POSTing to it, so anything that changes
+  something — starting a build, refreshing, changing the save folder, logging
+  out — is refused unless it came from the app's own page. Reading is
+  unaffected, and non-browser callers (`curl`, scripts) still work: the risk
+  being closed is a *web page*, not a program you ran yourself.
+- 📁 The save folder (and any folder you copy an archive to) must resolve to
+  somewhere a library plausibly lives — your home directory, a mounted drive,
+  or the temp dir. Not because you can't be trusted with your own machine, but
+  because that setting is reachable by an unauthenticated POST, and "choose a
+  folder" is a much safer ceiling than "choose any directory on the system".
 
 - 📦 Release artifacts (installers **and** Docker images) carry signed **build
   provenance attestations**, so you can prove a download came from this repo's

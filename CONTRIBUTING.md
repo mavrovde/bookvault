@@ -27,12 +27,26 @@ repo is moved or renamed.
 
 ## The rules that matter
 
-**Tests are offline and fully mocked.** No test may start a real browser or
-touch the network. `tests/conftest.py` fakes the keyring, redirects every
-state/cache/session file into a `tmp_path`, and resets module-level
-singletons around each test. If your change adds a new on-disk path or a
-default pointing at a real user directory, redirect it there too — otherwise
-the suite writes into the developer's own files.
+**Tests are offline and fully mocked.** No test may touch the network, and the
+default suite starts no browser. `tests/conftest.py` fakes the keyring,
+redirects every state/cache/session file into a `tmp_path`, and resets
+module-level singletons around each test. If your change adds a new on-disk
+path or a default pointing at a real user directory, redirect it there too —
+otherwise the suite writes into the developer's own files.
+
+One deliberate exception: `tests/test_ui.py` drives the rendered page through
+Chromium, because a button can be perfectly wired server-side and still do
+nothing when clicked. It's marked `ui` and deselected by default — run it with
+`pytest -m ui`, after `playwright install chromium`; CI runs it in its own job.
+It is still offline — the app is served against the fake client, and
+constructing a real one is an assertion failure, so it can never reach
+litres.ru.
+
+**If you add a state-changing route, add it to `WRITE_ROUTES` in
+`tests/test_csrf.py`.** That list is asserted to be exhaustive against the
+app's own routing table, so a `POST` added without a thought for the
+cross-origin guard fails the suite instead of quietly becoming reachable from
+any page a user happens to have open.
 
 **One Playwright worker thread.** Playwright's sync API is bound to the thread
 that created it, so every call touching a `LitresClient` goes through
