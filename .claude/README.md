@@ -12,6 +12,9 @@ Checked-in harness config so every contributor gets the same setup.
   list covering the secret files, and a ruff hook that runs after edits.
   `settings.local.json` is git-ignored for per-machine overrides.
 
+The first seven map to areas of the codebase; the last five are roles in the
+workflow around it — review, verification, research, planning, triage.
+
 The agent files double as a map of the codebase's seams for humans. If you're
 new here, read `agents/web-backend.md` and `agents/core-client.md` first:
 between them they cover the two decisions everything else follows from (one
@@ -28,6 +31,11 @@ Playwright worker thread, one activity at a time).
 | Versions, installers, Docker, CI workflows | `packaging-release` |
 | Secret hygiene, exception exposure, unsafe file handling | `security-reviewer` |
 | README / CLAUDE.md / CHANGELOG / `.env.example` | `docs-keeper` |
+| Reviewing a PR you didn't write; deciding what to change vs accept | `pr-reviewer` |
+| Verifying a change in the running app (UI, MCP tools, edge cases) | `qa` |
+| Investigating an unknown before code gets written | `researcher` |
+| Turning a request into a scoped issue with acceptance criteria | `story-writer` |
+| Labelling, milestoning and sweeping the issue tracker | `triage` |
 
 ## Conventions they all share
 

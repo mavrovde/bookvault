@@ -90,7 +90,9 @@ and the harness config is checked in so everyone gets the same setup:
 
 - **`.claude/agents/`** — role definitions carrying each area's invariants
   (`core-client`, `web-backend`, `web-frontend`, `test-guardian`,
-  `packaging-release`, `security-reviewer`, `docs-keeper`). See
+  `packaging-release`, `security-reviewer`, `docs-keeper`), plus roles for the
+  workflow around the code (`pr-reviewer`, `qa`, `researcher`, `story-writer`,
+  `triage`). See
   [`.claude/README.md`](.claude/README.md) for the task → agent map.
 - **`.claude/skills/`** — the repeatable workflows: `dev-setup`, `run-app`,
   `add-a-pref`, `release`, `build-installers`.
