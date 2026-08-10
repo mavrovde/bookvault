@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+- **Keep an extra copy of the archive somewhere else.** The finished zip is
+  still saved automatically to your configured folder — that hasn't changed.
+  Afterwards, **💾 Save a copy to…** picks a folder in your operating system's
+  own dialog and puts an *additional* copy there: an external drive, a shared
+  folder, wherever. The saved original is never moved or replaced, and a file
+  of the same name is never overwritten.
+- **The progress line shows the whole build, not just the current file.**
+  Alongside `3 / 12 books` you now get `~120.0 MB of ~600.0 MB`. A single
+  audiobook can outweigh fifty ebooks, so the book count on its own never told
+  you how far along the download really was. The total is marked `~` because
+  it can only sum sizes already known — each file corrects it with its real
+  size as it finishes.
+
+### Changed
+- **The old "Save zip file" button is now "⬇ Download".** By the time it
+  appears, the archive has already been saved to your folder, so the button was
+  really offering a second copy via your browser's download location. Its name
+  now says so, and the new "Save a copy to…" covers choosing where.
+
 ## [1.3.4] - Sizes stop disappearing
 
 Follow-up to 1.3.3. Everything here is about the library's file sizes going

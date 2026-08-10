@@ -14,6 +14,7 @@ import threading
 import time
 import zipfile
 
+import pytest
 from bookvault_core import cache
 from bookvault_core.client import DownloadCancelled
 from bookvault_web import activity
@@ -1081,3 +1082,105 @@ def test_logout_drops_the_sizes_so_they_cannot_cross_accounts():
     activity._state["sizes"] = {1: 12.5}
     activity.forget_sizes()
     assert activity.snapshot()["sizes"] == {}
+
+
+# -- saving an extra copy of a finished archive -----------------------------
+
+def test_copy_archive_leaves_the_original_where_it_was(tmp_path):
+    """The point of the feature: the configured folder still has it."""
+    saved = tmp_path / "configured" / "litres-library.zip"
+    saved.parent.mkdir()
+    saved.write_bytes(b"archive")
+    activity._state["saved_path"] = str(saved)
+
+    elsewhere = tmp_path / "external-drive"
+    target = activity.copy_archive_to(elsewhere)
+
+    assert target.read_bytes() == b"archive"
+    assert saved.exists(), "the auto-saved original must survive a copy"
+    assert activity.snapshot()["saved_path"] == str(saved)  # state untouched
+
+
+def test_copy_archive_falls_back_to_the_temp_zip_when_the_save_failed(tmp_path):
+    """When the auto-save failed the archive is still in its temp workdir --
+    which is exactly when a copy somewhere real matters most."""
+    temp_zip = tmp_path / "workdir" / "litres-library.zip"
+    temp_zip.parent.mkdir()
+    temp_zip.write_bytes(b"archive")
+    activity._state["saved_path"] = None
+    activity._state["zip_path"] = str(temp_zip)
+
+    target = activity.copy_archive_to(tmp_path / "dest")
+    assert target.exists() and temp_zip.exists()
+
+
+def test_copy_archive_never_overwrites_an_existing_file(tmp_path):
+    saved = tmp_path / "a" / "litres-library.zip"
+    saved.parent.mkdir()
+    saved.write_bytes(b"new")
+    dest = tmp_path / "b"
+    dest.mkdir()
+    (dest / "litres-library.zip").write_bytes(b"older archive worth keeping")
+    activity._state["saved_path"] = str(saved)
+
+    target = activity.copy_archive_to(dest)
+    assert target.name == "litres-library (2).zip"
+    assert (dest / "litres-library.zip").read_bytes() == b"older archive worth keeping"
+
+
+def test_copying_into_the_folder_it_already_lives_in_is_a_no_op(tmp_path):
+    """Copying a file onto itself would truncate it."""
+    saved = tmp_path / "litres-library.zip"
+    saved.write_bytes(b"archive")
+    activity._state["saved_path"] = str(saved)
+
+    target = activity.copy_archive_to(tmp_path)
+    assert target == saved
+    assert saved.read_bytes() == b"archive"
+    assert list(tmp_path.iterdir()) == [saved]  # no " (2)" litter
+
+
+def test_copy_archive_without_a_finished_build_raises(tmp_path):
+    activity._state["saved_path"] = None
+    activity._state["zip_path"] = None
+    with pytest.raises(FileNotFoundError):
+        activity.copy_archive_to(tmp_path)
+
+
+# -- whole-build byte progress ----------------------------------------------
+
+def test_expected_total_sums_the_files_the_build_will_actually_pick(monkeypatch):
+    """Agrees with the per-book sizes the UI shows, because it sums the same
+    pick_best_file choice the download loop makes."""
+    from bookvault_core import cache
+
+    books = [{"id": 1}, {"id": 2}, {"id": 3}]
+    monkeypatch.setattr(cache, "get_library", lambda: books)
+    listings = {
+        1: [{"id": 10, "extension": "epub", "size": 1_000_000}],
+        2: [{"id": 20, "extension": "epub", "size": 2_500_000}],
+        3: None,  # never had its listing cached -- contributes nothing
+    }
+    monkeypatch.setattr(cache, "get_files", lambda art_id: listings.get(art_id))
+
+    assert activity._expected_total_bytes(None) == 3_500_000
+    assert activity._expected_total_bytes({1}) == 1_000_000
+
+
+def test_expected_total_is_none_when_nothing_is_known(monkeypatch):
+    """None, not 0 -- so the UI can say "unknown" rather than draw a bar
+    against a denominator of zero."""
+    from bookvault_core import cache
+
+    monkeypatch.setattr(cache, "get_library", lambda: [{"id": 1}])
+    monkeypatch.setattr(cache, "get_files", lambda art_id: None)
+    assert activity._expected_total_bytes(None) is None
+
+
+def test_byte_progress_resets_when_a_new_activity_starts():
+    """Unlike sizes, these ARE progress for one build and must not carry over."""
+    activity._state["bytes_done"] = 500
+    activity._state["bytes_total"] = 1000
+    activity._begin(activity.PREPARING)
+    snap = activity.snapshot()
+    assert snap["bytes_done"] == 0 and snap["bytes_total"] is None
