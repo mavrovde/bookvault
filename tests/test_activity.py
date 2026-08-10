@@ -17,7 +17,11 @@ import zipfile
 import pytest
 from bookvault_core import cache
 from bookvault_core.client import DownloadCancelled
-from bookvault_core.library_fs import MIRROR_INDEX, record_in_mirror_index
+from bookvault_core.library_fs import (
+    MIRROR_INDEX,
+    read_mirror_index,
+    record_in_mirror_index,
+)
 from bookvault_web import activity
 
 from tests.fakes import FakeLitresClient
@@ -1406,6 +1410,105 @@ def test_the_summary_counts_each_outcome_separately(tmp_path):
     assert "re-downloaded" in result["message"]
 
 
+# -- round trips: run it for real, then ask again ---------------------------
+# Every test above hand-seeds the index and then checks one consumer. That is
+# how a feature whose central check could NEVER fire shipped green: the seeded
+# value agreed with the production code's assumption, and no test ever let a
+# real download decide what the next question would see.
+#
+# These do. They perform an actual run and then ask the SAME question the app
+# asks afterwards -- which is the only way a wrong idea of "what a finished
+# download looks like" has anywhere to hide.
+
+
+def test_running_the_mirror_twice_downloads_nothing_the_second_time(tmp_path):
+    """The feature's entire promise, end to end and unseeded.
+
+    This is the test whose absence let the catalogue-size check ship: it
+    compared bytes on disk against the size litres.ru's listing declares, which
+    that service does not honour, so the second run re-fetched the whole
+    library. Hand-seeded tests passed because they seeded the same wrong
+    number the code compared against."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES), _book(2, "Book Two", TEXT_FILES))
+
+    activity.download_files(client, dest_root=tmp_path)
+    assert wait_until_idle()["result"] == "done"
+    assert sorted(client.download_calls) == [1, 2]
+
+    client.download_calls.clear()
+    activity.download_files(client, dest_root=tmp_path)
+    second = wait_until_idle()
+
+    assert [e["status"] for e in second["log"]] == ["exists", "exists"]
+    assert client.download_calls == [], "a second run must re-fetch nothing"
+
+
+def test_an_audiobook_mirror_run_is_also_idempotent(tmp_path):
+    """Same promise for the unpacked-folder case, which has no file size to
+    compare at all and so relies entirely on the recorded track count."""
+    client = _make_client(({"id": 1, "title": "An Audiobook", "art_type": 1}, TEXT_FILES))
+
+    def download_zip_with_mp3(art_id, release_file_id, filename, dest, subscr=False,
+                              should_cancel=None, on_progress=None):
+        _write_zip(dest, [("01.mp3", b"\xff\xfbone" * 40), ("02.mp3", b"\xff\xfbtwo" * 40)])
+        client.download_calls.append(art_id)
+        return dest
+
+    client.download_file = download_zip_with_mp3
+    activity.download_files(client, dest_root=tmp_path)
+    assert wait_until_idle()["result"] == "done"
+    tracks = sorted(p.name for p in (tmp_path / "An Audiobook").iterdir())
+    assert tracks == ["01.mp3", "02.mp3"], "the bundle must land unpacked"
+
+    client.download_calls.clear()
+    activity.download_files(client, dest_root=tmp_path)
+    assert [e["status"] for e in wait_until_idle()["log"]] == ["exists"]
+    assert client.download_calls == []
+
+
+def test_a_real_download_lights_up_the_badge_and_feeds_zip_reuse(tmp_path, monkeypatch):
+    """The three consumers must agree about one folder.
+
+    They were implemented separately and drifted: the mirror moved to the
+    recorded-size index while the badge scan and the zip reuse still compared
+    against the catalogue, so a book the mirror called "exists" showed no badge
+    and was downloaded again by the very next zip build. Asking all three after
+    one real run is what catches that."""
+    monkeypatch.setattr(cache, "get_library", lambda: [{"id": 1, "title": "Book One", "is_audio": False}])
+    monkeypatch.setattr(cache, "get_files", lambda art_id: TEXT_FILES)
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+
+    activity.download_files(client, dest_root=tmp_path)
+    assert wait_until_idle()["result"] == "done"
+
+    # 1. the mirror says it has it
+    activity.forget_books_on_disk()
+    assert activity.books_on_disk(tmp_path) == [1], "the badge must reflect a real download"
+
+    # 2. and a zip build packs that copy rather than fetching it again
+    client.download_calls.clear()
+    activity.prepare(client, mirror_root=tmp_path)
+    zipped = wait_until_idle()
+    assert [e["status"] for e in zipped["log"]] == ["reused"]
+    assert client.download_calls == [], "the zip must reuse the file the mirror wrote"
+
+
+def test_the_fake_does_not_deliver_the_size_the_listing_declares(tmp_path):
+    """Guards the fake itself.
+
+    Restoring exact-size delivery would make every test above pass again while
+    the product broke in the field, because litres.ru's declared size is not
+    the length of what it serves. If this assertion ever needs "fixing", the
+    thing to fix is the code that depends on it."""
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    activity.download_files(client, dest_root=tmp_path)
+    wait_until_idle()
+
+    delivered = (tmp_path / "Book One.epub").stat().st_size
+    assert delivered != TEXT_FILES[0]["size"]
+    assert read_mirror_index(tmp_path)["1"]["size"] == delivered
+
+
 # -- reusing already-downloaded files when building a zip -------------------
 # Requests to litres.ru are the scarce resource, so a book already on disk
 # should be packed, not fetched. The risk is packing a BROKEN local file.
@@ -1433,6 +1536,8 @@ def test_prepare_ignores_a_local_copy_of_the_wrong_size(tmp_path):
     mirror = tmp_path / "mirror"
     mirror.mkdir()
     (mirror / "Book One.epub").write_bytes(b"truncated")
+    # A previous run finished this file at 1 MB; 9 bytes are there now.
+    record_in_mirror_index(mirror, 1, "Book One.epub", 1_000_000)
 
     activity.prepare(client, mirror_root=mirror)
     result = wait_until_idle()
@@ -1483,7 +1588,9 @@ def test_books_on_disk_lists_only_complete_files(tmp_path, monkeypatch):
     ])
     monkeypatch.setattr(cache, "get_files", lambda art_id: TEXT_FILES)
     (tmp_path / "Complete.epub").write_bytes(b"c" * 1_000_000)
+    record_in_mirror_index(tmp_path, 1, "Complete.epub", 1_000_000)
     (tmp_path / "Partial.epub").write_bytes(b"c" * 10)
+    record_in_mirror_index(tmp_path, 2, "Partial.epub", 1_000_000)
 
     assert activity.books_on_disk(tmp_path) == [1]
 
@@ -1515,65 +1622,76 @@ def test_books_on_disk_uses_the_same_decollided_names_a_run_would(tmp_path, monk
 
 
 # -- audiobook completeness --------------------------------------------------
-# An audiobook is a folder of tracks, so there's no single size to compare.
-# A marker recording the source zip's size stands in for it.
+# An audiobook is stored unpacked, so no single file has a length to check.
+# The index records how many tracks the finished extract wrote; that count,
+# re-counted on disk, is the equivalent evidence.
 
 
-def test_an_audiobook_folder_without_a_marker_is_not_complete(tmp_path):
+def _audio_on_disk(root, art_id, name, is_audio=True):
+    return activity._is_on_disk(root, read_mirror_index(root), art_id, name, "m4b", is_audio)
+
+
+def test_an_audiobook_folder_with_no_record_is_not_complete(tmp_path):
     """A folder that merely exists proves nothing -- an extract may have died
-    halfway, leaving three of forty tracks."""
+    halfway, leaving three of forty tracks. Unlike a single file (which we
+    trust when unrecorded), a directory carries no evidence at all."""
     book = tmp_path / "Audiobook"
     book.mkdir()
     (book / "01.mp3").write_bytes(b"partial")
-    assert activity._audio_is_complete(book, 5_000_000) is False
+    assert _audio_on_disk(tmp_path, 1, "Audiobook") is False
 
 
-def test_an_audiobook_marker_must_match_the_current_listing(tmp_path):
+def test_an_audiobook_matching_its_recorded_track_count_is_complete(tmp_path):
     book = tmp_path / "Audiobook"
     book.mkdir()
     (book / "01.mp3").write_bytes(b"track")
-    activity._write_audio_marker(book, 5_000_000)
-    assert activity._audio_is_complete(book, 5_000_000) is True
-    # The listing now reports a different size -- a re-issued edition, say.
-    assert activity._audio_is_complete(book, 9_999_999) is False
+    record_in_mirror_index(tmp_path, 1, "Audiobook", 0, tracks=1)
+    assert _audio_on_disk(tmp_path, 1, "Audiobook") is True
 
 
 def test_an_audiobook_missing_a_track_is_not_complete(tmp_path):
-    """The gap a size-only marker leaves: delete one track of forty and the
-    folder still claims to be the book. The marker records the count too."""
+    """Delete one track of forty and the folder still looks like the book.
+    The recorded count is what notices."""
     book = tmp_path / "Audiobook"
     book.mkdir()
     for n in range(3):
         (book / f"0{n}.mp3").write_bytes(b"track")
-    activity._write_audio_marker(book, 5_000_000)
-    assert activity._audio_is_complete(book, 5_000_000) is True
+    record_in_mirror_index(tmp_path, 1, "Audiobook", 0, tracks=3)
+    assert _audio_on_disk(tmp_path, 1, "Audiobook") is True
 
     (book / "01.mp3").unlink()
-    assert activity._audio_is_complete(book, 5_000_000) is False
+    assert _audio_on_disk(tmp_path, 1, "Audiobook") is False
 
 
-def test_an_old_size_only_marker_is_not_trusted(tmp_path):
-    """Forward compatibility: a marker written before track counts existed
-    can't prove the folder is intact, so it's rebuilt rather than believed."""
+def test_an_audiobook_that_gained_a_track_is_not_complete(tmp_path):
+    """A re-issue with an extra track, or a stray file dropped in: the folder
+    is no longer what we wrote, so it is rebuilt rather than believed."""
     book = tmp_path / "Audiobook"
     book.mkdir()
     (book / "01.mp3").write_bytes(b"track")
-    (book / activity.AUDIO_COMPLETE_MARKER).write_text("5000000")
-    assert activity._audio_is_complete(book, 5_000_000) is False
+    record_in_mirror_index(tmp_path, 1, "Audiobook", 0, tracks=1)
+    (book / "02.mp3").write_bytes(b"track")
+    assert _audio_on_disk(tmp_path, 1, "Audiobook") is False
 
 
-def test_an_unknown_audiobook_size_is_never_treated_as_complete(tmp_path):
-    book = tmp_path / "Audiobook"
-    book.mkdir()
-    activity._write_audio_marker(book, None)
-    assert activity._audio_is_complete(book, None) is False
-
-
-def test_the_marker_is_not_counted_as_one_of_the_tracks(tmp_path):
+def test_a_record_with_no_track_count_is_not_trusted(tmp_path):
+    """An ebook-shaped record (size, no tracks) against a folder can't prove
+    anything, so it must not read as complete."""
     book = tmp_path / "Audiobook"
     book.mkdir()
     (book / "01.mp3").write_bytes(b"track")
-    activity._write_audio_marker(book, 100)
+    record_in_mirror_index(tmp_path, 1, "Audiobook", 5_000_000)
+    assert _audio_on_disk(tmp_path, 1, "Audiobook") is False
+
+
+def test_bookkeeping_files_are_not_counted_as_tracks(tmp_path):
+    """The index itself, and any `.part` staging file, sit alongside the
+    media; counting them would make a complete folder look over-full."""
+    book = tmp_path / "Audiobook"
+    book.mkdir()
+    (book / "01.mp3").write_bytes(b"track")
+    (book / ".bookvault-index.json").write_text("{}")
+    (book / ".02.mp3.part").write_bytes(b"half")
     assert activity._audio_media_count(book) == 1
 
 

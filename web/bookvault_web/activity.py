@@ -602,59 +602,15 @@ def copy_archive_to(dest_dir: Path) -> Path:
     return target
 
 
-"""Marker written into an audiobook's folder once its tracks are extracted.
-
-**Why only audiobooks have one.** An ebook is a single file, so the file *is*
-the evidence: `st_size` against the listing is a direct check of the actual
-bytes on disk, and a marker beside it would only be a weaker second claim that
-could disagree with reality. An audiobook arrives as a zip and is stored
-*unpacked*, so nothing on disk has the size the listing describes -- there is
-no direct check to make, and a folder that merely exists proves nothing about
-an extract that died on track 3 of 40.
-
-So the marker stands in for the missing evidence, and records two things: the
-source zip's size (so a re-issued edition invalidates it) and the number of
-tracks written (so deleting one is noticed). Both are re-checked on every run;
-a mismatch means the folder is rebuilt from a fresh download."""
-AUDIO_COMPLETE_MARKER = ".bookvault-complete"
-
-
 def _audio_media_count(book_dir: Path) -> int:
-    return sum(1 for p in book_dir.iterdir() if p.is_file() and p.name != AUDIO_COMPLETE_MARKER)
+    """Track files in an unpacked audiobook folder, ignoring bookkeeping.
 
-
-def _write_audio_marker(book_dir: Path, expected_size) -> None:
-    book_dir.mkdir(parents=True, exist_ok=True)
-    (book_dir / AUDIO_COMPLETE_MARKER).write_text(
-        f"{expected_size or ''}\n{_audio_media_count(book_dir)}\n"
-    )
-
-
-def _audio_is_complete(book_dir: Path, expected_size) -> bool:
-    if not expected_size or not book_dir.is_dir():
-        return False
-    try:
-        recorded = (book_dir / AUDIO_COMPLETE_MARKER).read_text().splitlines()
-    except OSError:
-        return False
-    if not recorded or recorded[0].strip() != str(expected_size):
-        return False
-    # Tracks removed (or an older marker with no count) -- rebuild rather than
-    # trusting a claim the folder no longer backs up.
-    if len(recorded) < 2 or not recorded[1].strip().isdigit():
-        return False
-    return _audio_media_count(book_dir) == int(recorded[1].strip())
-
-
-def _existing_file_state(dest: Path, expected_size) -> str:
-    """Whether an already-present ebook can be left alone.
-
-    Thin wrapper over `library_fs.file_is_complete`, which is the one shared
-    definition of "I already have this" -- the MCP server applies the same rule
-    to the same question, and the two must not drift apart."""
-    if not dest.exists():
-        return "missing"
-    return "complete" if file_is_complete(dest, expected_size) else "partial"
+    An audiobook arrives as a zip and is stored *unpacked*, so no single file
+    on disk has a length to check -- a folder that merely exists proves nothing
+    about an extract that died on track 3 of 40. Counting the tracks and
+    comparing against the count recorded when the extract finished (see
+    `library_fs.record_in_mirror_index`) is the equivalent evidence."""
+    return sum(1 for p in book_dir.iterdir() if p.is_file() and not p.name.startswith("."))
 
 
 # Memoised result of the last books_on_disk() scan: (root, expires_at, ids).
@@ -693,9 +649,9 @@ def _scan_books_on_disk(mirror_root: Path | None, books: list | None = None) -> 
     """art_ids that already sit complete in the loose-file mirror.
 
     Drives the badge on each book card, so "I already have this" is visible
-    before starting anything rather than only in a run's log. Judged the same
-    way the download judges it -- size for an ebook, the marker for an
-    audiobook -- so the badge can't claim a partial file is the book.
+    before starting anything rather than only in a run's log. Judged by the
+    same `_is_on_disk` the download and the zip reuse consult, so the badge
+    cannot promise something a run then contradicts.
 
     Cache-only and cheap: it reads the file listings already on disk and stats
     one path per book (microseconds each), and makes zero litres.ru requests.
@@ -704,6 +660,7 @@ def _scan_books_on_disk(mirror_root: Path | None, books: list | None = None) -> 
         return []
     if books is None:
         books = cache.get_library() or cache.get_library_stale() or []
+    index = read_mirror_index(mirror_root)
     used_names: set = set()
     present = []
     for book in books:
@@ -721,8 +678,8 @@ def _scan_books_on_disk(mirror_root: Path | None, books: list | None = None) -> 
         is_audio = book.get("is_audio")
         if is_audio is None:
             is_audio = book.get("art_type") == 1
-        if _local_copy_for(mirror_root, safe_title, LitresClient.file_extension(best),
-                           best.get("size") or None, is_audio):
+        if _is_on_disk(mirror_root, index, art_id, safe_title,
+                       LitresClient.file_extension(best), is_audio):
             present.append(art_id)
     return present
 
@@ -1006,8 +963,8 @@ def _add_folder_to_zip(zf: zipfile.ZipFile, folder: Path, safe_title: str) -> No
     of _add_to_zip produces after unpacking a freshly downloaded bundle, so an
     archive built from the mirror matches one built from downloads."""
     for track in sorted(p for p in folder.iterdir() if p.is_file()):
-        if track.name == AUDIO_COMPLETE_MARKER:
-            continue  # bookkeeping, not part of the book
+        if track.name.startswith("."):
+            continue  # bookkeeping (index, .part staging), not part of the book
         zf.write(track, arcname=f"{safe_title}/{track.name}", compress_type=zipfile.ZIP_STORED)
 
 
@@ -1039,21 +996,25 @@ def _is_on_disk(mirror_root: Path | None, index: dict, art_id, safe_title: str, 
     return file_is_complete(target, rec.get("size"))
 
 
-def _local_copy_for(mirror_root: Path | None, safe_title: str, ext: str, expected, is_audio: bool):
+def _local_copy_for(mirror_root: Path | None, index: dict, art_id, safe_title: str, ext: str,
+                    is_audio: bool):
     """A complete copy of this book already in the loose-file mirror, or None.
 
     Lets "Prepare zip" build from files already on disk instead of downloading
-    them again -- the user's own suggestion, and the cheapest possible win
-    against the thing that actually constrains this app: requests to
-    litres.ru. Completeness is judged exactly as the mirror judges it (size for
-    an ebook, the marker for an audiobook), so a partial copy is never packed
-    into an archive as if it were the book."""
+    them again -- the cheapest possible win against the thing that actually
+    constrains this app: requests to litres.ru.
+
+    Delegates the judgement to `_is_on_disk` rather than repeating it. The two
+    questions ("should the mirror re-fetch this?" and "can the zip reuse it?")
+    are the same question about the same file, and when they were implemented
+    separately they drifted: the mirror moved to the recorded-size index while
+    this one still compared against the catalogue, so reuse silently never
+    fired. One definition, one place to change it."""
     if mirror_root is None:
         return None
-    target = mirror_root / (safe_title if is_audio else f"{safe_title}.{ext}")
-    if is_audio:
-        return target if _audio_is_complete(target, expected) else None
-    return target if _existing_file_state(target, expected) == "complete" else None
+    if not _is_on_disk(mirror_root, index, art_id, safe_title, ext, is_audio):
+        return None
+    return mirror_root / (safe_title if is_audio else f"{safe_title}.{ext}")
 
 
 def _add_to_zip(zf: zipfile.ZipFile, dest: Path, safe_title: str, is_audio: bool) -> None:
@@ -1133,6 +1094,9 @@ def _run_prepare(
     # current file's progress on top.
     completed_bytes = 0
     _update(bytes_done=0, bytes_total=_expected_total_bytes(art_ids))
+    # Read once per build: the record of what the mirror actually wrote, and
+    # so the only sound basis for reusing a file instead of re-fetching it.
+    mirror_index = read_mirror_index(mirror_root) if mirror_root else {}
     try:
         # Default STORED; _add_to_zip picks the right per-member scheme (see
         # its docstring). The goal is an archive macOS Archive Utility can open
@@ -1176,7 +1140,7 @@ def _run_prepare(
                     # more importantly, the request -- and the completeness
                     # test is the same one the mirror uses, so a half-written
                     # file is never packed as though it were the book.
-                    local = _local_copy_for(mirror_root, safe_title, ext, best.get("size") or None, is_audio)
+                    local = _local_copy_for(mirror_root, mirror_index, art_id, safe_title, ext, is_audio)
                     if local is not None:
                         if is_audio:
                             _add_folder_to_zip(zf, local, safe_title)

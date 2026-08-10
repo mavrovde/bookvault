@@ -84,8 +84,14 @@ class FakeLitresClient:
     web routes, session, mcp tools) that doesn't care about HTTP-layer
     details, just the client's public behavior/failure modes."""
 
-    def __init__(self, library=None, files_by_id=None, fail_downloads=None, arts_by_id=None):
+    def __init__(self, library=None, files_by_id=None, fail_downloads=None, arts_by_id=None,
+                 size_shortfall=64):
         self.library = library if library is not None else []
+        # How many bytes short of the declared listing size a download lands --
+        # see download_file(). Non-zero by default so any code that compares
+        # delivered bytes against the catalogue fails loudly here rather than
+        # in someone's library. Set to 0 only to test that exact-match case.
+        self.size_shortfall = size_shortfall
         self.files_by_id = files_by_id or {}
         self.arts_by_id = arts_by_id or {}
         # What account_login() returns -- the identity recovered from the live
@@ -174,11 +180,20 @@ class FakeLitresClient:
         if art_id in self.fail_downloads:
             raise LitresAuthError(f"Download failed for art {art_id} (403): DDoS-Guard")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        # Write as many bytes as this file's listing claims it has. A real
-        # download produces a file matching the listed size, and code that
-        # compares the two (the loose-file mirror's "is this already complete?"
-        # check) is only exercised meaningfully if the fake agrees. Falls back
-        # to a short marker when the listing carries no size.
+        # Deliver a file whose length does NOT equal the size the listing
+        # declares. This is not a quirk being simulated for completeness -- it
+        # is what litres.ru does, measured across a real 239-book library: 10
+        # files matched their listed size and 147 did not, the delivered file
+        # being smaller by anything from a couple of hundred bytes to several
+        # megabytes.
+        #
+        # An earlier version of this fake wrote exactly `declared` bytes,
+        # reasoning that "a real download produces a file matching the listed
+        # size". That reasoning was wrong, and because the fake asserted it,
+        # every test agreed with the production code's identical wrong
+        # assumption -- a whole feature shipped green whose central check could
+        # never hold in the field. A fake must model the service's observed
+        # behaviour, never the behaviour the code under test hopes for.
         declared = None
         for entry in self.files_by_id.get(art_id, []):
             if entry.get("id") == release_file_id:
@@ -186,11 +201,10 @@ class FakeLitresClient:
                 break
         marker = b"FAKEDATA"
         if declared:
-            n = int(declared)
-            # The marker, repeated and cut to the declared length: the bytes
-            # stay recognisably fake (and a listing that declares 8 still gets
-            # exactly b"FAKEDATA", so tests asserting the marker keep passing)
-            # while the file's SIZE matches what the listing promised.
+            n = max(1, int(declared) - self.size_shortfall)
+            # The marker repeated and cut to length: the bytes stay
+            # recognisably fake while the file's size is a plausible, and
+            # deliberately *wrong*, stand-in for a real transfer.
             data = (marker * (n // len(marker) + 1))[:n]
         else:
             data = marker

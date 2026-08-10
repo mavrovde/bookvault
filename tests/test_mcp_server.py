@@ -11,6 +11,7 @@ import sys
 import pytest
 from bookvault_core import credentials, session
 from bookvault_core.client import LitresAuthError
+from bookvault_core.library_fs import record_in_mirror_index
 from bookvault_mcp import server as mcp_server
 
 from tests.fakes import client_factory
@@ -115,15 +116,18 @@ async def test_download_book_success(monkeypatch, tmp_path):
         monkeypatch,
         session,
         library=[{"id": 1, "title": "Book One"}],
-        files_by_id={1: [{"id": 100, "extension": "epub", "is_additional": False, "size": 8}]},
+        files_by_id={1: [{"id": 100, "extension": "epub", "is_additional": False, "size": 1000}]},
     )
 
     result = await mcp_server.download_book(1)
 
+    dest = tmp_path / "litres-library" / "1.epub"
     assert result["ok"] is True
-    assert result["path"] == str(tmp_path / "litres-library" / "1.epub")
-    assert (tmp_path / "litres-library" / "1.epub").read_bytes() == b"FAKEDATA"
-    assert result["size_bytes"] == len(b"FAKEDATA")
+    assert result["path"] == str(dest)
+    assert dest.read_bytes().startswith(b"FAKEDATA")
+    # The bytes actually written, not the size the listing claimed -- the two
+    # differ for almost every real title.
+    assert result["size_bytes"] == dest.stat().st_size
     assert result["layout"] == "flat"
 
 
@@ -573,13 +577,36 @@ async def test_download_book_skips_a_file_it_already_has(monkeypatch, tmp_path):
                           files_by_id={1: [{"id": 10, "extension": "epub", "size": 1_000_000}]})
     session._state["client"] = fake
     monkeypatch.setattr(mcp_server, "DOWNLOAD_DIR", tmp_path)
-    (tmp_path / "1.epub").write_bytes(b"x" * 1_000_000)
+    (tmp_path / "1.epub").write_bytes(b"x" * 999_936)
+    # What a previous call recorded writing -- NOT the listing's 1_000_000.
+    record_in_mirror_index(tmp_path, 1, "1.epub", 999_936)
 
     result = await mcp_server.download_book(1)
 
     assert result["ok"] is True
     assert result["status"] == "exists"
     assert fake.download_calls == [], "an already-complete file must not be re-fetched"
+
+
+@pytest.mark.anyio
+async def test_calling_download_book_twice_fetches_once(monkeypatch, tmp_path):
+    """The unseeded round trip, and the reason this tool exists as an agent
+    tool at all: an agent looping over a library must converge on doing
+    nothing. Seeded skip-tests can't prove that -- they assert the skip fires
+    for a number the test itself chose, not for whatever a finished download
+    actually leaves on disk."""
+    fake = client_factory(monkeypatch, session, library=[{"id": 1, "title": "One"}],
+                          files_by_id={1: [{"id": 10, "extension": "epub", "size": 1_000_000}]})
+    session._state["client"] = fake
+    monkeypatch.setattr(mcp_server, "DOWNLOAD_DIR", tmp_path)
+
+    first = await mcp_server.download_book(1)
+    assert first["status"] == "done"
+    assert fake.download_calls == [1]
+
+    second = await mcp_server.download_book(1)
+    assert second["status"] == "exists"
+    assert fake.download_calls == [1], "the second call must not re-fetch"
 
 
 @pytest.mark.anyio
@@ -592,12 +619,14 @@ async def test_download_book_replaces_a_partial_file(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_server, "DOWNLOAD_DIR", tmp_path)
     dest = tmp_path / "1.epub"
     dest.write_bytes(b"partial")
+    # A previous call recorded finishing this file; only 7 bytes remain.
+    record_in_mirror_index(tmp_path, 1, "1.epub", 999_936)
 
     result = await mcp_server.download_book(1)
 
     assert result["status"] == "replaced"
     assert fake.download_calls == [1]
-    assert dest.stat().st_size == 1_000_000
+    assert dest.stat().st_size > 7, "the stub must be overwritten by a real transfer"
 
 
 @pytest.mark.anyio
@@ -629,4 +658,4 @@ async def test_download_book_reports_a_fresh_download_as_done(monkeypatch, tmp_p
 
     result = await mcp_server.download_book(1)
     assert result["status"] == "done"
-    assert result["size_bytes"] == 1_000_000
+    assert result["size_bytes"] == (tmp_path / "1.epub").stat().st_size

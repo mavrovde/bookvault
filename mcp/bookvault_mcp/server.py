@@ -28,6 +28,8 @@ from bookvault_core.library_fs import (
     download_to_temp_then_rename,
     file_is_complete,
     library_root_from_env,
+    read_mirror_index,
+    record_in_mirror_index,
 )
 from bookvault_core.library_sync import sync_library, sync_one
 from dotenv import load_dotenv
@@ -179,17 +181,22 @@ async def download_book(art_id: int) -> dict:
         if best is None:
             return {"ok": False, "error": f"No downloadable file for art {art_id}"}
         ext = client.file_extension(best)
-        expected = best.get("size") or None
         DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
         dest = DOWNLOAD_DIR / f"{art_id}.{ext}"
 
-        # Already here and the right size? Don't fetch it again. An agent
-        # calling this tool in a loop over a library would otherwise
-        # re-download everything on every run -- the request volume that gets
-        # an account anti-bot flagged, for no benefit. Same rule the web app
-        # uses (file_is_complete), so the two can't disagree about what
+        # Already here and intact? Don't fetch it again. An agent calling this
+        # tool in a loop over a library would otherwise re-download everything
+        # on every run -- the request volume that gets an account anti-bot
+        # flagged, for no benefit.
+        #
+        # Judged against what a previous run recorded writing, NOT against the
+        # size in litres.ru's listing: that size does not describe the bytes
+        # the site serves (see record_in_mirror_index), so comparing to it
+        # would make this skip fire essentially never. Same index and same rule
+        # as the web app's mirror, so the two can't disagree about what
         # "already downloaded" means.
-        if file_is_complete(dest, expected):
+        recorded = read_mirror_index(DOWNLOAD_DIR).get(str(art_id)) or {}
+        if file_is_complete(dest, recorded.get("size")):
             logger.info("Art %s already downloaded, skipping", art_id)
             return {
                 "ok": True,
@@ -199,10 +206,14 @@ async def download_book(art_id: int) -> dict:
                 "status": "exists",
             }
 
-        # A file that's present but the wrong size is a partial download; it
-        # gets overwritten rather than trusted.
+        # A file that's present but not the length we recorded is a partial
+        # download; it gets overwritten rather than trusted.
         replaced = dest.exists()
         download_to_temp_then_rename(client, art_id, best["id"], dest)
+        # Record what we actually wrote, so the next call can recognise it.
+        # After the rename, never before: a failed transfer must leave no
+        # record claiming success.
+        record_in_mirror_index(DOWNLOAD_DIR, art_id, dest.name, dest.stat().st_size)
         return {
             "ok": True,
             "path": str(dest),
