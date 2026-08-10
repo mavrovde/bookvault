@@ -17,7 +17,7 @@ already running *inside* a submission must not submit again — the single worke
 would wait on itself and deadlock (see the MCP server's threading note).
 
 Everything else follows from this: only one activity can run at a time, which
-is why `activity.py` is a state machine rather than a job queue.
+is why `activity/` is a state machine rather than a job queue.
 
 ## 2. Request cadence, not volume
 
