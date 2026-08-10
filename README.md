@@ -32,7 +32,7 @@ It comes in **three flavours** that share the same backend and login/session cod
 - 🖼️ **A native desktop app** (macOS / Windows / Linux) — the web app in a real window, no browser or terminal. [Download for macOS](https://github.com/mavrovde/bookvault/releases/latest).
 - 🖥️ **A local web app** — browse your library, tick the books you want, choose a format, and download.
 - 🔌 **An MCP server** — so Claude (or any MCP client) can list your library and download titles as tools.
-- 📁 **On-disk library sync** — optional `LITRES_LIBRARY_DIR` writes an Audiobookshelf-friendly `Author/Title/metadata.json` tree (same shape as litres-downloader), via **Sync library** or background autosync.
+- 📁 **On-disk library sync** — optional `LITRES_LIBRARY_DIR` writes an Audiobookshelf-friendly `Author/Title/metadata.json` tree (same shape as litres-downloader), via **⬇ Sync to Audiobookshelf** or background autosync.
 
 ---
 
@@ -433,7 +433,7 @@ Credentials in `.env` are used by the **MCP server only** (it's headless and boo
 
 A quick tour of the design choices that make this reliable. Skip it if you just want to use the app — expand a section if you're curious.
 
-**One state machine, on the backend.** Everything the app can be *doing* — reloading the library, sweeping sizes, building the zip, cancelling — is a single state machine in `activity.py` (`idle → refreshing / checking / preparing / stopping → idle`). Only one activity runs at a time, which falls out naturally from a single dedicated Playwright worker thread. The browser is a thin renderer: it POSTs an action, polls `GET /activity`, and paints whatever state it reports.
+**One state machine, on the backend.** Everything the app can be *doing* — reloading the library, sweeping sizes, building the zip, downloading as files, cancelling — is a single state machine in `activity/` (`idle → refreshing / checking / preparing / downloading / syncing / stopping → idle`). Only one activity runs at a time, which falls out naturally from a single dedicated Playwright worker thread. The package is split by domain — `state.py` owns the machine, and one module per activity owns the work — so a change to the zip build doesn't sit in the same file as the size sweep. The browser is a thin renderer: it POSTs an action, polls `GET /activity`, and paints whatever state it reports.
 
 **State lives on the server, not the browser.** The current selection and format preferences sit in `prefs.py` (`GET`/`POST /prefs`, and folded into the `/activity` poll), and a finished build's per-book results + zip link are kept on the state machine until the next build. So opening the app in another browser shows the same view, and a page reload never loses your selection, the results, or the download link.
 
@@ -477,7 +477,12 @@ core/                 bookvault-core — shared library (own pyproject.toml)
 web/                  bookvault-web — the web app (depends on bookvault-core)
   bookvault_web/
     app.py            FastAPI: library browser, format defaults, activity control
-    activity.py       the one backend state machine
+    activity/         the one backend state machine, one module per domain:
+      state.py          the machine itself — states, shared state, start/cancel
+      library.py        reloading the listing + the paced size sweep
+      mirror.py         the loose-file mirror, and "do I already have this?"
+      archive.py        the zip build and the finished archive
+      abs_sync.py       the Audiobookshelf-shaped on-disk library
     prefs.py          server-side shared UI state (selection + format prefs)
     run.py            starts uvicorn; the `bookvault-web` command
     templates/ static/  HTML + CSS + JS (no build step, no framework)

@@ -54,6 +54,30 @@ curl -s http://127.0.0.1:8499/activity | python3 -m json.tool
 curl -s -X POST http://127.0.0.1:8499/activity/prepare-zip -H 'Content-Type: application/json' -d '{}'
 ```
 
+## Running the MCP server logs you in for real
+
+`bookvault-mcp` calls `load_dotenv()` at import, so launching it from the repo
+root picks up the **real credentials in `.env`**, launches Chromium, and hits
+litres.ru with the account owner's session. That is the documented design (the
+headless server has no login form), but it makes a casual "does it start?"
+probe a live request against a real account.
+
+Redirecting the state, session and cache files and nulling the keychain is
+**not** enough — none of them is where the credentials come from:
+
+```bash
+LITRES_LOGIN= LITRES_PASSWORD= \
+LITRES_SESSION_FILE=/tmp/probe/.litres_session.json \
+LITRES_CACHE_FILE=/tmp/probe/.litres_cache.json \
+  .venv/bin/bookvault-mcp     # still logs in: .env wins
+```
+
+Neutralise `.env` too — run from a different working directory, or point
+`DOTENV_PATH`-style isolation at an empty file. To exercise the tools without
+any of this, call them in-process against `FakeLitresClient` the way
+`tests/test_mcp_server.py` does; to check only that the server boots and
+registers its tools, a `tools/list` over stdio needs no session at all.
+
 ## Cleaning up
 
 Kill the server (`pkill -f <your script>`). Prefer stopping it by PID

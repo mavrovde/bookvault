@@ -17,6 +17,22 @@ OS-keychain credentials as the web app.
 - `list_library(limit=50)` -- list purchased books/audiobooks with metadata
   (authors, narrators, series, dates, language, DRM flag, rating).
 - `download_book(art_id)` -- download one title to `LITRES_DOWNLOAD_DIR`.
+  Safe to call in a loop over a library: a title already downloaded and still
+  intact is skipped (`status: "exists"`) rather than fetched again, so a second
+  pass converges on doing nothing instead of re-downloading everything -- the
+  request volume that gets an account anti-bot flagged. Downloads stage to a
+  temporary name and are renamed on success, so an interrupted transfer leaves
+  no wreckage. Returns `status`: `done` (fresh), `exists` (already had it),
+  `replaced` (was there but incomplete), or `skipped` (nothing downloadable).
+  With `LITRES_LIBRARY_DIR` set it installs into the Audiobookshelf-shaped tree
+  instead, keyed on the title's release date.
+
+  "Still intact" is judged against `.bookvault-index.json`, which records what
+  each finished download actually wrote -- **not** against the file size
+  litres.ru advertises, which does not match the bytes it serves. A file you
+  put there yourself has no record, nothing to verify against, and is left
+  alone. This is the same index and the same rule the web app's folder mirror
+  uses, so the two never disagree about what "already downloaded" means.
 
 ## Install
 
@@ -77,6 +93,7 @@ through its page instead.
 | `LITRES_DOWNLOAD_DIR` | `~/Downloads/litres-library` | Where `download_book` saves files. |
 | `LITRES_SESSION_FILE` | `.litres_session.json` (CWD) | Cached browser session (cookies), shared with the web app. |
 | `LITRES_HEADLESS` | `1` | Set to `0` to watch the login flow in a real Chromium window. |
+| `LITRES_LOGIN_PAGE_TIMEOUT_MS` | `30000` (30 s) | Playwright timeout for loading the login page (login, session restore, cookie re-warm). Raise on a slow link. |
 | `LITRES_MCP_TRANSPORT` | `stdio` | `stdio` (client-launched) or `streamable-http` (networked service; used by Docker). |
 | `LITRES_MCP_HOST` / `LITRES_MCP_PORT` | `127.0.0.1` / `8421` | Bind host/port for the `streamable-http` transport. |
 | `LITRES_LOG_LEVEL` | `INFO` | Log verbosity (`DEBUG`/`INFO`/`WARNING`/`ERROR`). Logs go to stderr -- under stdio, stdout is the MCP transport. |
