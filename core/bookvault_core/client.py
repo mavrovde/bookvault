@@ -75,6 +75,12 @@ HEADLESS = os.environ.get("LITRES_HEADLESS", "1").lower() not in ("0", "false", 
 # LITRES_DOWNLOAD_TIMEOUT_MS if your connection or the CDN needs longer/shorter.
 DOWNLOAD_TIMEOUT_MS = int(os.environ.get("LITRES_DOWNLOAD_TIMEOUT_MS", "300000"))
 
+# Playwright timeout for navigating to litres.ru's login page (and the same
+# page used for session restore / cookie re-warm). Slow links or a sluggish
+# SPA can exceed the default 30s networkidle wait; raise via
+# LITRES_LOGIN_PAGE_TIMEOUT_MS if login/session restore times out on load.
+LOGIN_PAGE_TIMEOUT_MS = int(os.environ.get("LITRES_LOGIN_PAGE_TIMEOUT_MS", "30000"))
+
 # Retry/backoff for transient anti-bot blocks (DDoS-Guard 403 / 429 / 503).
 # A block is soft: waiting a moment (and re-warming the __ddg* cookies via a
 # page visit) usually clears it, so we retry rather than failing the item and
@@ -365,7 +371,7 @@ class LitresClient:
             logger.debug("Cookie re-warm could not open a page: %s", exc)
             return
         try:
-            page.goto(LOGIN_PAGE, wait_until="networkidle", timeout=20000)
+            page.goto(LOGIN_PAGE, wait_until="networkidle", timeout=LOGIN_PAGE_TIMEOUT_MS)
             logger.info("Re-warmed DDoS-Guard cookies via a page visit")
         except Exception as exc:  # noqa: BLE001 -- Playwright navigation: unbounded error space, and a failed re-warm is not fatal
             logger.debug("Cookie re-warm navigation failed: %s", exc)
@@ -398,7 +404,7 @@ class LitresClient:
         profile = data.get("profile") or {}
         return profile.get("email") or data.get("login") or profile.get("nickname") or None
 
-    def _recapture_headers(self, timeout_ms: int = 20000) -> bool:
+    def _recapture_headers(self, timeout_ms: int | None = None) -> bool:
         """A client restored from `storage_state_path` has valid session
         cookies but no app-level headers -- those aren't persisted (see
         class docstring) and are normally only captured during login()'s
@@ -413,6 +419,8 @@ class LitresClient:
         silently discard the saved session and re-login from scratch --
         defeating the point of persisting it, and needlessly increasing
         exposure to litres.ru's anti-bot checks."""
+        if timeout_ms is None:
+            timeout_ms = LOGIN_PAGE_TIMEOUT_MS
         captured = {}
         try:
             page = self.context.new_page()
@@ -451,7 +459,7 @@ class LitresClient:
 
         page.on("request", on_request)
         try:
-            page.goto(LOGIN_PAGE, wait_until="networkidle", timeout=30000)
+            page.goto(LOGIN_PAGE, wait_until="networkidle", timeout=LOGIN_PAGE_TIMEOUT_MS)
             page.fill("input[name=email]", login)
             page.click("button[type=submit]")
             page.wait_for_selector("input[name=pwd]", timeout=15000)
@@ -474,7 +482,7 @@ class LitresClient:
             if not captured:
                 # The SPA didn't auto-fetch the profile this time -- force it.
                 try:
-                    page.reload(wait_until="networkidle", timeout=30000)
+                    page.reload(wait_until="networkidle", timeout=LOGIN_PAGE_TIMEOUT_MS)
                 except Exception as exc:  # noqa: BLE001 -- Playwright reload is a best-effort nudge for the SPA
                     logger.debug("Post-login reload failed: %s", exc)
             self._extra_headers = {k: v for k, v in captured.items() if k.lower() not in _DROP_HEADERS}

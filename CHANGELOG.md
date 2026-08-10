@@ -3,6 +3,11 @@
 ## [Unreleased]
 
 ### Added
+- **Configurable login page load timeout.** `LITRES_LOGIN_PAGE_TIMEOUT_MS`
+  (default `30000`) controls the Playwright timeout used when navigating to
+  litres.ru's login page during interactive login, session restore (header
+  recapture), and DDoS-Guard cookie re-warm. Raise it on slow networks if login
+  or restore fails waiting for `networkidle`.
 - **Keep an extra copy of the archive somewhere else.** The finished zip is
   still saved automatically to your configured folder — that hasn't changed.
   Afterwards, **💾 Save a copy to…** picks a folder in your operating system's
