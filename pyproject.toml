@@ -35,9 +35,14 @@ pythonpath = ["."]
 # `live` tests (tests/test_smoke_live.py) hit a really-running server + real
 # litres.ru, so they can't run offline/in CI. Deselect them by default; run
 # them on purpose with `pytest -m live` (a CLI -m overrides this one).
-addopts = "-m 'not live'"
+addopts = "-m 'not live and not ui'"
 markers = [
     "live: end-to-end smoke test against a running server (opt-in via -m live)",
+    # Browser-layer tests. Deselected by default so the ordinary suite stays
+    # browser-free (invariants §3) and fast; they still never touch litres.ru
+    # -- the app is served against a FakeLitresClient and constructing a real
+    # one is an assertion failure. CI runs them in their own job.
+    "ui: rendered page + JavaScript, driven through Chromium (opt-in via -m ui)",
 ]
 
 [tool.coverage.run]

@@ -56,16 +56,51 @@ jobs:
           cache: pip
           cache-dependency-path: "**/pyproject.toml"
 
-      # No `playwright install` step needed: the test suite never launches a
-      # real browser (LitresClient is always faked/bypassed -- see
+      # No `playwright install` step needed *here*: the default suite never
+      # launches a real browser (LitresClient is always faked/bypassed -- see
       # tests/fakes.py), so only the Python packages are required, not the
-      # Chromium binary. Editable installs of all three subprojects (core
-      # first so `bookvault-core` resolves for web/mcp) plus the dev tooling.
+      # Chromium binary. The browser-layer tests are marked `ui`, deselected
+      # by default, and run in the separate `ui` job below, which does install
+      # Chromium. Editable installs of all three subprojects (core first so
+      # `bookvault-core` resolves for web/mcp) plus the dev tooling.
       - name: Install subprojects and test tooling
         run: pip install -e ./core -e ./web -e ./mcp -e ".[dev]"
 
       - name: Run pytest with coverage
         run: python -m pytest -v --cov=bookvault_core --cov=bookvault_web --cov=bookvault_mcp --cov-report=term-missing
+
+  ui:
+    name: Browser-layer tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: "**/pyproject.toml"
+
+      - name: Install subprojects and test tooling
+        run: pip install -e ./core -e ./web -e ./mcp -e ".[dev]"
+
+      # This job is the one place CI needs the browser binary: these tests
+      # drive the rendered page through Chromium, which is the only way to
+      # catch defects that live between the DOM and the JS (a button nested in
+      # a <label> so its click never fires; a label describing a state that
+      # cannot happen). Both shipped in v1.3.3 with the Python suite green.
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+
+      # These NEVER touch litres.ru: the app is served in-process against
+      # tests/fakes.py's FakeLitresClient, the lifespan (and so any session
+      # restore from a cookie file or keychain) is off, and constructing a
+      # real LitresClient is an assertion failure -- see the never_reach_litres
+      # fixture in tests/test_ui.py. The browser talks only to 127.0.0.1.
+      - name: Run browser-layer tests
+        run: python -m pytest -m ui -v
 
   audit:
     name: Dependency vulnerability audit

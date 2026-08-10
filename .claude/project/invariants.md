@@ -36,9 +36,23 @@ them either hammers the service or silently drops books the user owns.
 
 ## 3. Tests are offline and fully mocked
 
-No test may start a browser or touch the network. `tests/conftest.py` fakes the
-keyring, redirects state/cache/session files into a `tmp_path`, and resets
-module-level singletons around every test.
+No test may touch the network, and the **default** suite starts no browser.
+`tests/conftest.py` fakes the keyring, redirects state/cache/session files into
+a `tmp_path`, and resets module-level singletons around every test.
+
+**The one exception is `tests/test_ui.py`**, marked `ui` and deselected by
+default (`addopts = -m 'not live and not ui'`), which drives the rendered page
+through Chromium. It exists because two defects shipped in v1.3.3 that 400
+Python tests could not see -- a button nested in a `<label>` so its click never
+fired, and a label describing a state that could never happen. Both lived
+between the DOM and the JS, where no route test reaches.
+
+It is still **offline**: the app is served in-process against
+`FakeLitresClient`, the lifespan is off (so no session restore from a cookie
+file or the keychain), the browser talks only to 127.0.0.1, and an autouse
+fixture makes constructing a real `LitresClient` an assertion failure. "Never
+touches litres.ru" is enforced there, not merely intended. CI runs it in its
+own job -- the only one that installs the Chromium binary.
 
 Any new on-disk path — or a default pointing at a real user directory — must be
 redirected there, or the suite writes into the developer's own files.
