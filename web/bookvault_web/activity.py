@@ -59,6 +59,8 @@ from bookvault_core.library_fs import (
     extract_audio_zip,
     file_is_complete,
     library_root_from_env,
+    read_mirror_index,
+    record_in_mirror_index,
 )
 from bookvault_core.library_sync import sync_library
 
@@ -759,6 +761,9 @@ def _run_download_files(
     cancelled = False
     try:
         dest_root.mkdir(parents=True, exist_ok=True)
+        # Read once: it's the record of what previous runs actually wrote, and
+        # the only trustworthy answer to "do I already have this book".
+        mirror_index = read_mirror_index(dest_root)
         for art in _iter_books(client):
             if _cancel_event.is_set():
                 cancelled = True
@@ -794,11 +799,7 @@ def _run_download_files(
                 # Already here and intact? Say so and move on -- the whole
                 # point of a mirror is that running it twice is cheap.
                 target = dest_root / (safe_title if is_audio else f"{safe_title}.{ext}")
-                already = (
-                    _audio_is_complete(target, expected) if is_audio
-                    else _existing_file_state(target, expected) == "complete"
-                )
-                if already:
+                if _is_on_disk(dest_root, mirror_index, art_id, safe_title, ext, is_audio):
                     logger.info("Already on disk, skipping %r (art %s)", title, art_id)
                     with _lock:
                         _state["done"] += 1
@@ -844,13 +845,19 @@ def _run_download_files(
                     target.mkdir(parents=True, exist_ok=True)
                     extract_audio_zip(staging, target)
                     staging.unlink(missing_ok=True)
-                    # Written last, so a crash mid-extract leaves no marker and
+                    # Recorded last, so a crash mid-extract leaves no record and
                     # the folder is correctly seen as incomplete next run.
-                    _write_audio_marker(target, expected)
+                    record_in_mirror_index(
+                        dest_root, art_id, target.name, 0, tracks=_audio_media_count(target)
+                    )
                 else:
                     # os.replace: atomic, and overwrites in place -- which is
                     # exactly what a size mismatch should do to a partial file.
                     os.replace(staging, target)
+                    # Record the length we actually wrote, not the one the
+                    # listing claimed: they differ for almost every book, so
+                    # only this makes the next run's check meaningful.
+                    record_in_mirror_index(dest_root, art_id, target.name, target.stat().st_size)
                 logger.info(
                     "Saved %r (art %s): %s, %.1f MB in %.1fs", title, art_id, ext, size_mb, elapsed,
                 )
@@ -1002,6 +1009,34 @@ def _add_folder_to_zip(zf: zipfile.ZipFile, folder: Path, safe_title: str) -> No
         if track.name == AUDIO_COMPLETE_MARKER:
             continue  # bookkeeping, not part of the book
         zf.write(track, arcname=f"{safe_title}/{track.name}", compress_type=zipfile.ZIP_STORED)
+
+
+def _recorded(index: dict, art_id):
+    """What the index says we last wrote for this book, or an empty dict."""
+    return index.get(str(art_id)) or {}
+
+
+def _is_on_disk(mirror_root: Path | None, index: dict, art_id, safe_title: str, ext: str, is_audio: bool) -> bool:
+    """Whether this book is already sitting complete in the mirror.
+
+    Judged against what *we recorded writing* (see
+    `library_fs.record_in_mirror_index`), never against litres.ru's listing
+    size -- that size does not describe the bytes the site serves, so comparing
+    to it would call almost every book incomplete forever.
+
+    With no record we cannot verify anything, so a present file is trusted
+    rather than re-downloaded."""
+    if mirror_root is None:
+        return False
+    rec = _recorded(index, art_id)
+    target = mirror_root / (safe_title if is_audio else f"{safe_title}.{ext}")
+    if is_audio:
+        if not target.is_dir():
+            return False
+        tracks = rec.get("tracks")
+        # No record, or the folder lost a track since we wrote it.
+        return bool(tracks) and _audio_media_count(target) == int(tracks)
+    return file_is_complete(target, rec.get("size"))
 
 
 def _local_copy_for(mirror_root: Path | None, safe_title: str, ext: str, expected, is_audio: bool):

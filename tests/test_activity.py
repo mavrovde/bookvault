@@ -17,6 +17,7 @@ import zipfile
 import pytest
 from bookvault_core import cache
 from bookvault_core.client import DownloadCancelled
+from bookvault_core.library_fs import MIRROR_INDEX, record_in_mirror_index
 from bookvault_web import activity
 
 from tests.fakes import FakeLitresClient
@@ -1209,7 +1210,8 @@ def test_download_files_writes_books_into_the_folder(tmp_path):
 def test_a_complete_file_is_not_downloaded_again(tmp_path):
     """The whole point: running it twice must be nearly free."""
     client = _make_client(_book(1, "Book One", TEXT_FILES))
-    (tmp_path / "Book One.epub").write_bytes(b"x" * 1_000_000)  # matches TEXT_FILES
+    (tmp_path / "Book One.epub").write_bytes(b"x" * 1_000_000)
+    record_in_mirror_index(tmp_path, 1, "Book One.epub", 1_000_000)
 
     activity.download_files(client, dest_root=tmp_path)
     result = wait_until_idle()
@@ -1223,6 +1225,8 @@ def test_a_truncated_file_is_redownloaded_and_overwritten(tmp_path):
     client = _make_client(_book(1, "Book One", TEXT_FILES))
     dest = tmp_path / "Book One.epub"
     dest.write_bytes(b"abc")
+    # A previous run recorded writing the full file; only 3 bytes are there now.
+    record_in_mirror_index(tmp_path, 1, "Book One.epub", 1_000_000)
 
     activity.download_files(client, dest_root=tmp_path)
     result = wait_until_idle()
@@ -1236,6 +1240,7 @@ def test_a_file_that_is_too_LARGE_is_also_replaced(tmp_path):
     is equally not the book (a double-append, a different edition)."""
     client = _make_client(_book(1, "Book One", TEXT_FILES))
     (tmp_path / "Book One.epub").write_bytes(b"x" * 2_000_000)
+    record_in_mirror_index(tmp_path, 1, "Book One.epub", 1_000_000)
 
     activity.download_files(client, dest_root=tmp_path)
     result = wait_until_idle()
@@ -1297,7 +1302,7 @@ def test_two_books_with_the_same_title_do_not_overwrite_each_other(tmp_path):
     dest = tmp_path / "mirror"
     activity.download_files(client, dest_root=dest)
     wait_until_idle()
-    names = sorted(p.name for p in dest.iterdir())
+    names = sorted(p.name for p in dest.iterdir() if p.name != MIRROR_INDEX)
     assert names == ["Same Title (2).epub", "Same Title.epub"]
 
 
@@ -1389,7 +1394,9 @@ def test_the_summary_counts_each_outcome_separately(tmp_path):
         _book(3, "Broken", TEXT_FILES),
     )
     (tmp_path / "Already.epub").write_bytes(b"x" * 1_000_000)   # complete
+    record_in_mirror_index(tmp_path, 2, "Already.epub", 1_000_000)
     (tmp_path / "Broken.epub").write_bytes(b"x" * 12)           # partial
+    record_in_mirror_index(tmp_path, 3, "Broken.epub", 1_000_000)
 
     activity.download_files(client, dest_root=tmp_path)
     result = wait_until_idle()

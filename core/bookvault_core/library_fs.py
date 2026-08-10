@@ -282,28 +282,66 @@ def install_book(
     return dest_dir
 
 
+# Index of what we actually wrote into a mirror folder, kept beside the files.
+# Shape: {"<art_id>": {"name": "Title.epub", "size": 1234, "tracks": 12|null}}
+MIRROR_INDEX = ".bookvault-index.json"
+
+
+def read_mirror_index(root: Path) -> dict:
+    try:
+        data = json.loads((root / MIRROR_INDEX).read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def record_in_mirror_index(root: Path, art_id, name: str, size: int, tracks=None) -> None:
+    """Remember what a successful download actually produced.
+
+    **Why not compare against the catalogue's size.** litres.ru's file listing
+    reports a size that is *not* the byte length of what it serves: measured
+    across a real 239-book library, only 10 files matched their listed size and
+    147 did not, the delivered file usually being smaller by a variable amount.
+    Checking against it would mark almost every book incomplete on every run and
+    re-download the entire library each time -- the exact request pattern that
+    gets an account anti-bot flagged, and far worse than the stale-file problem
+    it was meant to solve.
+
+    So the only trustworthy statement is the one we can make ourselves: "this
+    is what the finished download looked like when we wrote it." That is direct
+    evidence, it survives restarts, and it still catches the case that matters
+    -- a transfer interrupted part-way leaves a file whose length differs from
+    what we recorded on the run that completed."""
+    index = read_mirror_index(root)
+    index[str(art_id)] = {"name": name, "size": int(size), "tracks": tracks}
+    root.mkdir(parents=True, exist_ok=True)
+    tmp = root / (MIRROR_INDEX + ".tmp")
+    tmp.write_text(json.dumps(index, ensure_ascii=False, indent=0))
+    os.replace(tmp, root / MIRROR_INDEX)
+
+
 def file_is_complete(path: Path, expected_size) -> bool:
     """Whether an already-downloaded file can be left alone.
 
-    The shared definition of "I already have this", used by every front-end so
-    they cannot disagree about what counts as a finished download.
+    `expected_size` is the length recorded when we last finished writing this
+    file (see `record_in_mirror_index`) -- NOT a size from litres.ru's listing,
+    which does not describe the bytes it serves.
 
-    A path existing proves nothing: a transfer interrupted at 3 MB of 300 MB
-    leaves a file behind, and trusting it means the user keeps a broken book
-    with no way to notice. So the file's actual size must match what the
-    listing says it should be -- any mismatch (short *or* long) means fetch it
-    again and overwrite.
-
-    `expected_size` of None/0 means the listing carried no size. There is then
-    nothing to check against, and re-downloading an entire library because a
-    field was missing is far worse than trusting the file, so a present file
-    counts as complete."""
+    None/0 means we have no record of writing it: the user put the file there,
+    or it predates the index. There is nothing to verify against, and
+    re-downloading a library because we lack a record is worse than trusting
+    what is on disk, so it counts as complete."""
     try:
         if not path.is_file():
             return False
+        actual = path.stat().st_size
+        # A zero-length file is never a book, whatever we do or don't have
+        # recorded -- it's a transfer that died before the first chunk.
+        if actual == 0:
+            return False
         if not expected_size:
             return True
-        return path.stat().st_size == int(expected_size)
+        return actual == int(expected_size)
     except OSError:  # pragma: no cover - unreadable path
         return False
 
