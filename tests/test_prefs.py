@@ -324,3 +324,43 @@ def test_a_symlinked_folder_is_stored_as_its_real_target(tmp_path):
     link.symlink_to(real)
     prefs.update(download_dir=str(link))
     assert prefs.snapshot()["download_dir"] == str(real.resolve())
+
+
+# -- the save folder is constrained, not just normalised ---------------------
+# Normalising stops `..` tricks but not "write into ~/Library/LaunchAgents".
+# The setting is reachable by an unauthenticated POST from any page the user
+# has open (127.0.0.1, no CSRF token), so the reachable set is bounded.
+
+
+def test_a_folder_outside_the_allowed_roots_is_rejected():
+    with pytest.raises(prefs.InvalidDownloadDir) as caught:
+        prefs.update(download_dir="/etc/cron.d")
+    assert caught.value.code == "outside_allowed_roots"
+    assert caught.value.code in prefs.DOWNLOAD_DIR_ERRORS
+
+
+def test_a_traversal_that_escapes_an_allowed_root_is_rejected():
+    """The check runs after resolve(), so `..` can't be used to climb out."""
+    with pytest.raises(prefs.InvalidDownloadDir) as caught:
+        prefs.update(download_dir=str(Path.home() / ".." / ".." / "etc"))
+    assert caught.value.code == "outside_allowed_roots"
+
+
+def test_a_folder_in_the_home_directory_is_accepted():
+    prefs.update(download_dir=str(Path.home() / "Books"))
+    assert prefs.snapshot()["download_dir"] == str((Path.home() / "Books").resolve())
+
+
+def test_a_mounted_drive_is_accepted(monkeypatch, tmp_path):
+    """External drives are a normal place to keep a large library."""
+    drive = tmp_path / "Volumes" / "Backup"
+    drive.mkdir(parents=True)
+    monkeypatch.setattr(prefs, "allowed_download_roots", lambda: [(tmp_path / "Volumes").resolve()])
+    prefs.update(download_dir=str(drive))
+    assert prefs.snapshot()["download_dir"] == str(drive.resolve())
+
+
+def test_the_rejection_message_is_actionable():
+    """The user has to be able to tell what to do differently."""
+    msg = prefs.DOWNLOAD_DIR_ERRORS["outside_allowed_roots"]
+    assert "home" in msg.lower() and "drive" in msg.lower()

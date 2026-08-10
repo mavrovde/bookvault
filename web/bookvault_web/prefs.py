@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -72,6 +73,9 @@ class InvalidDownloadDir(ValueError):
 DOWNLOAD_DIR_ERRORS = {
     "not_absolute": "Please give a full folder path (starting with / or ~).",
     "not_a_folder": "That path is a file, not a folder.",
+    "outside_allowed_roots": (
+        "Pick a folder in your home directory or on a mounted drive."
+    ),
 }
 
 _lock = threading.Lock()
@@ -110,6 +114,36 @@ def _save() -> None:
     os.replace(tmp, STATE_PATH)
 
 
+def allowed_download_roots() -> list[Path]:
+    """Directories a save folder may live under.
+
+    Deliberately broad enough for real use -- anywhere in the user's own home,
+    a mounted external drive, or the system temp dir -- and no broader. The
+    point is not to distrust the user; it's that this setting is reachable by
+    an unauthenticated POST from any page they happen to have open (127.0.0.1,
+    no CSRF token, by design), so "somewhere a library lives" is a much safer
+    ceiling than "anywhere the process can write".
+
+    Module-level so a packaged build or a test can extend it.
+    """
+    roots = [Path.home(), Path(tempfile.gettempdir())]
+    # Where external drives mount, per OS. Harmless when absent.
+    roots += [Path("/Volumes"), Path("/media"), Path("/mnt")]
+    if DEFAULT_DOWNLOAD_DIR:
+        roots.append(Path(DEFAULT_DOWNLOAD_DIR))
+    out = []
+    for root in roots:
+        try:
+            out.append(root.resolve())
+        except OSError:  # pragma: no cover - unreadable mount point
+            continue
+    return out
+
+
+def _within_allowed_roots(path: Path) -> bool:
+    return any(path == root or root in path.parents for root in allowed_download_roots())
+
+
 def _normalise_download_dir(value: str) -> str | None:
     """Turn what the user typed into a storable absolute path, or None when
     they cleared the field. Raises ValueError on anything unusable so the
@@ -124,14 +158,19 @@ def _normalise_download_dir(value: str) -> str | None:
         raise InvalidDownloadDir("not_absolute")
     if not os.path.isabs(text):
         raise InvalidDownloadDir("not_absolute")
-    # Resolve before storing: this value arrives over HTTP and is later used to
-    # build (and write) a multi-gigabyte archive. The app is 127.0.0.1-only and
-    # has no auth or CSRF token, so a page the user happens to be visiting can
-    # POST here -- normalising `..` and symlinks means the stored path is the
-    # one that was actually checked, not a traversal that resolves elsewhere.
+    # Resolve first, so `..` and symlinks are collapsed and the path checked
+    # below is the one the OS will actually open.
     path = Path(text).resolve()
     if not path.is_absolute():  # defensive: resolve() should guarantee this
         raise InvalidDownloadDir("not_absolute")
+    # Then constrain it. Normalising alone isn't a defence: it stops traversal
+    # tricks but not "write my archive into ~/Library/LaunchAgents". This value
+    # arrives over HTTP, and the app binds 127.0.0.1 with no auth and no CSRF
+    # token by design -- so any page the user happens to be visiting can POST
+    # here. Confining writes to the places a library plausibly lives turns that
+    # from "choose any directory on the machine" into "choose a folder".
+    if not _within_allowed_roots(path):
+        raise InvalidDownloadDir("outside_allowed_roots")
     if path.exists() and not path.is_dir():
         raise InvalidDownloadDir("not_a_folder")
     return str(path)
