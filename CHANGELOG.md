@@ -1,8 +1,19 @@
 # Changelog
 
-## [1.3.2] - Contributor attribution
+## [1.3.2] - Security fix and contributor attribution
 
-Same code as 1.3.1 — this release exists to record authorship correctly.
+Fixes a path-injection issue in the save-folder setting, and records the
+authorship of 1.3.1's features correctly.
+
+### Fixed
+- **The save folder is normalised before being stored** (two high-severity
+  CodeQL `py/path-injection` alerts). The folder arrives over HTTP and decides
+  where a multi-gigabyte archive is written, but `..` segments and symlinks
+  were never collapsed — so the path that was validated wasn't necessarily the
+  one the OS would open. The web app binds 127.0.0.1 with no auth or CSRF
+  token by design, which means any page you happen to be visiting can POST to
+  `/prefs`; redirecting a build's output elsewhere was a plausible drive-by.
+  Paths are now resolved before storage and embedded NUL bytes are rejected.
 
 Both features in 1.3.1 were written by
 [@yuri-tceretian](https://github.com/yuri-tceretian), but the metadata work
