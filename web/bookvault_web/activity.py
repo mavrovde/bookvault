@@ -195,12 +195,20 @@ def _begin(state: str, *, total=None, message="") -> bool:
             total=total,
             log=[],
             error=None,
-            sizes={},
         )
-    # Note: `zip_path`, `saved_path` and `results` are intentionally NOT reset
-    # here, so a finished build's download link, "Saved to ..." line and
-    # results view survive the size-check that fires on the next page load.
+    # Note: `zip_path`, `saved_path`, `results` and `sizes` are intentionally
+    # NOT reset here, so a finished build's download link, "Saved to ..." line
+    # and results view survive the size-check that fires on the next page load.
     # Only a new prepare() replaces them.
+    #
+    # `sizes` is on this side of the line too: it is *derived from the 7-day
+    # file-listing cache*, not progress for one activity. Wiping it meant that
+    # starting anything -- a download, a refresh, even the automatic check on
+    # page load -- blanked every size already on screen, and only a completed
+    # sweep put them back. Sizes a sweep re-resolves overwrite these entries
+    # anyway, so keeping them costs nothing and stops an operation from
+    # destroying information the app already had. Cleared on logout
+    # (forget_sizes) so one account's sizes can never paint onto another's.
     _cancel_event.clear()
     return True
 
@@ -401,6 +409,18 @@ def cancel() -> bool:
 # --------------------------------------------------------------------------
 
 
+def forget_sizes() -> None:
+    """Drop the resolved sizes held in memory.
+
+    They now survive `_begin` (see the note there), which is right within one
+    account and wrong across two: the entries are keyed by art_id, so without
+    this a previous account's sizes could paint onto the next one's rows. Called
+    on logout, alongside the on-disk `cache.clear()` that does the same job for
+    the file listings they were derived from."""
+    with _lock:
+        _state["sizes"] = {}
+
+
 def _pending_size_ids(books: list, selected: list | None) -> list:
     """Ids of books still needing a size, selected ones first so checking a
     box doesn't mean waiting behind a whole library's worth of others."""
@@ -476,7 +496,19 @@ def _sweep_sizes(client: LitresClient, books: list, selected: list | None, do_li
 
 def _run_check(client: LitresClient, selected: list | None, live: bool = True) -> None:
     try:
-        books = cache.get_library() or []
+        # Fall back to the *stale* listing, not to nothing. This list is only
+        # used to enumerate which art_ids to look a size up for, and the two
+        # caches expire on very different clocks: the library listing after 15
+        # minutes, a book's file listing after 7 days. So a page opened more
+        # than 15 minutes after the last refresh swept an empty list and
+        # resolved zero sizes -- reporting "0 of 0" and leaving the UI saying
+        # the sizes were unknown while all of them sat fresh on disk.
+        #
+        # Same reasoning as /library's stale fallback in app.py: a slightly
+        # out-of-date set of ids costs at most a brand-new purchase missing
+        # its size until the next Refresh, which is far better than every
+        # size in the library disappearing on a reload.
+        books = cache.get_library() or cache.get_library_stale() or []
         _sweep_sizes(client, books, selected, do_live=live)
     except Exception as exc:
         logger.exception("Size sweep crashed")

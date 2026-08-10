@@ -20,6 +20,7 @@ BookVault backs up a user's **own** purchased litres.ru library (books + audiobo
 .venv/bin/python -m pytest                      # full suite (offline, ~seconds)
 .venv/bin/python -m pytest tests/test_web.py::test_login_success_redirects_home  # one test
 .venv/bin/python -m pytest -m live              # opt-in: hits a RUNNING server (see below)
+.venv/bin/python -m pytest -m ui                # opt-in: browser layer, needs `playwright install chromium`
 .venv/bin/ruff check .                          # lint (CI-enforced)
 
 .venv/bin/bookvault-web        # run the web app
@@ -78,7 +79,7 @@ mcp/bookvault_mcp/     server.py (MCP tools)
 desktop/bookvault_desktop/  app.py (pywebview launcher; embeds bookvault_web)
 packaging/             entry.py (shared frozen-app entry: per-OS data dir + PLAYWRIGHT_BROWSERS_PATH)
                        macos/ (.app/.dmg) · windows/ (Setup.exe via Inno Setup) · linux/ (.AppImage)
-tests/                 pytest suite (offline) + tests/test_smoke_live.py (opt-in -m live)
+tests/                 pytest suite (offline) + test_smoke_live.py (opt-in -m live) + test_ui.py (opt-in -m ui, browser layer)
 ```
 
 ## Releasing

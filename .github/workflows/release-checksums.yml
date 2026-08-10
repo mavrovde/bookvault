@@ -34,6 +34,12 @@ jobs:
     # a runner all day if a build never finishes.
     timeout-minutes: 60
     steps:
+      # Needed only by the "Title the release from the changelog" step at the
+      # end, which reads CHANGELOG.md. Safe alongside the asset steps: those
+      # all work inside dist/, so nothing here is ever hashed into SHA256SUMS.
+      - name: Check out repository
+        uses: actions/checkout@v7
+
       - name: Resolve the tag
         env:
           INPUT_TAG: ${{ inputs.tag }}
@@ -107,6 +113,32 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: gh release upload "$TAG" dist/SHA256SUMS --clobber
+
+      # The three installer workflows race to `gh release create`, and none of
+      # them passes --title, so whichever wins leaves the release named after
+      # the bare tag ("v1.3.3"). Releases up to v1.2.0 were cut by hand and
+      # read "v1.2.0 - Linux installer (AppImage)", which says at a glance what
+      # the release was for. Restored here rather than in all three creators:
+      # this workflow runs once, after them, so there is no race to lose and no
+      # need to duplicate the logic into PowerShell as well.
+      #
+      # The title comes from the matching CHANGELOG heading
+      # ("## [1.3.4] - Sizes stop disappearing"). If there's no such heading,
+      # the tag name is left exactly as it is.
+      - name: Title the release from the changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          summary=$(sed -n "s/^## \[${version}\] - \(.*\)$/\1/p" CHANGELOG.md | head -1)
+          if [ -n "$summary" ]; then
+            echo "Titling $TAG as: $TAG - $summary"
+            gh release edit "$TAG" --title "$TAG - $summary"
+          else
+            echo "No CHANGELOG heading for $version -- leaving the title as $TAG"
+          fi
 
       - name: Fail if any installer was missing
         if: env.TIMED_OUT == '1'

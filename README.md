@@ -199,7 +199,7 @@ Check it with the [GitHub CLI](https://cli.github.com/) (nothing to install
 beyond `gh`):
 
 ```bash
-gh attestation verify BookVault-1.3.3.dmg --repo mavrovde/bookvault
+gh attestation verify BookVault-1.3.4.dmg --repo mavrovde/bookvault
 ```
 
 That confirms the file was built by BookVault's own CI from a tagged commit —
@@ -207,7 +207,7 @@ so a copy tampered with in transit, or re-hosted elsewhere, fails the check.
 The same works for the `.exe`, the `.AppImage`, and the Docker images:
 
 ```bash
-gh attestation verify oci://ghcr.io/mavrovde/bookvault/web:1.3.3 --repo mavrovde/bookvault
+gh attestation verify oci://ghcr.io/mavrovde/bookvault/web:1.3.4 --repo mavrovde/bookvault
 ```
 
 Each release also ships a **`SHA256SUMS`** file if you'd rather just confirm the
