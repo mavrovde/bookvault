@@ -44,7 +44,11 @@ Live tests (`tests/test_smoke_live.py`, marker `live`) are **deselected by defau
 
 **The zip is staged in temp, then moved.** A build always writes into its own `mkdtemp` workdir and the finished archive is moved into the user's save folder (`prefs.resolve_download_dir()`, passed in by `app.py` — `activity.py` never imports `prefs`) only *after* it succeeds, so a crashed or empty build never leaves a half-written `.zip` in someone's Downloads. A failed move keeps the archive in temp and still serves it; the archive is never discarded. Cleanup tracks `_state["workdir"]` explicitly — **never** derive the temp dir from `Path(zip_path).parent`, because once saved that parent is the *user's own folder*.
 
-**Server-side shared UI state.** Selection, format prefs + the save folder live in `web/bookvault_web/prefs.py` (`GET`/`POST /prefs`, and folded into the `/activity` poll), not per-browser — so every browser/tab shows the same view. Persisted to `LITRES_STATE_FILE`. Adding a pref means touching five places: `_DEFAULTS`/`snapshot()`/`update()` in `prefs.py`, `PrefsUpdate` + `set_prefs` in `app.py`, the control in `templates/index.html`, its handler in `static/js/app.js`, and the `_reset()` in `tests/conftest.py`. In `update()`, `None` means "leave alone", so a *clearable* field needs a separate sentinel (`download_dir=""` resets it to the default).
+**Server-side shared UI state.** Selection, format prefs + the save folder live in `web/bookvault_web/prefs.py` (`GET`/`POST /prefs`, and folded into the `/activity` poll), not per-browser — so every browser/tab shows the same view. Persisted to `LITRES_STATE_FILE`. Adding a pref means touching five places: `_DEFAULTS`/`snapshot()`/`update()` in `prefs.py`, `PrefsUpdate` + `set_prefs` in `app.py`, the control in `templates/index.html`, its handler in `static/js/app.js`, and the `_reset()` in `tests/conftest.py`. In `update()`, `None` means "leave alone", so a *clearable* field needs a separate sentinel (`download_dir=""` resets it to the default). Fields *derived* on read (`download_dir_effective`, `download_dir_warning`) are computed in `snapshot()`, not stored — so they notice a folder that has since been deleted or unmounted.
+
+**Cross-origin writes are refused.** The app binds 127.0.0.1 with no auth and no CSRF token by design, so any page the user has open could otherwise POST to it (start a build, fire a sweep, log them out). `block_cross_origin_writes` in `app.py` rejects state-changing verbs whose `Sec-Fetch-Site` isn't `same-origin`/`none`, falling back to an `Origin`-vs-`Host` comparison for engines that don't send it (the Linux desktop's WebKitGTK). Callers with *neither* header — curl, the live tests — are allowed: the threat is a web page, not a local script. **Adding a POST means adding it to `WRITE_ROUTES` in `tests/test_csrf.py`**, which asserts the list is exhaustive and will fail if you don't.
+
+**The save folder is picked by a native dialog, opened server-side.** A browser cannot hand back a real filesystem path (`webkitdirectory`/`showDirectoryPicker()` both hide it), but the server *is* the user's machine here — so `folder_dialog.py` shells out to `osascript`/PowerShell/`zenity`/`kdialog`. The start path always travels as an argv element or an env var, never interpolated into a script body. The picked path is still validated by `prefs.update()` like a typed one: picking is not a way around the allowed-roots guard. `is_available()` is false in Docker/SSH, which hides the button. It must **not** run on the Playwright worker thread — a dialog waits on a human and would stall any running download.
 
 **Desktop reuses the web app, it does not fork it.** `desktop/bookvault_desktop/app.py` does `from bookvault_web.app import app`, runs it on a background uvicorn thread on a private port, and points a native window at it. The backend starts/stops with the window (bounded graceful shutdown so Playwright/Chromium is never orphaned). Keep `core`/`web`/`mcp` unchanged when working on desktop.
 
@@ -69,7 +73,7 @@ Each subproject has its own `pyproject.toml` and depends on `bookvault-core`:
 
 ```
 core/bookvault_core/   client.py (login/API/download) · session.py (worker thread) · credentials.py (keyring) · cache.py
-web/bookvault_web/     app.py (FastAPI) · activity.py (state machine) · prefs.py (shared UI state) · run.py · templates/ static/
+web/bookvault_web/     app.py (FastAPI) · activity.py (state machine) · prefs.py (shared UI state) · folder_dialog.py (native save-folder picker) · run.py · templates/ static/
 mcp/bookvault_mcp/     server.py (MCP tools)
 desktop/bookvault_desktop/  app.py (pywebview launcher; embeds bookvault_web)
 packaging/             entry.py (shared frozen-app entry: per-OS data dir + PLAYWRIGHT_BROWSERS_PATH)
@@ -79,7 +83,7 @@ tests/                 pytest suite (offline) + tests/test_smoke_live.py (opt-in
 
 ## Releasing
 
-Versions are bumped **in lockstep** across all five `pyproject.toml` files (root + core/web/mcp/desktop); current release is **v1.2.0**. A pushed `v*` tag triggers `.github/workflows/docker-publish.yml`, which builds and publishes the multi-arch `ghcr.io/mavrovde/bookvault/{web,mcp}` images. `.github/workflows/lint-test-audit.yml` runs ruff + the pytest matrix (3.11–3.13) + a dependency audit on every push/PR.
+Versions are bumped **in lockstep** across all five `pyproject.toml` files (root + core/web/mcp/desktop); current release is **v1.3.3**. A pushed `v*` tag triggers `.github/workflows/docker-publish.yml`, which builds and publishes the multi-arch `ghcr.io/mavrovde/bookvault/{web,mcp}` images. `.github/workflows/lint-test-audit.yml` runs ruff + the pytest matrix (3.11–3.13) + a dependency audit on every push/PR.
 
 The three desktop installers each build in their own workflow on a matching runner and attach the artifact to the GitHub Release (all unsigned dev builds; Chromium is fetched on first run via `packaging/entry.py`):
 

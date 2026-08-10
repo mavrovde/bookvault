@@ -24,7 +24,7 @@ is why `activity.py` is a state machine rather than a job queue.
 litres.ru sits behind an anti-bot layer that keys on **request count and
 rhythm**. This is why the on-load size sweep is cache-only, why `iter_library`
 jitters between pages, and why autosync runs on a multi-hour interval with
-jitter rather than a tidy timer.
+jitter rather than a tidy timer.2push 
 
 Treat as suspect: anything adding requests per book, lowering a page size,
 polling on a fixed period, or scanning the whole library to find one item.
@@ -73,10 +73,23 @@ password, a cookie, or the captured app-level headers.
 
 ## 7. Local by design, which is also a threat model
 
-The web app binds `127.0.0.1` with no authentication and no CSRF token,
-deliberately — it is a single-user tool. The consequence is that **any page the
-user has open can POST to it**. Weigh that when adding a state-changing route,
-and keep user-supplied paths constrained rather than merely normalised.
+The web app binds `127.0.0.1` with no authentication and no login,
+deliberately — it is a single-user tool. The consequence was that **any page
+the user has open could POST to it**. Since 1.3.3 `block_cross_origin_writes`
+(`app.py`) refuses state-changing verbs that a foreign page made, using
+`Sec-Fetch-Site` with an `Origin`-vs-`Host` fallback; callers with neither
+header (curl, the live tests, local scripts) are still allowed, because the
+threat model is a *web page the user visited*, not code already running as
+them.
+
+That check is a floor, not a substitute for the rest: keep user-supplied paths
+**constrained** rather than merely normalised, because a bug in the check
+should not be the only thing standing between a POST and the filesystem.
+
+**Adding a state-changing route means adding it to `WRITE_ROUTES` in
+`tests/test_csrf.py`.** That list is asserted to be exhaustive against the
+app's own routing table, so a forgotten route fails the suite rather than
+quietly becoming reachable from any page.
 
 ## 8. Scope
 
@@ -89,3 +102,43 @@ of scope and must be refused.
 Versions bump in lockstep across **all five** `pyproject.toml` files (root,
 core, web, mcp, desktop). A pushed `v*` tag publishes the Docker images and all
 three desktop installers. All builds are unsigned; do not claim otherwise.
+
+## 10. No route may answer with a bare 500
+
+A failure the user can act on must reach them as a readable page or a clean
+JSON error, never Starlette's plain-text "Internal Server Error" — which loses
+the form they were filling in and tells them nothing. Two rules follow:
+
+- **Convert infrastructure failures into typed errors at the layer that knows
+  what they mean.** `LitresClient.__init__` raises `LitresBrowserUnavailable`
+  (a `LitresAuthError` subclass, so existing callers already degrade to
+  "logged out") rather than letting Playwright's driver message escape.
+- **Every route that can fail has a catch-all** that logs the traceback with
+  `logger.exception` and returns a fixed, non-derived message. Nothing taken
+  from an exception goes into a response body — that is how filesystem paths
+  and stack traces leak (CodeQL `py/stack-trace-exposure`).
+
+Unattended startup paths (`restore_session`) must degrade to "logged out"
+rather than crash the boot: build the client **inside** the guard, or the app
+cannot even show the login form explaining what went wrong.
+
+## 11. A subprocess does not inherit the suite's fakes
+
+`tests/conftest.py`'s autouse fixtures patch *this* process. A test that spawns
+a real server (`test_e2e_smoke.py`) gets a fresh interpreter with a real
+`keyring`, so on a machine that has ever signed in it will silently restore
+that session and test the wrong page. Spawned processes must pin
+`PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring` alongside the
+`LITRES_*_FILE` overrides. A test that only passes on a machine that has never
+logged in is not offline — it is lucky.
+
+## 12. The browser cannot give you a filesystem path
+
+`<input webkitdirectory>` exposes relative names and `showDirectoryPicker()` a
+sandboxed handle; neither yields an absolute path, by design. Anything needing
+a real directory is picked by a **native dialog opened server-side**
+(`folder_dialog.py`) — legitimate here only because the server runs on the
+user's own machine. When shelling out to one, the start path travels as an
+argv element or an environment variable, never interpolated into a script
+body, and the result is re-validated by the same guard a typed path goes
+through.
