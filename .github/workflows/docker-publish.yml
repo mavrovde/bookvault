@@ -8,10 +8,14 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-# GITHUB_TOKEN needs to read the repo and write packages (ghcr); nothing else.
+# GITHUB_TOKEN needs to read the repo and write packages (ghcr). The two extra
+# scopes are for build provenance: `id-token` mints the OIDC token that proves
+# which workflow ran, `attestations` records the signed statement.
 permissions:
   contents: read
   packages: write
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -56,6 +60,7 @@ jobs:
             type=raw,value=latest
 
       - name: Build and push (multi-arch)
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -73,3 +78,16 @@ jobs:
           # it, so unchanged layers (base image, dependency install) are skipped.
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache
           cache-to: type=registry,ref=ghcr.io/${{ github.repository }}/${{ matrix.image }}:buildcache,mode=max
+
+      # Signed, keyless (Sigstore) statement binding this image digest to the
+      # commit and workflow that produced it. `push-to-registry` stores it
+      # alongside the image in GHCR, so it travels with a `docker pull`:
+      #   gh attestation verify oci://ghcr.io/<owner>/bookvault/web:<version> \
+      #     --repo mavrovde/bookvault
+      # Digest, not tag: a tag can be repointed, a digest cannot.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ghcr.io/${{ github.repository }}/${{ matrix.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

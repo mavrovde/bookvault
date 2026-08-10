@@ -515,6 +515,9 @@ function applyPrefs(p) {
   if (dirEl && !downloadDirPending && document.activeElement !== dirEl) {
     dirEl.value = p.download_dir || '';
     if (p.download_dir_effective) dirEl.placeholder = p.download_dir_effective;
+    // Derived server-side on every poll, so a folder that was fine when it was
+    // set but has since been deleted or unmounted starts warning on its own.
+    showDownloadDirWarning(p.download_dir_warning);
   }
   // Don't reconcile the selection while a local change is still on its way to
   // the server -- otherwise a poll landing in that window would momentarily
@@ -553,6 +556,55 @@ function pushFormat(field, value) {
 // request per pause, not per keystroke) and can be REJECTED by the server --
 // a relative path or a path that's actually a file. Show that inline rather
 // than letting the user find out at the end of a multi-gigabyte build.
+function showDownloadDirError(message) {
+  const el = document.getElementById('download-dir-error');
+  if (!el) return;
+  el.textContent = message || '';
+  el.style.display = message ? 'block' : 'none';
+}
+
+function showDownloadDirWarning(message) {
+  const el = document.getElementById('download-dir-warning');
+  if (!el) return;
+  el.textContent = message || '';
+  el.style.display = message ? 'block' : 'none';
+}
+
+// Ask the server to open the machine's native folder picker. A browser can't
+// give us a real path (webkitdirectory/showDirectoryPicker both hide it), and
+// the server here IS the user's machine -- see folder_dialog.py. The request
+// stays open for as long as the dialog does, so the button is disabled
+// meanwhile rather than letting a second click stack up another dialog.
+async function browseForDownloadDir() {
+  const btn = document.getElementById('browse-dir');
+  if (!btn || btn.disabled) return;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Choosing…';
+  try {
+    const resp = await fetch('/prefs/browse', { method: 'POST' });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      showDownloadDirError(body.error || 'Could not open the folder picker.');
+      return;
+    }
+    showDownloadDirError('');
+    // Cancelled: the snapshot comes back unchanged, so just re-render from it.
+    applyPrefs(body);
+    const dirEl = document.getElementById('download-dir');
+    if (dirEl) {
+      dirEl.value = body.download_dir || '';
+      if (body.download_dir_effective) dirEl.placeholder = body.download_dir_effective;
+    }
+    showDownloadDirWarning(body.download_dir_warning);
+  } catch (e) {
+    showDownloadDirError('Could not open the folder picker.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
 let downloadDirTimer = null;
 let downloadDirPending = false;
 function pushDownloadDir(value) {
@@ -565,9 +617,10 @@ function pushDownloadDir(value) {
         body: JSON.stringify({ download_dir: value }),
       });
       const body = await resp.json().catch(() => ({}));
-      const errEl = document.getElementById('download-dir-error');
-      errEl.textContent = resp.ok ? '' : (body.error || 'Could not save that folder.');
-      errEl.style.display = resp.ok ? 'none' : 'block';
+      showDownloadDirError(resp.ok ? '' : (body.error || 'Could not save that folder.'));
+      // A rejected path keeps whatever warning was already showing from being
+      // read as commentary on the new value -- the error is the message now.
+      showDownloadDirWarning(resp.ok ? body.download_dir_warning : '');
       // An accepted empty value falls back to the system default -- show it.
       if (resp.ok && body.download_dir_effective) {
         document.getElementById('download-dir').placeholder = body.download_dir_effective;
@@ -581,6 +634,9 @@ function initPrefControls() {
   document.getElementById('ebook-format').addEventListener('change', (e) => pushFormat('ebook_format', e.target.value));
   document.getElementById('audiobook-format').addEventListener('change', (e) => pushFormat('audiobook_format', e.target.value));
   document.getElementById('download-dir').addEventListener('input', (e) => pushDownloadDir(e.target.value));
+  // Absent where no native dialog can be drawn (see the template guard).
+  const browseBtn = document.getElementById('browse-dir');
+  if (browseBtn) browseBtn.addEventListener('click', browseForDownloadDir);
 }
 
 (async function init() {

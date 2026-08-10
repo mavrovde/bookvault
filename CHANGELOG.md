@@ -1,5 +1,75 @@
 # Changelog
 
+## [Unreleased]
+
+## [1.3.3] - Pick your save folder, and clearer failures
+
+### Added
+- **A "Browse…" button for the save folder.** The destination had to be typed
+  in by hand, which is a miserable way to choose a directory. It now opens your
+  operating system's own folder dialog. A browser genuinely cannot hand a web
+  page a real filesystem path — both `webkitdirectory` and
+  `showDirectoryPicker()` deliberately hide it — so the dialog is opened by the
+  app itself, which is running on your machine anyway. The button is hidden
+  where no dialog can be drawn (Docker, a plain SSH session); the text field
+  still works there.
+- **Folders only, with warnings for the rest.** A path that is a file, or a
+  folder you can't write to, is now refused while you're looking at the field
+  rather than at the end of a multi-gigabyte build. A folder that doesn't
+  exist yet is still accepted — it gets created when a build finishes — but it
+  says so, and a folder that later disappears (an unmounted drive) starts
+  warning on its own.
+- **Every release artifact can now be traced back to the build that made it.**
+  The installers and the Docker images carry a signed build provenance
+  attestation, so you can confirm a download came from this repository's CI at
+  a specific commit rather than trusting wherever you got the link:
+  ```bash
+  gh attestation verify BookVault-1.3.3.dmg --repo mavrovde/bookvault
+  ```
+  The builds are still **unsigned** — this is not code signing, and macOS
+  Gatekeeper and Windows SmartScreen will warn exactly as before. Provenance is
+  free, is verified against a public transparency log, and answers a question a
+  certificate doesn't: *which commit and which workflow produced this file.*
+  See "Verify your download" in the README.
+- **Releases publish a `SHA256SUMS` file** covering all three installers, for
+  checking a download arrived intact (`sha256sum -c SHA256SUMS`).
+
+### Fixed
+- **A failed sign-in no longer shows "Internal Server Error".** If Playwright's
+  Chromium wasn't installed, the login page was replaced by a bare error page
+  with the form gone and nothing to act on. The browser is now reported as its
+  own kind of failure, with the command that fixes it, on the login page. Any
+  other unexpected sign-in failure gets a readable message instead of a raw
+  500, and the details go to the log rather than into the page.
+- **A missing browser no longer breaks startup.** With saved credentials in the
+  keychain, the unattended re-login built its browser outside the guard that
+  was supposed to make startup failure-proof — so an app that couldn't launch
+  Chromium couldn't even show the login form explaining why.
+- **`test_e2e_smoke` no longer depends on the developer's keychain** (found
+  while fixing the above). It spawns a real server as a subprocess, where the
+  suite's fake-keyring fixture doesn't reach, so on a machine that had ever
+  signed in it silently restored that session and tested the wrong page.
+
+### Security
+- **Another website can no longer make this app do things** ([#41]). The app
+  binds 127.0.0.1 with no login and no CSRF token — deliberate for a
+  single-user local tool, but it meant any page you had open could POST to it:
+  start a several-hour download from your account, fire a library-wide sweep
+  that gets you anti-bot flagged, change where files are saved, or sign you
+  out. State-changing requests now have to come from the app's own page.
+  Reading is unaffected, and non-browser callers (`curl`, the live tests) still
+  work — the risk being closed is a *web page you visited*, not a script you
+  ran yourself.
+
+### Changed
+- The app now says in its log when preferences are being kept relative to the
+  working directory ([#42]) — launching from a different folder reads them all
+  as unset, which looks exactly like settings failing to persist. Where the
+  file should live by default is still an open decision.
+
+[#41]: https://github.com/mavrovde/bookvault/issues/41
+[#42]: https://github.com/mavrovde/bookvault/issues/42
+
 ## [1.3.2] - Security fix and contributor attribution
 
 Fixes a path-injection issue in the save-folder setting, and records the

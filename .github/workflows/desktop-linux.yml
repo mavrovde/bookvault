@@ -20,7 +20,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # upload the .AppImage asset to the release
+  contents: write      # upload the .AppImage asset to the release
+  id-token: write      # OIDC token for build provenance (tag builds only)
+  attestations: write  # record the signed provenance statement
 
 jobs:
   build:
@@ -88,6 +90,17 @@ jobs:
             echo "!! startup error"; exit 1
           fi
           echo "smoke OK -- frozen app booted with GTK/WebKit"
+
+      # Provenance before upload, so an unattested .AppImage never reaches a
+      # release. Tag builds only -- a PR run has no release to attest for, and
+      # a fork PR cannot mint the OIDC token anyway.
+      #   gh attestation verify BookVault-<version>-x86_64.AppImage \
+      #     --repo mavrovde/bookvault
+      - name: Attest build provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: packaging/linux/BookVault-*.AppImage
 
       - name: Attach .AppImage to the release
         if: startsWith(github.ref, 'refs/tags/')

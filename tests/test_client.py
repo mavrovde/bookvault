@@ -541,9 +541,51 @@ def test_constructor_stops_the_driver_when_chromium_launch_fails(monkeypatch):
     fake_pw.stop = lambda: setattr(fake_pw, "stopped", True)
     monkeypatch.setattr(client_mod, "sync_playwright", lambda: SimpleNamespace(start=lambda: fake_pw))
 
-    with pytest.raises(RuntimeError, match="doesn't exist"):
+    # Surfaced as the typed error (a LitresAuthError subclass) carrying the
+    # fix, not Playwright's raw driver message -- that's what lets the web
+    # login route render a banner instead of a bare 500.
+    with pytest.raises(client_mod.LitresBrowserUnavailable, match="playwright install chromium"):
         LitresClient()
     assert fake_pw.stopped is True
+
+
+def test_constructor_reports_a_non_missing_browser_launch_failure_generically(monkeypatch):
+    """A launch failure that ISN'T "not installed" (a sandbox refusing to start
+    Chromium, a corrupt download) must not tell the user to run an install that
+    won't help -- but must still be the typed, user-facing error."""
+    from types import SimpleNamespace
+
+    def failing_launch(headless=None):
+        raise RuntimeError("Target page, context or browser has been closed")
+
+    fake_pw = SimpleNamespace(chromium=SimpleNamespace(launch=failing_launch), stopped=False)
+    fake_pw.stop = lambda: setattr(fake_pw, "stopped", True)
+    monkeypatch.setattr(client_mod, "sync_playwright", lambda: SimpleNamespace(start=lambda: fake_pw))
+
+    with pytest.raises(client_mod.LitresBrowserUnavailable) as excinfo:
+        LitresClient()
+    assert "could not start the browser" in str(excinfo.value)
+    assert "playwright install" not in str(excinfo.value)
+    assert fake_pw.stopped is True
+
+
+def test_browser_unavailable_keeps_the_original_error_for_the_log(monkeypatch):
+    """The user-facing message replaces Playwright's, it doesn't destroy it --
+    the original stays chained so the log still has the real detail."""
+    from types import SimpleNamespace
+
+    original = RuntimeError("Executable doesn't exist at /nope/chrome-headless-shell")
+
+    def failing_launch(headless=None):
+        raise original
+
+    fake_pw = SimpleNamespace(chromium=SimpleNamespace(launch=failing_launch), stopped=False)
+    fake_pw.stop = lambda: setattr(fake_pw, "stopped", True)
+    monkeypatch.setattr(client_mod, "sync_playwright", lambda: SimpleNamespace(start=lambda: fake_pw))
+
+    with pytest.raises(client_mod.LitresBrowserUnavailable) as excinfo:
+        LitresClient()
+    assert excinfo.value.__cause__ is original
 
 
 def test_save_state_restricts_the_session_file_to_owner_only(tmp_path):

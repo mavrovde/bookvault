@@ -10,7 +10,9 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # upload the .dmg asset to the release
+  contents: write      # upload the .dmg asset to the release
+  id-token: write      # OIDC token for build provenance
+  attestations: write  # record the signed provenance statement
 
 jobs:
   build:
@@ -34,6 +36,17 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"          # v1.2.3 -> 1.2.3 (blank for manual runs)
           packaging/macos/build.sh "${VERSION:-0.0.0-dev}"
+
+      # Provenance before upload, so an unattested .dmg never reaches a release.
+      # The build is unsigned (no Apple Developer ID), so this is what a user
+      # has instead of a Gatekeeper signature -- it proves the file came from
+      # this repo at this tag, though it does NOT silence Gatekeeper:
+      #   gh attestation verify BookVault-<version>.dmg --repo mavrovde/bookvault
+      - name: Attest build provenance
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: packaging/macos/dist/BookVault-*.dmg
 
       - name: Attach .dmg to the release
         if: startsWith(github.ref, 'refs/tags/')

@@ -1,0 +1,116 @@
+name: Publish release checksums
+
+# Collect the three desktop installers from a finished release and publish a
+# single SHA256SUMS file next to them.
+#
+# Why a separate workflow: the installers are built by three workflows on three
+# different runners, in parallel, finishing minutes apart. Each could publish
+# its own `.sha256`, but then there is no one file to check -- and if two
+# workflows wrote a shared SHA256SUMS concurrently they would clobber each
+# other. So this job starts with the others and simply waits for all three
+# assets to appear before hashing them.
+#
+# Checksums prove the file you downloaded is intact and matches what everyone
+# else got. They do NOT prove where it came from -- that is the build
+# provenance attestation each build workflow records (`gh attestation verify`).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to (re)publish checksums for, e.g. v1.3.2"
+        required: true
+
+permissions:
+  contents: write   # upload SHA256SUMS to the release
+
+jobs:
+  checksums:
+    name: SHA256SUMS
+    runs-on: ubuntu-latest
+    # The Linux AppImage build (PyInstaller + appimagetool + a headless smoke
+    # test) is the long pole at ~15-20 min. 60 gives it room without hanging
+    # a runner all day if a build never finishes.
+    timeout-minutes: 60
+    steps:
+      - name: Resolve the tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: echo "TAG=${INPUT_TAG:-$GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+
+      - name: Wait for the installers to be attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          # One glob per expected installer. Keep in step with the three
+          # desktop-*.yml upload steps.
+          patterns=('BookVault-*.dmg' 'BookVault-Setup-*.exe' 'BookVault-*.AppImage')
+
+          # ~50 min of polling, comfortably inside timeout-minutes: 60.
+          for attempt in $(seq 1 100); do
+            names="$(gh release view "$TAG" --json assets \
+                       --jq '.assets[].name' 2>/dev/null || true)"
+            missing=()
+            for pat in "${patterns[@]}"; do
+              # shellcheck disable=SC2053 -- glob match is intentional
+              found=""
+              while IFS= read -r name; do
+                [ -z "$name" ] && continue
+                case "$name" in $pat) found="$name"; break ;; esac
+              done <<< "$names"
+              [ -n "$found" ] || missing+=("$pat")
+            done
+
+            if [ ${#missing[@]} -eq 0 ]; then
+              echo "All ${#patterns[@]} installers are attached."
+              exit 0
+            fi
+            echo "attempt $attempt: still waiting for ${missing[*]}"
+            sleep 30
+          done
+
+          # Don't fail here -- publish checksums for whatever did arrive, then
+          # fail at the end so the gap is visible but the file is still useful.
+          echo "TIMED_OUT=1" >> "$GITHUB_ENV"
+          echo "::warning::Timed out waiting for: ${missing[*]}"
+
+      - name: Download the release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p dist && cd dist
+          # Exclude any previous SHA256SUMS so a re-run never hashes its own
+          # output from last time.
+          gh release download "$TAG" \
+            --pattern 'BookVault-*' \
+            --clobber
+          ls -la
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist
+          # Bare filenames, sorted, so `sha256sum -c SHA256SUMS` works from a
+          # directory of downloads and the file is byte-stable across re-runs.
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS' -printf '%f\n' \
+            | sort \
+            | xargs -r sha256sum > SHA256SUMS
+          echo "----- SHA256SUMS -----"
+          cat SHA256SUMS
+          [ -s SHA256SUMS ] || { echo "!! no assets to hash"; exit 1; }
+
+      - name: Attach SHA256SUMS to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$TAG" dist/SHA256SUMS --clobber
+
+      - name: Fail if any installer was missing
+        if: env.TIMED_OUT == '1'
+        run: |
+          echo "SHA256SUMS was published, but at least one installer never"
+          echo "arrived. Re-run this workflow once its build succeeds."
+          exit 1

@@ -129,8 +129,13 @@ def _restore_session_impl(allow_env_login: bool = True) -> None:
         saved = (env_login, env_password)
         logger.info("Bootstrapping session from LITRES_LOGIN/LITRES_PASSWORD")
     login_id, password = saved
-    client = LitresClient()
+    client = None
     try:
+        # Inside the try: constructing the client launches Chromium, which can
+        # fail on its own (not installed yet). Built outside, that failure
+        # would escape this best-effort path and crash the app's startup --
+        # the one thing this function promises never to do.
+        client = LitresClient()
         client.login(login_id, password)
     except Exception as exc:  # noqa: BLE001 -- an unattended re-login must never crash startup
         # Same best-effort contract as above: an unattended re-login must
@@ -138,10 +143,13 @@ def _restore_session_impl(allow_env_login: bool = True) -> None:
         # a Playwright timeout on a changed login page, no network), the
         # browser it was driving must not be left running.
         logger.warning("Automatic login for %s failed: %s", login_id, exc)
-        try:
-            client.close()
-        except Exception as close_exc:  # noqa: BLE001 -- closing the browser is best-effort cleanup
-            logger.debug("Closing the client after a failed auto-login failed: %s", close_exc)
+        # None when the browser never launched -- LitresClient's own __init__
+        # already unwound whatever it had started before raising.
+        if client is not None:
+            try:
+                client.close()
+            except Exception as close_exc:  # noqa: BLE001 -- closing the browser is best-effort cleanup
+                logger.debug("Closing the client after a failed auto-login failed: %s", close_exc)
         return
     client.save_state(SESSION_STATE_PATH)
     _state["client"], _state["login"] = client, login_id

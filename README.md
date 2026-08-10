@@ -117,7 +117,7 @@ Then open **http://127.0.0.1:8420** and log in. Your password is remembered in y
 2. **Browse &amp; filter** your library — search by title/author, filter books vs. audiobooks, sort by title/author/size.
 3. **Select** the titles you want (nothing is pre-selected, so you never start a huge download by accident).
 4. **Pick a format** (optional) — your preferred ebook and audiobook formats, used when available.
-5. **Pick a save folder** (optional) — the 📁 box in the toolbar. Leave it empty to use your system **Downloads** folder.
+5. **Pick a save folder** (optional) — the 📁 box in the toolbar. Hit **Browse…** to choose it in your operating system's own folder dialog, or type a path. Leave it empty to use your system **Downloads** folder. A folder that doesn't exist yet is fine — it's created when a build finishes, and the app says so. (**Browse…** is hidden when the app can't open a dialog, e.g. in Docker or over SSH; type the path there.)
 6. **Prepare zip** — watch the live progress bar; hit **Stop** anytime.
 7. **Review results** — the summary tallies `✓ done · ! skipped · ✗ failed`; click a pill to filter to just those (e.g. the one rights-limited title that couldn't be downloaded).
 8. **Find your zip** — it's saved to that folder automatically (the path is shown under the progress bar), and **💾 Save zip file** still downloads it through the browser if you'd rather.
@@ -185,6 +185,42 @@ chmod +x BookVault-*-x86_64.AppImage
 - App data lives in `~/.local/share/BookVault/`; downloads go to `~/Downloads/litres-library/`.
 
 > Homebrew / winget / AUR channels are still on the way.
+
+### Verify your download
+
+The installers are **unsigned** — there's no Apple Developer ID or Authenticode
+certificate behind them, which is why macOS and Windows warn on first launch.
+What you get instead is *verifiable evidence of origin*: every release artifact
+carries a [build provenance attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds)
+— a signed statement, recorded publicly, that this exact file was produced by
+this repository's build workflow from a specific commit.
+
+Check it with the [GitHub CLI](https://cli.github.com/) (nothing to install
+beyond `gh`):
+
+```bash
+gh attestation verify BookVault-1.3.3.dmg --repo mavrovde/bookvault
+```
+
+That confirms the file was built by BookVault's own CI from a tagged commit —
+so a copy tampered with in transit, or re-hosted elsewhere, fails the check.
+The same works for the `.exe`, the `.AppImage`, and the Docker images:
+
+```bash
+gh attestation verify oci://ghcr.io/mavrovde/bookvault/web:1.3.3 --repo mavrovde/bookvault
+```
+
+Each release also ships a **`SHA256SUMS`** file if you'd rather just confirm the
+download is intact:
+
+```bash
+sha256sum -c SHA256SUMS      # macOS: shasum -a 256 -c SHA256SUMS
+```
+
+**What this does and doesn't buy you.** Provenance proves *origin*; a checksum
+proves *integrity*. Neither is a code-signing certificate, so neither silences
+Gatekeeper or SmartScreen — see the per-OS notes above for those. Verification
+is worth doing precisely *because* the builds are unsigned.
 
 ### Run from source (any OS)
 
@@ -462,6 +498,12 @@ You are responsible for using this tool in line with litres.ru's Terms of Servic
 - 🍪 Your browser **session cookies** are cached in a local JSON file so you don't re-login every run. It's gitignored — **treat it like being logged in; don't share it.**
 - 🚫 `.env`, `.venv/`, and the session/cache files are all gitignored.
 - 🏠 All three front-ends (web, desktop, MCP) are **single-user and local-only by design** — bound to `127.0.0.1` (or published only to it in Docker; the desktop app serves on a private localhost port inside its own process). There's no multi-user support, and none is planned: this is intentionally *not* built to hold other people's credentials.
+
+- 📦 Release artifacts (installers **and** Docker images) carry signed **build
+  provenance attestations**, so you can prove a download came from this repo's
+  CI rather than trusting the link — see [Verify your download](#verify-your-download).
+  The builds themselves are unsigned; provenance is evidence of origin, not a
+  code-signing certificate.
 
 Found a security issue? See [`SECURITY.md`](SECURITY.md).
 

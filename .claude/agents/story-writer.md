@@ -24,8 +24,26 @@ right after the approach changes.
    which you would pick and why. Flag the one that needs a human decision.
 4. **Acceptance criteria** — observable, checkable statements. "The setting
    survives launching from a different directory" not "fix the path handling".
-5. **Watch out for** — the invariants a newcomer will trip over: the single
+5. **How to verify** — the concrete steps to *prove* those criteria hold.
+   Acceptance criteria say what "done" means; this says how to check it.
+   Include the actual commands and the expected result:
+
+   ```
+   .venv/bin/python -m pytest tests/test_csrf.py     # all pass
+   curl -si -X POST 127.0.0.1:8420/prefs -H 'Origin: https://evil.example' \
+        -H 'Content-Type: application/json' -d '{}'  # expect 403
+   ```
+
+   Say what setup is needed to reach the failing state — "log in first", "with
+   no saved session", "on a machine that has never run `playwright install`".
+   A reproduction that only works on the reporter's machine isn't one.
+6. **Watch out for** — the invariants a newcomer will trip over: the single
    Playwright worker thread, offline tests, request cadence, version lockstep.
+
+Both 4 and 5 are **required**, on every issue, including bug reports and
+investigations. Without criteria the issue can't be closed with confidence;
+without verification steps the fix gets its recipe reinvented at implementation
+time, and a reviewer has no way to confirm it independently.
 
 ## Say what you don't know
 
