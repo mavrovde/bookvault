@@ -216,10 +216,27 @@ def test_the_browse_button_click_reaches_its_handler(page, monkeypatch):
     assert chosen, "the click never reached browseForDownloadDir"
 
 
-def test_the_browse_button_is_not_inside_the_label(page):
+def test_the_browse_button_is_not_inside_the_label(page, monkeypatch):
     """The structural cause, pinned directly: a <label> forwards activation to
-    the control it labels, so any button nested in one is dead."""
+    the control it labels, so any button nested in one is dead.
+
+    is_available() has to be forced: on a headless Linux runner there is no
+    DISPLAY and no zenity, so the template correctly omits the button
+    entirely, and without this the test quietly only ran on macOS."""
+    monkeypatch.setattr(folder_dialog, "is_available", lambda: True)
+    page.reload()
+    page.wait_for_selector("#browse-dir")
     assert page.eval_on_selector("#browse-dir", "el => el.closest('label') === null")
+
+
+def test_the_button_is_absent_where_no_dialog_can_be_drawn(page, monkeypatch):
+    """The headless-Linux/Docker case, asserted rather than assumed: no button
+    offered where clicking it could only fail, and the typed field still
+    there as the way in."""
+    monkeypatch.setattr(folder_dialog, "is_available", lambda: False)
+    page.reload()
+    page.wait_for_selector("#download-dir")
+    assert page.query_selector("#browse-dir") is None
 
 
 def test_a_picked_folder_lands_in_the_field(page, monkeypatch, tmp_path):
