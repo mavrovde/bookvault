@@ -7,6 +7,7 @@ tool for the account owner, not a multi-user service.
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
@@ -31,6 +32,31 @@ from pydantic import BaseModel
 from . import activity, autosync, folder_dialog, prefs
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_logging() -> None:
+    """Make sure app-level logging is configured wherever this module is
+    imported from.
+
+    `run.main()` calls basicConfig, but uvicorn's `--reload` (the default for a
+    local run) serves from a **subprocess** that imports
+    `bookvault_web.app:app` directly and never executes `main()`. The root
+    logger there stays unconfigured, so Python's handler-of-last-resort prints
+    WARNING and above unformatted and silently drops every INFO line -- which
+    is how the folder picker, session restore and download progress all went
+    missing from the log in exactly the mode developers actually run.
+
+    No-op when handlers already exist, so it never fights `run.main()`, the
+    Docker entrypoint, or a test's caplog."""
+    if logging.getLogger().handlers:
+        return
+    logging.basicConfig(
+        level=os.environ.get("LITRES_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+    )
+
+
+_configure_logging()
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 

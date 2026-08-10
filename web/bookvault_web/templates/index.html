@@ -43,13 +43,16 @@
             <input type="text" id="download-dir" class="dir-input" spellcheck="false"
                    value="{{ download_dir or '' }}"
                    placeholder="{{ download_dir_effective or 'Save folder' }}">
-            {% if folder_picker %}
-              {# Opens the OS folder picker on the machine running the server; hidden
-                 where no dialog can be drawn (Docker, SSH) so the field is the way in. #}
-              <button type="button" id="browse-dir" class="btn-ghost btn-browse"
-                      title="Choose the save folder in a native dialog">Browse…</button>
-            {% endif %}
           </label>
+          {% if folder_picker %}
+            {# Opens the OS folder picker on the machine running the server; hidden
+               where no dialog can be drawn (Docker, SSH) so the field is the way in.
+               Deliberately OUTSIDE the <label>: a label forwards clicks to the
+               control it labels, so a button nested in one never fires its own
+               handler -- the click lands on the text input instead. #}
+            <button type="button" id="browse-dir" class="btn-browse"
+                    title="Choose the save folder in a native dialog">Browse…</button>
+          {% endif %}
           <span id="download-dir-error" class="dir-error" style="display:none"></span>
           <span id="download-dir-warning" class="dir-warning" style="display:none"></span>
         </div>

@@ -367,6 +367,25 @@ def test_browse_button_is_rendered_only_when_a_picker_exists(monkeypatch):
     assert 'id="download-dir"' in page  # the typed field is still there
 
 
+def test_the_browse_button_is_not_nested_inside_the_label(monkeypatch):
+    """It was, and the click did nothing.
+
+    A <label> forwards activation to the control it labels, so a <button>
+    nested inside one never runs its own handler -- the click lands on the text
+    input instead. Everything else (route, dialog, JS handler) was correct, so
+    this rendered as "the button does nothing"."""
+    monkeypatch.setattr(session, "current_client", lambda: object())
+    monkeypatch.setattr(folder_dialog, "is_available", lambda: True)
+    with TestClient(app) as client:
+        page = client.get("/").text
+
+    assert 'id="browse-dir"' in page
+    # The save-folder <label>...</label> must not contain the button.
+    start = page.index('<label class="format-control" title="Folder the finished zip')
+    label = page[start:page.index("</label>", start)]
+    assert "browse-dir" not in label, "the Browse button is nested in the label again"
+
+
 def test_browse_does_not_run_on_the_playwright_worker_thread(monkeypatch, tmp_path):
     """A dialog waits on a human. Parking the single Playwright worker behind
     it would stall any running download until the user clicked something."""
