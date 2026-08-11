@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [1.4.2] - A progress panel you can actually read
+
+All UI, all in the progress panel ([#54](https://github.com/mavrovde/bookvault/issues/54)).
+
+### Fixed
+- **Switching 📖 Books / 🎧 Audio now clears your selection.** It never did, so
+  books hidden by the filter stayed selected and were still downloaded: pick
+  *All*, select everything, switch to *Books*, start — and every audiobook came
+  too, with nothing on screen to show it. Re-selecting is one click; an
+  unnoticed 20 GB of audiobooks is not undoable.
+- **A new run no longer shows the previous run's report.** Starting a build,
+  a files download or a sync clears it; a refresh or the size-check that fires
+  on page load still doesn't, which is what that durability is for.
+- **The MB readout counts books it skipped.** It summed every selected book but
+  only advanced on a transfer, so re-running a finished library read
+  `~0.0 MB of ~600.0 MB` and completed instantly — drifting further behind the
+  more work was saved.
+
+### Added
+- **📖 / 🎧 counts in the progress panel**, filtering like the status pills.
+  Titles that were skipped or failed still count toward their type.
+- **A 📖 or 🎧 on every row**, so a count can be traced to the titles behind it.
+- **Search and sort for the report**, laid out like the library toolbar. Search
+  narrows whatever the pills left rather than replacing it, and rows with no
+  size (skipped, failed) sort last instead of pretending to be 0 MB.
+
+### Changed
+- **Rows appear one at a time rather than in a burst.** A book already on disk
+  needs no transfer, so hundreds resolved within milliseconds and landed in a
+  single poll — reading as a block that was already there. The list now builds
+  step by step in the browser; the download itself is never slowed.
+
 ## [1.4.1] - Audiobooks download again
 
 ### Fixed

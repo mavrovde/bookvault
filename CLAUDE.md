@@ -91,7 +91,7 @@ tests/                 pytest suite (offline) + test_smoke_live.py (opt-in -m li
 
 ## Releasing
 
-Versions are bumped **in lockstep** across all five `pyproject.toml` files (root + core/web/mcp/desktop); current release is **v1.4.1**. A pushed `v*` tag triggers `.github/workflows/docker-publish.yml`, which builds and publishes the multi-arch `ghcr.io/mavrovde/bookvault/{web,mcp}` images. `.github/workflows/lint-test-audit.yml` runs ruff + the pytest matrix (3.11–3.13) + a dependency audit on every push/PR.
+Versions are bumped **in lockstep** across all five `pyproject.toml` files (root + core/web/mcp/desktop); current release is **v1.4.2**. A pushed `v*` tag triggers `.github/workflows/docker-publish.yml`, which builds and publishes the multi-arch `ghcr.io/mavrovde/bookvault/{web,mcp}` images. `.github/workflows/lint-test-audit.yml` runs ruff + the pytest matrix (3.11–3.13) + a dependency audit on every push/PR.
 
 The three desktop installers each build in their own workflow on a matching runner and attach the artifact to the GitHub Release (all unsigned dev builds; Chromium is fetched on first run via `packaging/entry.py`):
 
