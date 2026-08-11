@@ -180,6 +180,12 @@ button:active { transform: scale(0.97); }
 /* Results-log status filter: a "✗ N failed" pill reads in the danger colour so
    failures stand out among hundreds of successes; active state deepens it. */
 .log-summary { margin: 0.1rem 0 0.6rem; flex-wrap: wrap; }
+/* The report's own toolbar, deliberately identical in shape to the library
+   one below: search on the left, pills + sort pushed right. Wraps on a narrow
+   window so the search box keeps a usable width instead of being squeezed. */
+.log-toolbar { margin-bottom: 0.6rem; flex-wrap: wrap; gap: 0.5rem; }
+.log-toolbar .search-wrap { flex: 1 1 12rem; min-width: 0; }
+.log-toolbar .log-summary { margin: 0; }
 .pill.pill-error { color: var(--danger); border-color: var(--danger-soft); }
 .pill.pill-error.active { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
 
@@ -304,6 +310,10 @@ button:active { transform: scale(0.97); }
 /* The status carries the meaning, so it leads the detail line and the size
    trails it. */
 #progress-log li .status-tag { color: var(--text-muted); font-weight: 500; }
+/* Book vs audiobook, beside the status icon. Deliberately unstyled beyond
+   spacing: the status icon is the coloured one, and a second coloured badge
+   would compete with it for the eye. */
+#progress-log li .kind { flex-shrink: 0; font-size: 0.85rem; line-height: 1.2; opacity: 0.85; }
 #progress-log li .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #progress-log li .detail { color: var(--text-faint); font-size: 0.8rem; flex-shrink: 0; max-width: 48%; text-align: right; }
 #progress-log li.error .detail, #progress-log li.skipped .detail { color: var(--text-muted); cursor: help; }

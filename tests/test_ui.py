@@ -442,3 +442,205 @@ def test_a_new_run_rewinds_the_reveal(page):
     _push_snapshot(page, state="idle", log=_burst(15))
     assert _rows(page) == 15
     assert _push_snapshot(page, state="downloading", log=[]) == 0
+
+
+# -- processed counts by type in the progress panel -------------------------
+# The status buckets say HOW each title was handled but not WHAT it was, so
+# "how much of my audio did this run actually deal with?" had no answer. The
+# type pills sit alongside the status ones and filter the same way.
+
+
+def _render_log(page, rows, *, state="downloading"):
+    """Render a report and wait for it to be fully on screen.
+
+    Rows are revealed one at a time while a run is in flight (see the
+    progressive-reveal tests above), so asserting immediately after a render
+    would race the reveal and see a partial list. Everything below is about
+    counting, filtering and sorting a *complete* report, so wait for it."""
+    pills = _render_log_now(page, rows, state=state)
+    if rows:
+        page.wait_for_function(
+            "n => document.querySelectorAll('#progress-log > *').length === n",
+            arg=len(rows), timeout=10_000,
+        )
+        pills = page.evaluate(
+            "() => Array.from(document.querySelectorAll('#log-summary .pill'))"
+            ".map(p => p.textContent.trim())"
+        )
+    return pills
+
+
+def _render_log_now(page, rows, *, state="downloading"):
+    return page.evaluate(
+        """([activityState, log]) => {
+            renderActivity({
+                state: activityState, result: null, message: '', current_title: null,
+                current_downloaded: null, current_total: null,
+                done: log.length, total: log.length, bytes_done: 0, bytes_total: null,
+                log: log, results: [], error: null, sizes: {},
+                zip_path: null, saved_path: null,
+            });
+            return Array.from(document.querySelectorAll('#log-summary .pill'))
+                        .map(p => p.textContent.trim());
+        }""",
+        [state, rows],
+    )
+
+
+def _row(title, status, is_audio):
+    return {"title": title, "ext": "epub", "size_mb": 1.0, "status": status, "is_audio": is_audio}
+
+
+def _shown_titles(page):
+    return page.evaluate(
+        "() => Array.from(document.querySelectorAll('#progress-log .title')).map(e => e.textContent)"
+    )
+
+
+def test_the_panel_counts_books_and_audio_separately(page):
+    pills = _render_log(page, [
+        _row("Novel", "done", False),
+        _row("Another novel", "exists", False),
+        _row("Audiobook", "done", True),
+    ])
+    assert any("📖 2 books" in p for p in pills), pills
+    assert any("🎧 1 audio" in p for p in pills), pills
+
+
+def test_a_type_with_nothing_processed_gets_no_pill(page):
+    pills = _render_log(page, [_row("Novel", "done", False)])
+    assert any("📖 1 books" in p for p in pills), pills
+    assert not any("audio" in p for p in pills), pills
+
+
+def test_failed_and_skipped_titles_still_count_toward_their_type(page):
+    """They were processed -- a title that turned out to be undownloadable is
+    still one of your audiobooks."""
+    pills = _render_log(page, [
+        _row("Broken", "error", True),
+        _row("Rights-limited", "skipped", True),
+    ])
+    assert any("🎧 2 audio" in p for p in pills), pills
+
+
+def test_clicking_a_type_pill_filters_the_list(page):
+    """The requirement: they behave like every other pill on the panel."""
+    _render_log(page, [
+        _row("Novel", "done", False),
+        _row("Audiobook", "done", True),
+    ])
+    page.click("#log-summary .pill[data-log-filter='audio']")
+    assert _shown_titles(page) == ["Audiobook"]
+
+    page.click("#log-summary .pill[data-log-filter='book']")
+    assert _shown_titles(page) == ["Novel"]
+
+    page.click("#log-summary .pill[data-log-filter='all']")
+    assert sorted(_shown_titles(page)) == ["Audiobook", "Novel"]
+
+
+def test_the_type_pills_sit_next_to_all_before_the_status_pills(page):
+    """Order is the request: the total, then WHAT was processed, then HOW each
+    one was handled. The type pills split the same total a second way, so they
+    belong beside All rather than trailing the status buckets."""
+    pills = _render_log(page, [
+        _row("Novel", "done", False),
+        _row("Audiobook", "exists", True),
+    ])
+    keys = page.evaluate(
+        "() => Array.from(document.querySelectorAll('#log-summary .pill'))"
+        ".map(p => p.dataset.logFilter)"
+    )
+    assert keys[:3] == ["all", "book", "audio"], keys
+    assert set(keys[3:]) <= {"done", "replaced", "exists", "reused", "skipped", "error"}, keys
+    assert any("📖" in p for p in pills) and any("🎧" in p for p in pills)
+
+
+def test_each_progress_row_shows_whether_it_is_a_book_or_audio(page):
+    """Rows carried only a status icon, so an audiobook was indistinguishable
+    from an ebook and the type counts could not be checked against the rows
+    that produced them."""
+    _render_log(page, [
+        _row("Novel", "done", False),
+        _row("Audiobook", "done", True),
+    ])
+    marks = page.evaluate(
+        "() => Array.from(document.querySelectorAll('#progress-log li'))"
+        ".map(li => [li.querySelector('.title').textContent,"
+        "            li.querySelector('.kind').textContent])"
+    )
+    assert marks == [["Novel", "📖"], ["Audiobook", "🎧"]], marks
+
+
+def test_a_row_from_before_the_field_existed_is_not_claimed_as_audio(page):
+    """Durable `results` can hold entries written by an older build. Missing
+    `is_audio` must read as a book, not silently become an audiobook."""
+    _render_log(page, [{"title": "Old entry", "ext": "epub", "size_mb": 1.0, "status": "done"}])
+    assert page.evaluate("() => document.querySelector('#progress-log li .kind').textContent") == "📖"
+
+
+# -- the report has its own search and sort ---------------------------------
+# A finished run over a large selection is hundreds of rows, so finding one
+# title needs the same tools the library list already has.
+
+
+def test_the_report_toolbar_is_hidden_until_there_is_a_report(page):
+    _render_log(page, [])
+    assert page.eval_on_selector("#log-toolbar", "el => el.style.display") == "none"
+    _render_log(page, [_row("Novel", "done", False)])
+    assert page.eval_on_selector("#log-toolbar", "el => el.style.display") != "none"
+
+
+def test_searching_the_report_narrows_the_rows(page):
+    _render_log(page, [
+        _row("War and Peace", "done", False),
+        _row("Anna Karenina", "done", False),
+        _row("Peaceful Audio", "done", True),
+    ])
+    page.fill("#log-search", "peace")
+    assert sorted(_shown_titles(page)) == ["Peaceful Audio", "War and Peace"]
+
+    page.fill("#log-search", "")
+    assert len(_shown_titles(page)) == 3
+
+
+def test_search_and_the_pills_compose(page):
+    """"The audio ones, among the matches" -- the two narrow together rather
+    than one overriding the other."""
+    _render_log(page, [
+        _row("Peace Book", "done", False),
+        _row("Peace Audio", "done", True),
+        _row("Other Audio", "done", True),
+    ])
+    page.fill("#log-search", "peace")
+    page.click("#log-summary .pill[data-log-filter='audio']")
+    assert _shown_titles(page) == ["Peace Audio"]
+
+
+def test_sorting_the_report_by_title_and_size(page):
+    rows = [
+        {**_row("Beta", "done", False), "size_mb": 5.0},
+        {**_row("Alpha", "done", False), "size_mb": 9.0},
+    ]
+    _render_log(page, rows)
+    assert _shown_titles(page) == ["Beta", "Alpha"], "unsorted keeps processing order"
+
+    page.select_option("#log-sort", "title-asc")
+    assert _shown_titles(page) == ["Alpha", "Beta"]
+
+    page.select_option("#log-sort", "size-desc")
+    assert _shown_titles(page) == ["Alpha", "Beta"]
+
+    page.select_option("#log-sort", "size-asc")
+    assert _shown_titles(page) == ["Beta", "Alpha"]
+
+
+def test_rows_without_a_size_sort_last_rather_than_as_zero(page):
+    """A skipped or failed row has no size to compare; treating it as 0 MB
+    would park every failure at the top of a smallest-first sort."""
+    _render_log(page, [
+        {"title": "No size", "status": "skipped", "reason": "n/a", "is_audio": False},
+        {**_row("Small", "done", False), "size_mb": 1.0},
+    ])
+    page.select_option("#log-sort", "size-asc")
+    assert _shown_titles(page) == ["Small", "No size"]

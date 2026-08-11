@@ -81,7 +81,26 @@
         <p id="progress-count" class="muted" style="font-size:0.85rem;margin:0"></p>
         <p id="progress-current" class="muted">Nothing running right now -- select some books and hit Prepare zip, or use Refresh to check for new purchases.</p>
         <p id="progress-error" style="color:var(--danger)"></p>
-        <div class="filter-pills log-summary" id="log-summary" style="display:none"></div>
+        {# Same shape as the library toolbar below: search on the left, the
+           filter pills and sort on the right. A finished run over a large
+           selection is a report of hundreds of rows, so it needs the same
+           tools for finding one title as the library list does. Hidden until
+           there is something to search. #}
+        <div class="card-row log-toolbar" id="log-toolbar" style="display:none">
+          <div class="search-wrap">
+            <input type="search" id="log-search" placeholder="Filter the report by title…">
+          </div>
+          <div class="toolbar-right">
+            <div class="filter-pills log-summary" id="log-summary"></div>
+            <select id="log-sort">
+              <option value="none">Order processed</option>
+              <option value="title-asc">Title (A–Z)</option>
+              <option value="title-desc">Title (Z–A)</option>
+              <option value="size-desc">Size (largest first)</option>
+              <option value="size-asc">Size (smallest first)</option>
+            </select>
+          </div>
+        </div>
         <ul id="progress-log"></ul>
         <div class="progress-actions">
           {# The archive is already saved to the configured folder by the time
