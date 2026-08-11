@@ -491,3 +491,70 @@ def test_a_row_from_before_the_field_existed_is_not_claimed_as_audio(page):
     `is_audio` must read as a book, not silently become an audiobook."""
     _render_log(page, [{"title": "Old entry", "ext": "epub", "size_mb": 1.0, "status": "done"}])
     assert page.evaluate("() => document.querySelector('#progress-log li .kind').textContent") == "📖"
+
+
+# -- the report has its own search and sort ---------------------------------
+# A finished run over a large selection is hundreds of rows, so finding one
+# title needs the same tools the library list already has.
+
+
+def test_the_report_toolbar_is_hidden_until_there_is_a_report(page):
+    _render_log(page, [])
+    assert page.eval_on_selector("#log-toolbar", "el => el.style.display") == "none"
+    _render_log(page, [_row("Novel", "done", False)])
+    assert page.eval_on_selector("#log-toolbar", "el => el.style.display") != "none"
+
+
+def test_searching_the_report_narrows_the_rows(page):
+    _render_log(page, [
+        _row("War and Peace", "done", False),
+        _row("Anna Karenina", "done", False),
+        _row("Peaceful Audio", "done", True),
+    ])
+    page.fill("#log-search", "peace")
+    assert sorted(_shown_titles(page)) == ["Peaceful Audio", "War and Peace"]
+
+    page.fill("#log-search", "")
+    assert len(_shown_titles(page)) == 3
+
+
+def test_search_and_the_pills_compose(page):
+    """"The audio ones, among the matches" -- the two narrow together rather
+    than one overriding the other."""
+    _render_log(page, [
+        _row("Peace Book", "done", False),
+        _row("Peace Audio", "done", True),
+        _row("Other Audio", "done", True),
+    ])
+    page.fill("#log-search", "peace")
+    page.click("#log-summary .pill[data-log-filter='audio']")
+    assert _shown_titles(page) == ["Peace Audio"]
+
+
+def test_sorting_the_report_by_title_and_size(page):
+    rows = [
+        {**_row("Beta", "done", False), "size_mb": 5.0},
+        {**_row("Alpha", "done", False), "size_mb": 9.0},
+    ]
+    _render_log(page, rows)
+    assert _shown_titles(page) == ["Beta", "Alpha"], "unsorted keeps processing order"
+
+    page.select_option("#log-sort", "title-asc")
+    assert _shown_titles(page) == ["Alpha", "Beta"]
+
+    page.select_option("#log-sort", "size-desc")
+    assert _shown_titles(page) == ["Alpha", "Beta"]
+
+    page.select_option("#log-sort", "size-asc")
+    assert _shown_titles(page) == ["Beta", "Alpha"]
+
+
+def test_rows_without_a_size_sort_last_rather_than_as_zero(page):
+    """A skipped or failed row has no size to compare; treating it as 0 MB
+    would park every failure at the top of a smallest-first sort."""
+    _render_log(page, [
+        {"title": "No size", "status": "skipped", "reason": "n/a", "is_audio": False},
+        {**_row("Small", "done", False), "size_mb": 1.0},
+    ])
+    page.select_option("#log-sort", "size-asc")
+    assert _shown_titles(page) == ["Small", "No size"]

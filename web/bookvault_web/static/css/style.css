@@ -180,6 +180,12 @@ button:active { transform: scale(0.97); }
 /* Results-log status filter: a "✗ N failed" pill reads in the danger colour so
    failures stand out among hundreds of successes; active state deepens it. */
 .log-summary { margin: 0.1rem 0 0.6rem; flex-wrap: wrap; }
+/* The report's own toolbar, deliberately identical in shape to the library
+   one below: search on the left, pills + sort pushed right. Wraps on a narrow
+   window so the search box keeps a usable width instead of being squeezed. */
+.log-toolbar { margin-bottom: 0.6rem; flex-wrap: wrap; gap: 0.5rem; }
+.log-toolbar .search-wrap { flex: 1 1 12rem; min-width: 0; }
+.log-toolbar .log-summary { margin: 0; }
 .pill.pill-error { color: var(--danger); border-color: var(--danger-soft); }
 .pill.pill-error.active { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
 

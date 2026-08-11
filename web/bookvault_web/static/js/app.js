@@ -275,6 +275,14 @@ const STATUS_LABELS = {
 // Persists across polls so the filter sticks while a build streams in. The
 // last snapshot is kept so a filter-pill click can re-render without a poll.
 let logFilter = 'all';
+// Free-text search and sort over the report, mirroring the library toolbar
+// below it. A finished run over a large selection is hundreds of rows, so
+// finding one title needs the same tools the library list already has.
+let logSearch = '';
+let logSort = 'none';
+// Locale-aware so Cyrillic titles sort the way a reader expects rather than by
+// code point -- the same comparison the library list uses.
+const collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
 let lastSnapshot = null;
 
 function renderActivity(s) {
@@ -370,10 +378,15 @@ function renderActivity(s) {
   // actually occurred are shown (plus "All"); a failed/skipped pill only
   // appears when there's something to see.
   const summaryEl = document.getElementById('log-summary');
+  // The whole toolbar (search + pills + sort) rides on there being a report to
+  // search at all, so an idle app with nothing run yet shows none of it.
+  const toolbarEl = document.getElementById('log-toolbar');
   if (log.length === 0) {
+    toolbarEl.style.display = 'none';
     summaryEl.style.display = 'none';
     if (logFilter !== 'all') logFilter = 'all';
   } else {
+    toolbarEl.style.display = '';
     // Ordered the way the row reads: the total, then WHAT was processed
     // (books / audio), then HOW each one was handled. The type pills sit next
     // to "All" because they split the same total a second way, whereas the
@@ -401,11 +414,33 @@ function renderActivity(s) {
   const logEl = document.getElementById('progress-log');
   // One active filter at a time, exactly like the status pills: a key is
   // either a status ("done", "exists", …) or a type ("book"/"audio").
-  const shown = logFilter === 'all'
+  let shown = logFilter === 'all'
     ? log
     : (logFilter === 'book' || logFilter === 'audio')
       ? log.filter(item => (item.is_audio ? 'audio' : 'book') === logFilter)
       : log.filter(item => item.status === logFilter);
+  // Search narrows whatever the pill left, so the two compose rather than
+  // overriding each other -- "the failures, among the Tolstoy" is a question
+  // worth being able to ask of a 239-row report.
+  if (logSearch) {
+    const needle = logSearch.toLowerCase();
+    shown = shown.filter(item => (item.title || '').toLowerCase().includes(needle));
+  }
+  if (logSort !== 'none') {
+    // Copy first: `log` is the snapshot's own array, and sorting in place would
+    // reorder the data every later render reads from.
+    shown = shown.slice().sort((a, b) => {
+      if (logSort === 'title-asc') return collator.compare(a.title || '', b.title || '');
+      if (logSort === 'title-desc') return collator.compare(b.title || '', a.title || '');
+      // A row with no size (skipped, failed) has nothing to compare, so it
+      // sorts last either way rather than pretending to be 0 MB.
+      const av = a.size_mb, bv = b.size_mb;
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      return logSort === 'size-desc' ? bv - av : av - bv;
+    });
+  }
   logEl.innerHTML = shown.map(item => {
     if (item.status === 'skipped') {
       return `<li class="skipped"><span class="icon">!</span><span class="title">${escapeHtml(item.title)}</span><span class="detail">${escapeHtml(item.reason || 'Not available')}</span></li>`;
@@ -428,7 +463,12 @@ function renderActivity(s) {
   }).join('');
   // Auto-scroll to follow the newest row only while unfiltered and streaming;
   // when filtered (i.e. inspecting failures) leave the scroll where the user is.
-  if (logFilter === 'all') logEl.scrollTop = logEl.scrollHeight;
+  // Follow the newest row only while looking at the unfiltered, unsearched,
+  // still-streaming report. Someone who has filtered, searched or sorted is
+  // reading something specific, and yanking the scroll would fight them.
+  if (logFilter === 'all' && !logSearch && logSort === 'none') {
+    logEl.scrollTop = logEl.scrollHeight;
+  }
 
   // A built, non-empty zip is exposed via `zip_path` and kept across later
   // size-checks/refreshes (see activity.py), so the download link survives a
@@ -575,6 +615,16 @@ document.getElementById('log-summary').addEventListener('click', (e) => {
   const btn = e.target.closest('[data-log-filter]');
   if (!btn) return;
   logFilter = btn.dataset.logFilter;
+  if (lastSnapshot) renderActivity(lastSnapshot);
+});
+
+document.getElementById('log-search').addEventListener('input', (e) => {
+  logSearch = e.target.value.trim();
+  if (lastSnapshot) renderActivity(lastSnapshot);
+});
+
+document.getElementById('log-sort').addEventListener('change', (e) => {
+  logSort = e.target.value;
   if (lastSnapshot) renderActivity(lastSnapshot);
 });
 
