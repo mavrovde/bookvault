@@ -230,19 +230,24 @@ def _run_prepare(
                     if files is None:
                         files = client.get_files(art_id, should_cancel=state._cancel_event.is_set)
                         cache.set_files(art_id, files)
+                    # Resolved before anything can fail, so *every* log entry
+                    # carries it: the progress panel counts books and audiobooks
+                    # separately, and an undownloadable title still belongs to
+                    # one of those totals.
+                    is_audio = art.get("is_audio")
+                    if is_audio is None:  # raw art dict vs cached web-shape book
+                        is_audio = art.get("art_type") == 1
                     best = client.pick_best_file(files, preferred_ext, preferred_file_type)
                     if best is None:
                         reason = "No downloadable file for this title on litres.ru (rights-limited or preview-only)."
                         logger.info("Skipping %r (art %s): %s", title, art_id, reason)
                         with state._lock:
-                            state._state["log"].append({"title": title, "status": "skipped", "reason": reason})
+                            state._state["log"].append({"title": title, "status": "skipped", "reason": reason,
+                                 "is_audio": is_audio})
                         continue
 
                     ext = client.file_extension(best)
                     size_mb = round(best.get("size", 0) / 1e6, 1)
-                    is_audio = art.get("is_audio")
-                    if is_audio is None:  # raw art dict vs cached web-shape book
-                        is_audio = art.get("art_type") == 1
                     safe_title = mirror._safe_book_name(title, art_id, used_names)
 
                     # Already downloaded as a loose file? Pack that copy
@@ -272,7 +277,8 @@ def _run_prepare(
                         with state._lock:
                             state._state["done"] += 1
                             state._state["log"].append(
-                                {"title": title, "ext": ext, "size_mb": size_mb, "status": "reused"}
+                                {"title": title, "ext": ext, "size_mb": size_mb, "status": "reused",
+                                 "is_audio": is_audio}
                             )
                         state._update(bytes_done=completed_bytes)
                         continue
@@ -331,6 +337,7 @@ def _run_prepare(
                             {
                                 "title": title,
                                 "status": "error",
+                            "is_audio": is_audio,
                                 "error": state._friendly_error(exc),
                                 "detail": str(exc)[:300],
                             }
@@ -340,7 +347,8 @@ def _run_prepare(
                 with state._lock:
                     state._state["done"] += 1
                     state._state["log"].append(
-                        {"title": title, "ext": ext, "size_mb": size_mb, "status": "done"}
+                        {"title": title, "ext": ext, "size_mb": size_mb, "status": "done",
+                         "is_audio": is_audio}
                     )
         with state._lock:
             done = state._state["done"]
