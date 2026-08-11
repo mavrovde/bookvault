@@ -264,6 +264,42 @@ const STATUS_LABELS = {
 let logFilter = 'all';
 let lastSnapshot = null;
 
+// How many log rows are currently on screen. A book already on disk is decided
+// without any transfer, so a run over a mostly-saved library resolves hundreds
+// of them within milliseconds and every row lands in one poll -- which reads as
+// a block that was already there rather than as the run working through them.
+//
+// The backend is deliberately untouched: pacing the run itself would make the
+// user wait for nothing. Instead the rows queue up here and are revealed one at
+// a time, so the list visibly builds step by step while the download proceeds at
+// full speed. Purely presentational -- `done`, the progress bar and the byte
+// readout all still come straight from the server and never lag.
+let revealedRows = 0;
+let revealTimer = null;
+const REVEAL_INTERVAL_MS = 50;
+
+function stopRevealing() {
+  if (revealTimer !== null) { clearInterval(revealTimer); revealTimer = null; }
+}
+
+// Reveal one more row per tick until the screen has caught up with the data.
+function scheduleReveal(total) {
+  if (revealTimer !== null || revealedRows >= total) return;
+  revealTimer = setInterval(() => {
+    if (!lastSnapshot) { stopRevealing(); return; }
+    revealedRows += 1;
+    if (revealedRows >= currentLogFor(lastSnapshot).length) stopRevealing();
+    renderActivity(lastSnapshot);
+  }, REVEAL_INTERVAL_MS);
+}
+
+// Prefer the live log while a build streams in; once idle (a size-check on
+// reload empties `log`), fall back to `results` -- the durable copy of the last
+// build -- so the failed/skipped rows survive for later analysis.
+function currentLogFor(s) {
+  return (s.log && s.log.length) ? s.log : (s.results || []);
+}
+
 function renderActivity(s) {
   lastSnapshot = s;
   const badge = document.getElementById('progress-badge');
@@ -341,10 +377,24 @@ function renderActivity(s) {
 
   // Per-book log, with a status summary + filter so a couple of failures don't
   // get lost among hundreds of successes (the whole point of the results view).
-  // Prefer the live log while a build streams in; once idle (a size-check on
-  // reload empties `log`), fall back to `results` -- the durable copy of the
-  // last build -- so the failed/skipped rows survive for later analysis.
-  const log = (s.log && s.log.length) ? s.log : (s.results || []);
+  const fullLog = currentLogFor(s);
+
+  // A shrinking log means a new run just started (`_begin` empties it), so drop
+  // back and build up again from nothing rather than leaving the previous run's
+  // rows revealed.
+  if (revealedRows > fullLog.length) { stopRevealing(); revealedRows = 0; }
+
+  if (s.state === 'idle') {
+    // A finished run, or a reload showing the durable `results`: show it whole.
+    // Drip-feeding a report that is already complete would just make the user
+    // wait to read something that is entirely available.
+    stopRevealing();
+    revealedRows = fullLog.length;
+  } else if (revealedRows < fullLog.length) {
+    scheduleReveal(fullLog.length);
+  }
+
+  const log = fullLog.slice(0, revealedRows);
   const counts = { done: 0, skipped: 0, error: 0 };
   for (const item of log) counts[item.status] = (counts[item.status] || 0) + 1;
 
