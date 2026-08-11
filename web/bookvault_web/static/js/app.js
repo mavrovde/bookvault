@@ -361,19 +361,22 @@ function renderActivity(s) {
     summaryEl.style.display = 'none';
     if (logFilter !== 'all') logFilter = 'all';
   } else {
+    // Ordered the way the row reads: the total, then WHAT was processed
+    // (books / audio), then HOW each one was handled. The type pills sit next
+    // to "All" because they split the same total a second way, whereas the
+    // status pills answer a different question entirely.
     const pills = [['all', `All ${log.length}`, true]];
+    // Same style as the library's own Books/Audio filter, and filtering the
+    // same way -- "how much of my audio did this run deal with?" is a question
+    // the status buckets alone can't answer.
+    if (typeCounts.book) pills.push(['book', `📖 ${typeCounts.book} books`, true]);
+    if (typeCounts.audio) pills.push(['audio', `🎧 ${typeCounts.audio} audio`, true]);
     if (counts.done) pills.push(['done', `✓ ${counts.done} downloaded`, true]);
     if (counts.replaced) pills.push(['replaced', `⟳ ${counts.replaced} re-downloaded`, true]);
     if (counts.exists) pills.push(['exists', `= ${counts.exists} already saved`, true]);
     if (counts.reused) pills.push(['reused', `↺ ${counts.reused} from your folder`, true]);
     if (counts.skipped) pills.push(['skipped', `! ${counts.skipped} not available`, true]);
     if (counts.error) pills.push(['error', `✗ ${counts.error} failed`, true]);
-    // Processed counts by type, in the same style as the library's own
-    // Books/Audio pills and filtering the same way as the status pills beside
-    // them. "How much of my audio did this run actually deal with?" is a
-    // question the status buckets alone can't answer.
-    if (typeCounts.book) pills.push(['book', `📖 ${typeCounts.book} books`, true]);
-    if (typeCounts.audio) pills.push(['audio', `🎧 ${typeCounts.audio} audio`, true]);
     // If the active filter's bucket emptied out, fall back to All.
     if (logFilter !== 'all' && !counts[logFilter] && !typeCounts[logFilter]) logFilter = 'all';
     summaryEl.style.display = '';

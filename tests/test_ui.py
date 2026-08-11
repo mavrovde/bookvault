@@ -451,3 +451,20 @@ def test_clicking_a_type_pill_filters_the_list(page):
 
     page.click("#log-summary .pill[data-log-filter='all']")
     assert sorted(_shown_titles(page)) == ["Audiobook", "Novel"]
+
+
+def test_the_type_pills_sit_next_to_all_before_the_status_pills(page):
+    """Order is the request: the total, then WHAT was processed, then HOW each
+    one was handled. The type pills split the same total a second way, so they
+    belong beside All rather than trailing the status buckets."""
+    pills = _render_log(page, [
+        _row("Novel", "done", False),
+        _row("Audiobook", "exists", True),
+    ])
+    keys = page.evaluate(
+        "() => Array.from(document.querySelectorAll('#log-summary .pill'))"
+        ".map(p => p.dataset.logFilter)"
+    )
+    assert keys[:3] == ["all", "book", "audio"], keys
+    assert set(keys[3:]) <= {"done", "replaced", "exists", "reused", "skipped", "error"}, keys
+    assert any("📖" in p for p in pills) and any("🎧" in p for p in pills)
