@@ -1699,6 +1699,165 @@ def test_the_fake_does_not_deliver_the_size_the_listing_declares(tmp_path):
     assert read_mirror_index(tmp_path)["1"]["size"] == delivered
 
 
+# -- a new run supersedes the last one's results ----------------------------
+# `results` is durable so the size-check that fires on every page load can't
+# wipe a finished build's view. But a run that produces its OWN results must
+# clear it as it starts, or the previous build's per-book list sits under a
+# fresh progress bar looking like it belongs to the run in progress.
+
+
+def _seed_finished_results():
+    with activity.state._lock:
+        activity.state._state["results"] = [{"title": "From last time", "status": "done"}]
+
+
+def test_starting_a_file_download_clears_the_previous_results(tmp_path):
+    _seed_finished_results()
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+
+    assert activity.download_files(client, dest_root=tmp_path) is True
+    # Observed immediately, not after the run: the stale view is what the user
+    # would otherwise stare at for the whole duration.
+    assert activity.snapshot()["results"] == []
+    wait_until_idle()
+
+
+def test_starting_a_zip_build_clears_the_previous_results():
+    _seed_finished_results()
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+
+    assert activity.prepare(client) is True
+    assert activity.snapshot()["results"] == []
+    wait_until_idle()
+
+
+def test_a_size_check_does_NOT_clear_the_results(monkeypatch):
+    """The reason `results` is durable at all -- this must keep working."""
+    monkeypatch.setattr(cache, "get_library", list)
+    _seed_finished_results()
+    client = _make_client()
+
+    activity.check_sizes(client, live=False)
+    wait_until_idle()
+    assert [e["title"] for e in activity.snapshot()["results"]] == ["From last time"]
+
+
+def test_a_refresh_does_NOT_clear_the_results():
+    _seed_finished_results()
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+
+    activity.refresh(client)
+    wait_until_idle()
+    assert [e["title"] for e in activity.snapshot()["results"]] == ["From last time"]
+
+
+def test_a_new_zip_build_drops_the_previous_download_link():
+    """The old archive may have lived in a workdir this build is about to
+    delete, so its link would dangle."""
+    with activity.state._lock:
+        activity.state._state.update(zip_path="/tmp/old.zip", saved_path="/tmp/old.zip")
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+
+    assert activity.prepare(client) is True
+    snap = activity.snapshot()
+    assert snap["zip_path"] is None and snap["saved_path"] is None
+    wait_until_idle()
+
+
+def test_a_file_download_leaves_an_earlier_zip_reachable(tmp_path):
+    """Different artefact: the zip is still on disk and still the user's, so
+    starting a files run must not take the download link away."""
+    with activity.state._lock:
+        activity.state._state["zip_path"] = "/tmp/keep.zip"
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+
+    activity.download_files(client, dest_root=tmp_path)
+    assert activity.snapshot()["zip_path"] == "/tmp/keep.zip"
+    wait_until_idle()
+
+
+# -- whole-build byte progress ---------------------------------------------
+# `bytes_total` is the sum of every SELECTED book, on disk or not. So any book
+# the run completes without transferring -- skipped in the mirror, reused by
+# the zip -- must still be credited, or it raises the denominator and never
+# the numerator. Re-running a finished library reported "~0.0 MB of ~600.0 MB"
+# while completing instantly: the readout drifted further behind the more work
+# was saved, i.e. worst exactly when the feature worked best.
+
+
+def test_a_book_already_on_disk_counts_toward_the_byte_progress(tmp_path):
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    (tmp_path / "Book One.epub").write_bytes(b"x" * 999_936)
+    record_in_mirror_index(tmp_path, 1, "Book One.epub", 999_936)
+
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    assert [e["status"] for e in result["log"]] == ["exists"]
+    assert client.download_calls == []
+    # Credited at the LISTED size -- what the denominator counted for it, not
+    # its (different) size on disk, or the bar could never reach its own total.
+    assert result["bytes_done"] == TEXT_FILES[0]["size"]
+
+
+def test_byte_progress_reaches_the_total_on_a_fully_cached_library(tmp_path, monkeypatch):
+    """The reported case: everything already saved. The bar must read ~full,
+    not zero."""
+    books = [{"id": 1, "title": "One", "is_audio": False},
+             {"id": 2, "title": "Two", "is_audio": False}]
+    monkeypatch.setattr(cache, "get_library", lambda: books)
+    monkeypatch.setattr(cache, "get_files", lambda art_id: TEXT_FILES)
+    client = _make_client(_book(1, "One", TEXT_FILES), _book(2, "Two", TEXT_FILES))
+    for n, name in ((1, "One"), (2, "Two")):
+        (tmp_path / f"{name}.epub").write_bytes(b"x" * 999_936)
+        record_in_mirror_index(tmp_path, n, f"{name}.epub", 999_936)
+
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    assert [e["status"] for e in result["log"]] == ["exists", "exists"]
+    assert result["bytes_total"] == 2_000_000
+    assert result["bytes_done"] == result["bytes_total"], "a no-op run must read 100%"
+
+
+def test_byte_progress_counts_downloaded_and_skipped_books_together(tmp_path, monkeypatch):
+    """Mixed run: one book on disk, one fetched. Both contribute, so the
+    readout lands close to the total rather than only counting the transfer."""
+    books = [{"id": 1, "title": "Have", "is_audio": False},
+             {"id": 2, "title": "Need", "is_audio": False}]
+    monkeypatch.setattr(cache, "get_library", lambda: books)
+    monkeypatch.setattr(cache, "get_files", lambda art_id: TEXT_FILES)
+    client = _make_client(_book(1, "Have", TEXT_FILES), _book(2, "Need", TEXT_FILES))
+    (tmp_path / "Have.epub").write_bytes(b"x" * 999_936)
+    record_in_mirror_index(tmp_path, 1, "Have.epub", 999_936)
+
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    assert sorted(e["status"] for e in result["log"]) == ["done", "exists"]
+    assert client.download_calls == [2], "only the missing book is fetched"
+    # The skipped book alone would have been ignored before this; now the
+    # figure covers both and sits within a percent of the estimated total.
+    assert result["bytes_done"] > TEXT_FILES[0]["size"]
+    assert abs(result["bytes_done"] - result["bytes_total"]) < result["bytes_total"] * 0.01
+
+
+def test_a_zip_build_credits_bytes_it_reused_instead_of_downloading(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "get_library", lambda: [{"id": 1, "title": "Book One", "is_audio": False}])
+    monkeypatch.setattr(cache, "get_files", lambda art_id: TEXT_FILES)
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    (mirror / "Book One.epub").write_bytes(b"y" * 999_936)
+
+    activity.prepare(client, mirror_root=mirror)
+    result = wait_until_idle()
+
+    assert [e["status"] for e in result["log"]] == ["reused"]
+    assert client.download_calls == []
+    assert result["bytes_done"] == TEXT_FILES[0]["size"], "reused bytes still count"
+
+
 # -- reusing already-downloaded files when building a zip -------------------
 # Requests to litres.ru are the scarce resource, so a book already on disk
 # should be packed, not fetched. The risk is packing a BROKEN local file.

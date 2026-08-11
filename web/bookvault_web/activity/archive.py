@@ -51,12 +51,12 @@ def prepare(
     total = len(art_ids) if art_ids is not None else None
     if not state._begin(PREPARING, total=total):
         return False
-    # A new build supersedes the previous results view AND the previous zip
-    # download link (_begin leaves both untouched so they survive size-checks,
-    # so clear them explicitly here for the fresh build).
+    # `_begin` has already cleared the previous results and the old download
+    # link (see PRODUCES_RESULTS there). What remains is this build's own
+    # bookkeeping: take the previous workdir so it can be deleted below.
     with state._lock:
         previous_workdir = state._state["workdir"]
-        state._state.update(results=[], zip_path=None, saved_path=None, workdir=None)
+        state._state["workdir"] = None
     # Each build gets its own mkdtemp workdir; once superseded, whatever is
     # left in the previous one (potentially a many-GB zip) is unreachable --
     # delete it rather than leaking it until the OS cleans the temp dir.
@@ -262,11 +262,19 @@ def _run_prepare(
                         else:
                             _add_to_zip(zf, local, safe_title, is_audio)
                         logger.info("Packed %r (art %s) from the local folder", title, art_id)
+                        # Reused bytes are still bytes the build accounted for.
+                        # `bytes_total` counted this book, so not crediting it
+                        # here would make the readout drift further behind the
+                        # more the mirror saves us -- worst in exactly the case
+                        # the reuse is designed for. Credited at its listed
+                        # size, matching how the denominator counted it.
+                        completed_bytes += best.get("size") or 0
                         with state._lock:
                             state._state["done"] += 1
                             state._state["log"].append(
                                 {"title": title, "ext": ext, "size_mb": size_mb, "status": "reused"}
                             )
+                        state._update(bytes_done=completed_bytes)
                         continue
 
                     dest = workdir / f"{safe_title}.{ext}"

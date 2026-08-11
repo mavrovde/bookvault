@@ -55,6 +55,12 @@ SYNCING = "syncing"
 
 STOPPING = "stopping"
 
+# Activities that write their own per-book results, and therefore supersede the
+# previous run's the moment they start. REFRESHING and CHECKING are absent on
+# purpose: they are read-only, and the size-check that fires on every page load
+# must never wipe the results a finished build left behind.
+PRODUCES_RESULTS = (PREPARING, DOWNLOADING, SYNCING)
+
 _lock = threading.Lock()
 
 _cancel_event = threading.Event()
@@ -137,10 +143,28 @@ def _begin(state: str, *, total=None, message="") -> bool:
             log=[],
             error=None,
         )
+        if state in PRODUCES_RESULTS:
+            _state["results"] = []
+        if state == PREPARING:
+            # The archive itself is being replaced, and the previous one may
+            # have lived in a temp workdir that prepare() is about to delete --
+            # so its link would dangle. (A files download leaves an earlier
+            # zip alone: it is a different artefact, still on disk, and still
+            # the user's.)
+            _state["zip_path"] = None
+            _state["saved_path"] = None
     # Note: `zip_path`, `saved_path`, `results` and `sizes` are intentionally
-    # NOT reset here, so a finished build's download link, "Saved to ..." line
-    # and results view survive the size-check that fires on the next page load.
-    # Only a new prepare() replaces them.
+    # NOT reset for a *read-only* activity, so a finished build's download
+    # link, "Saved to ..." line and results view survive the size-check that
+    # fires on the next page load.
+    #
+    # A run that produces its own results is the opposite case: the moment it
+    # starts, the previous run's per-book list describes work that has been
+    # superseded, and leaving it on screen reads as though it belongs to the
+    # run now in progress. `prepare()` cleared it itself; `download_files()`
+    # and `start_sync()` did not, so starting either left the last build's
+    # results sitting under a fresh progress bar. Deciding it here means the
+    # next activity added cannot forget to.
     #
     # `sizes` is on this side of the line too: it is *derived from the 7-day
     # file-listing cache*, not progress for one activity. Wiping it meant that

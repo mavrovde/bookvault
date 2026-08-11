@@ -193,11 +193,26 @@ def _run_download_files(
                 # point of a mirror is that running it twice is cheap.
                 if _is_on_disk(dest_root, mirror_index, art_id, safe_title, ext, is_audio):
                     logger.info("Already on disk, skipping %r (art %s)", title, art_id)
+                    # Count it as progress. `bytes_total` is the sum of every
+                    # *selected* book, on disk or not, so a book skipped here
+                    # would otherwise raise the denominator and never the
+                    # numerator: re-running a finished library reported
+                    # "~0.0 MB of ~600.0 MB" while completing instantly. The
+                    # question the readout answers is "how far through the
+                    # selection am I", and an already-saved book is done.
+                    #
+                    # Credited at its *listed* size, which is what the
+                    # denominator counted for it -- not its size on disk, which
+                    # is a different number entirely (see
+                    # library_fs.record_in_mirror_index) and would leave the bar
+                    # unable to reach its own total.
+                    completed_bytes += expected or 0
                     with state._lock:
                         state._state["done"] += 1
                         state._state["log"].append(
                             {"title": title, "ext": ext, "size_mb": size_mb, "status": "exists"}
                         )
+                    state._update(bytes_done=completed_bytes)
                     continue
 
                 # Something is there but doesn't match (a half-finished
