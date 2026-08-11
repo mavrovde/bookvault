@@ -2127,3 +2127,13 @@ def test_stop_is_answerable_while_a_download_is_running(tmp_path):
     assert activity.cancel() is True
     release.set()
     assert wait_until_idle(timeout=10)["result"] == "cancelled"
+
+
+def test_safe_book_name_never_yields_a_path_traversal():
+    """A book titled "." or ".." (from litres' own listing) must not become a
+    traversal component -- it falls back to the id."""
+    assert activity.mirror._safe_book_name("..", 42, set()) == "42"
+    assert activity.mirror._safe_book_name(".", 42, set()) == "42"
+    assert activity.mirror._safe_book_name(". .", 42, set()) == "42"
+    # A real title with a dot is kept.
+    assert activity.mirror._safe_book_name("Vol. 1", 42, set()) == "Vol. 1"

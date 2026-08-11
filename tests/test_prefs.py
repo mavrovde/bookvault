@@ -472,3 +472,30 @@ def test_an_absolute_state_file_warns_about_nothing(monkeypatch, tmp_path, caplo
     with caplog.at_level("WARNING"):
         prefs.warn_if_state_is_cwd_relative()
     assert caplog.text == ""
+
+
+def test_a_prefix_collision_is_not_treated_as_inside_a_root(tmp_path, monkeypatch):
+    """"/home/bob-evil" must not pass as inside "/home/bob": the confinement
+    checks against `root + os.sep`, not a bare string prefix."""
+    root = tmp_path / "books"
+    root.mkdir()
+    sibling = tmp_path / "books-evil"
+    sibling.mkdir()
+    monkeypatch.setattr(prefs, "allowed_download_roots", lambda: [root.resolve()])
+    with pytest.raises(prefs.InvalidDownloadDir) as caught:
+        prefs.update(download_dir=str(sibling))
+    assert caught.value.code == "outside_allowed_roots"
+
+
+def test_a_stored_folder_outside_the_roots_is_re_confined_on_read(tmp_path, monkeypatch):
+    """Defense in depth: a value that bypassed the guard (a hand-edited or
+    legacy state file) must not be written to or stat'd on read. resolve_
+    download_dir falls back to None; the warning flags it."""
+    monkeypatch.setattr(prefs, "allowed_download_roots", lambda: [tmp_path.resolve()])
+    monkeypatch.setattr(prefs, "DEFAULT_DOWNLOAD_DIR", None)
+    # Simulate a tampered state file: put a forbidden path straight into state.
+    with prefs._lock:
+        prefs._load()["download_dir"] = "/etc"
+    assert prefs.resolve_download_dir() is None, "an un-confined stored dir must not be used"
+    warning = prefs._download_dir_warning({"download_dir": "/etc"})
+    assert warning and "no longer an allowed location" in warning

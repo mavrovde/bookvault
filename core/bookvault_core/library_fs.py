@@ -33,9 +33,16 @@ def library_root_from_env() -> Path | None:
 
 
 def sanitize_component(name: str) -> str:
-    """Replace filesystem-invalid characters the same way litres-downloader does."""
-    cleaned = _INVALID.sub("_", name or "")
-    return cleaned.strip() or "_"
+    """Replace filesystem-invalid characters the same way litres-downloader does.
+
+    A component of only dots ("." / "..") is path traversal, not a name, so it
+    also degrades to "_" -- the `_INVALID` set does not include the dot (legit
+    in real titles), so this is the guard that stops a crafted author/title from
+    walking out of the library root."""
+    cleaned = _INVALID.sub("_", name or "").strip()
+    if not cleaned or set(cleaned) <= {"."}:
+        return "_"
+    return cleaned
 
 
 def book_dir(root: Path, meta: dict) -> Path:
