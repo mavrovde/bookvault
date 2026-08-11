@@ -162,6 +162,34 @@ def allowed_download_roots() -> list[Path]:
     return out
 
 
+def _confined_to_allowed_roots(path) -> Path | None:
+    """The normalized `path` if it sits inside an allowed root, else None.
+
+    The single confinement check, following the scanner's own guidance to the
+    letter: **normalize first, then verify the result is within the root.**
+    `os.path.realpath` collapses `..` and follows symlinks, so the string we
+    check is the exact one the OS would open -- normalizing *after* checking
+    would let `<root>/../../etc` slip through a naive prefix test. The
+    comparison is `== base` or `startswith(base + os.sep)`, the trailing
+    separator stopping `/home/bob-evil` from passing as inside `/home/bob`.
+
+    Returns the realpath'd `Path` (rebuilt from the check, not the caller's raw
+    input), so every downstream sink -- a stat, a write -- receives a value
+    that has crossed this barrier.
+
+    Applied when a folder is *set* (`_normalise_download_dir`) and every time a
+    stored one is *read back* (`_download_dir_warning`, `resolve_download_dir`).
+    Re-checking on read is defense in depth: a value valid when saved but now
+    outside the roots -- a hand-edited or legacy state file, a changed default
+    -- is re-confined rather than trusted."""
+    real = os.path.realpath(str(path))
+    for root in allowed_download_roots():
+        base = os.path.realpath(str(root))
+        if real == base or real.startswith(base + os.sep):
+            return Path(real)
+    return None
+
+
 def _normalise_download_dir(value: str) -> str | None:
     """Turn what the user typed into a storable absolute path, or None when
     they cleared the field. Raises ValueError on anything unusable so the
@@ -187,24 +215,19 @@ def _normalise_download_dir(value: str) -> str | None:
     # token by design -- so any page the user happens to be visiting can POST
     # here. Confining writes to the places a library plausibly lives turns that
     # from "choose any directory on the machine" into "choose a folder".
-    # The guard is written out here rather than hidden behind a helper so that
-    # both a reader and a static analyser can see, at the point of use, that
-    # `path` is compared against a fixed set of roots before anything touches
-    # the filesystem with it.
-    allowed = False
-    for root in allowed_download_roots():
-        if path == root or root in path.parents:
-            allowed = True
-            break
-    if not allowed:
+    # Confine before any filesystem access. `_confined_to_allowed_roots`
+    # normalizes then checks containment (the scanner's recommended order) and
+    # returns a path rebuilt from that check, so `safe_path` -- not the raw
+    # user string -- is what every stat below touches.
+    safe_path = _confined_to_allowed_roots(path)
+    if safe_path is None:
         # The code, not the path: this is the one validation branch a hostile
         # page can drive, and the log shouldn't become a place to read back
         # what it probed for. The other rejections log the same way below.
         logger.info("Rejected a save folder: outside the allowed roots")
         raise InvalidDownloadDir("outside_allowed_roots")
 
-    # From here `path` is known to sit under one of those roots.
-    safe_path = path
+    # From here `safe_path` is known to sit under one of those roots.
     # Folders only. `resolve()` above already followed any symlink, so this
     # also catches a link pointing at a file. A path that doesn't exist yet is
     # fine and stays fine -- _save_archive mkdirs it when a build finishes --
@@ -246,7 +269,13 @@ def _download_dir_warning(state: dict) -> str | None:
     effective = _effective_download_dir(state)
     if not effective:
         return None
-    path = Path(effective)
+    # Re-confine before stating it: a stored value can outlive the guard that
+    # accepted it (a hand-edited state file, a default that has since moved),
+    # and this runs on every /activity poll, so it must never stat a path that
+    # is no longer inside the allowed roots.
+    path = _confined_to_allowed_roots(effective)
+    if path is None:
+        return "This folder is no longer an allowed location -- pick another."
     try:
         if not path.exists():
             return "This folder doesn't exist yet -- it will be created when a build finishes."
@@ -271,7 +300,17 @@ def resolve_download_dir() -> Path | None:
     been cleared (tests do this to keep the archive in its temp workdir)."""
     with _lock:
         effective = _effective_download_dir(_load())
-    return Path(effective) if effective else None
+    if not effective:
+        return None
+    # The archive is written here, so this is the highest-value sink of all --
+    # re-confine even though the value was checked when stored, in case the
+    # stored state was tampered with or predates the guard. A value that no
+    # longer sits inside the allowed roots falls back to keeping the archive in
+    # its temp workdir (None) rather than writing somewhere unexpected.
+    confined = _confined_to_allowed_roots(effective)
+    if confined is None:
+        logger.warning("Stored save folder is outside the allowed roots; keeping the archive in temp")
+    return confined
 
 
 def snapshot() -> dict:

@@ -141,3 +141,15 @@ def test_install_book_single_file(tmp_path):
     dest = install_book(tmp_path / "lib", meta, src, is_audio=True)
     assert (dest / "9.m4b").read_bytes() == b"m4bdata"
     assert json.loads((dest / "metadata.json").read_text())["last_release"] == "r1"
+
+
+def test_sanitize_component_never_yields_a_traversal():
+    """A component of only dots is path traversal, not a name -- it degrades to
+    "_" so a crafted author/title can't walk out of the library root."""
+    assert sanitize_component("..") == "_"
+    assert sanitize_component(".") == "_"
+    assert sanitize_component("...") == "_"
+    assert sanitize_component("  ..  ") == "_"
+    # A legitimate title that merely contains a dot is untouched.
+    assert sanitize_component("Vol. 1") == "Vol. 1"
+    assert sanitize_component("Book.epub") == "Book.epub"

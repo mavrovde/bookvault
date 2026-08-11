@@ -384,7 +384,12 @@ def _safe_book_name(title: str, art_id, used_names: set) -> str:
     the id rather than producing a bare ".epub"; two books that sanitize to the
     same string get the id appended so neither overwrites the other."""
     safe = "".join(c for c in title if c.isalnum() or c in " ._-")[:150]
-    if not safe.strip():
+    # Fall back to the id when nothing usable survives -- pure punctuation/emoji
+    # sanitizes to empty, AND a name of only dots/spaces (".", "..") is a path
+    # traversal component, never a real title. `set(safe) <= {".", " "}` rejects
+    # exactly those without touching a legitimate title that merely contains a
+    # dot (e.g. "Vol. 1").
+    if not safe.strip() or set(safe) <= {".", " "}:
         safe = str(art_id)
     if safe.lower() in used_names:
         safe = f"{safe} ({art_id})"
