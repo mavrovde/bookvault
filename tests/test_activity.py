@@ -1776,6 +1776,70 @@ def test_a_file_download_leaves_an_earlier_zip_reachable(tmp_path):
     wait_until_idle()
 
 
+# -- the live log shows work, the finished report shows everything -----------
+# A skipped/reused book costs no transfer, so it resolves within milliseconds
+# of the run starting. Streamed into the live log, a mostly-downloaded library
+# filled the panel with hundreds of rows before the first byte moved -- which
+# reads as the previous run's report and buries the books actually being
+# fetched. They are held back and merged in when the run ends.
+
+
+def test_the_live_log_stays_empty_while_only_skips_are_resolved(tmp_path):
+    client = _make_client(_book(1, "Have", TEXT_FILES), _book(2, "Also have", TEXT_FILES))
+    for n, name in ((1, "Have"), (2, "Also have")):
+        (tmp_path / f"{name}.epub").write_bytes(b"x" * 999_936)
+        record_in_mirror_index(tmp_path, n, f"{name}.epub", 999_936)
+
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    # Progress still advanced while they were being decided...
+    assert result["done"] == 2
+    # ...and the finished report is complete.
+    assert [e["status"] for e in result["results"]] == ["exists", "exists"]
+    assert "2 already saved" in result["message"]
+
+
+def test_transfers_appear_in_the_live_log_before_the_skips_do(tmp_path):
+    """Ordering is the point: what is happening now comes first, and the
+    already-there books are appended once the run is over."""
+    client = _make_client(_book(1, "Have", TEXT_FILES), _book(2, "Need", TEXT_FILES))
+    (tmp_path / "Have.epub").write_bytes(b"x" * 999_936)
+    record_in_mirror_index(tmp_path, 1, "Have.epub", 999_936)
+
+    seen_live = []
+
+    def watch(art_id, release_file_id, filename, dest, subscr=False,
+              should_cancel=None, on_progress=None):
+        # Mid-run: the skip for book 1 has already been decided.
+        seen_live.append([e["status"] for e in activity.snapshot()["log"]])
+        dest.write_bytes(b"FAKEDATA" * 10)
+        client.download_calls.append(art_id)
+        return dest
+
+    client.download_file = watch
+    activity.download_files(client, dest_root=tmp_path)
+    result = wait_until_idle()
+
+    assert seen_live == [[]], "the panel must not fill with skips before work starts"
+    assert [e["status"] for e in result["results"]] == ["done", "exists"]
+
+
+def test_a_zip_build_holds_back_reused_rows_too(tmp_path, monkeypatch):
+    monkeypatch.setattr(cache, "get_library", lambda: [{"id": 1, "title": "Book One", "is_audio": False}])
+    monkeypatch.setattr(cache, "get_files", lambda art_id: TEXT_FILES)
+    client = _make_client(_book(1, "Book One", TEXT_FILES))
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    (mirror / "Book One.epub").write_bytes(b"y" * 999_936)
+
+    activity.prepare(client, mirror_root=mirror)
+    result = wait_until_idle()
+
+    assert [e["status"] for e in result["results"]] == ["reused"]
+    assert result["done"] == 1
+
+
 # -- whole-build byte progress ---------------------------------------------
 # `bytes_total` is the sum of every SELECTED book, on disk or not. So any book
 # the run completes without transferring -- skipped in the mirror, reused by

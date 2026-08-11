@@ -142,6 +142,10 @@ def _run_download_files(
     already sitting complete on disk is skipped rather than fetched again."""
     used_names: set = set()
     completed_bytes = 0
+    # Books found already on disk. Collected here instead of appended to the
+    # live log as they are decided, and merged in when the run ends -- see the
+    # skip branch below.
+    skipped_present: list = []
     state._update(bytes_done=0, bytes_total=library._expected_total_bytes(art_ids))
     cancelled = False
     try:
@@ -207,11 +211,24 @@ def _run_download_files(
                     # library_fs.record_in_mirror_index) and would leave the bar
                     # unable to reach its own total.
                     completed_bytes += expected or 0
+                    # Held back from the LIVE log rather than streamed into it.
+                    # A skip costs no transfer, so every already-saved book is
+                    # decided within milliseconds of the run starting: selecting
+                    # a mostly-downloaded library filled the panel with hundreds
+                    # of "Already saved" rows before the first byte moved, which
+                    # reads as the previous run's report and buries the books
+                    # actually being fetched.
+                    #
+                    # They are still part of the outcome, so they are merged in
+                    # when the run finishes (see below) -- the live view answers
+                    # "what is happening now", the finished report answers "what
+                    # happened". The count is not lost meanwhile: `done` and the
+                    # byte progress both advance here.
+                    skipped_present.append(
+                        {"title": title, "ext": ext, "size_mb": size_mb, "status": "exists"}
+                    )
                     with state._lock:
                         state._state["done"] += 1
-                        state._state["log"].append(
-                            {"title": title, "ext": ext, "size_mb": size_mb, "status": "exists"}
-                        )
                     state._update(bytes_done=completed_bytes)
                     continue
 
@@ -335,6 +352,12 @@ def _run_download_files(
         return
 
     with state._lock:
+        # Merge the held-back skips now the run is over, so the finished report
+        # is the complete picture: transfers first, in the order they happened,
+        # then everything that was already there. Written into `log` as well as
+        # read out, so a browser polling once more after the run sees the same
+        # thing the durable `results` copy holds.
+        state._state["log"].extend(skipped_present)
         done, entries = state._state["done"], list(state._state["log"])
     fresh = sum(1 for e in entries if e.get("status") == "done")
     replaced = sum(1 for e in entries if e.get("status") == "replaced")

@@ -203,6 +203,9 @@ def _run_prepare(
     # its partial bytes counted against the total; the live figure adds the
     # current file's progress on top.
     completed_bytes = 0
+    # Books packed from the loose-file mirror instead of downloaded. Held back
+    # from the live log and merged in at the end -- see the reuse branch below.
+    reused_local: list = []
     state._update(bytes_done=0, bytes_total=library._expected_total_bytes(art_ids))
     # Read once per build: the record of what the mirror actually wrote, and
     # so the only sound basis for reusing a file instead of re-fetching it.
@@ -269,11 +272,12 @@ def _run_prepare(
                         # the reuse is designed for. Credited at its listed
                         # size, matching how the denominator counted it.
                         completed_bytes += best.get("size") or 0
+                        # Held back from the live log; merged in at the end.
+                        reused_local.append(
+                            {"title": title, "ext": ext, "size_mb": size_mb, "status": "reused"}
+                        )
                         with state._lock:
                             state._state["done"] += 1
-                            state._state["log"].append(
-                                {"title": title, "ext": ext, "size_mb": size_mb, "status": "reused"}
-                            )
                         state._update(bytes_done=completed_bytes)
                         continue
 
@@ -365,6 +369,10 @@ def _run_prepare(
                 )
 
         with state._lock:
+            # Merge the held-back reuses now the build is over -- same reason
+            # as the mirror's skips: they resolve instantly, so streaming them
+            # live buried the books actually being fetched.
+            state._state["log"].extend(reused_local)
             total_logged = len(state._state["log"])
             state._state.update(
                 state=IDLE,
