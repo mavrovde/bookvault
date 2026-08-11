@@ -249,6 +249,19 @@ const RESULT_BADGE = {
 //   skipped   litres.ru offers no downloadable file (rights-limited/preview)
 //   error     the transfer itself failed
 //
+// Book or audiobook, for the marker on each progress row. Driven by the same
+// `is_audio` the type counts above are built from, so a row and the pill that
+// counted it can never disagree -- if the count looks wrong, the rows show
+// exactly which titles produced it.
+//
+// An older entry (from a build that predates this field) has no `is_audio` at
+// all; those render as a book rather than silently claiming to be audio.
+function typeMarker(item) {
+  return item.is_audio
+    ? { icon: '🎧', label: 'Audiobook' }
+    : { icon: '📖', label: 'Book' };
+}
+
 // A zip build only ever produces done/skipped/error; the loose-file download
 // adds the other two, because it's the only one that can find a previous copy.
 const STATUS_LABELS = {
@@ -406,7 +419,12 @@ function renderActivity(s) {
     // both look identical to a book downloaded for the first time.
     const s = STATUS_LABELS[item.status] || STATUS_LABELS.done;
     const size = item.size_mb != null ? `${item.ext}, ${item.size_mb} MB` : (item.ext || '');
-    return `<li class="${s.cls}"><span class="icon">${s.icon}</span><span class="title">${escapeHtml(item.title)}</span><span class="detail"><span class="status-tag">${s.label}</span>${size ? ` · ${escapeHtml(size)}` : ''}</span></li>`;
+    // Which KIND of title this is, next to the status icon that says how it
+    // was handled. Without it every row looked alike, so an audiobook was
+    // indistinguishable from an ebook and the type counts above could not be
+    // checked against the rows they came from.
+    const kind = typeMarker(item);
+    return `<li class="${s.cls}"><span class="icon">${s.icon}</span><span class="kind" title="${kind.label}">${kind.icon}</span><span class="title">${escapeHtml(item.title)}</span><span class="detail"><span class="status-tag">${s.label}</span>${size ? ` · ${escapeHtml(size)}` : ''}</span></li>`;
   }).join('');
   // Auto-scroll to follow the newest row only while unfiltered and streaming;
   // when filtered (i.e. inspecting failures) leave the scroll where the user is.

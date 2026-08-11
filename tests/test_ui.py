@@ -468,3 +468,26 @@ def test_the_type_pills_sit_next_to_all_before_the_status_pills(page):
     assert keys[:3] == ["all", "book", "audio"], keys
     assert set(keys[3:]) <= {"done", "replaced", "exists", "reused", "skipped", "error"}, keys
     assert any("📖" in p for p in pills) and any("🎧" in p for p in pills)
+
+
+def test_each_progress_row_shows_whether_it_is_a_book_or_audio(page):
+    """Rows carried only a status icon, so an audiobook was indistinguishable
+    from an ebook and the type counts could not be checked against the rows
+    that produced them."""
+    _render_log(page, [
+        _row("Novel", "done", False),
+        _row("Audiobook", "done", True),
+    ])
+    marks = page.evaluate(
+        "() => Array.from(document.querySelectorAll('#progress-log li'))"
+        ".map(li => [li.querySelector('.title').textContent,"
+        "            li.querySelector('.kind').textContent])"
+    )
+    assert marks == [["Novel", "📖"], ["Audiobook", "🎧"]], marks
+
+
+def test_a_row_from_before_the_field_existed_is_not_claimed_as_audio(page):
+    """Durable `results` can hold entries written by an older build. Missing
+    `is_audio` must read as a book, not silently become an audiobook."""
+    _render_log(page, [{"title": "Old entry", "ext": "epub", "size_mb": 1.0, "status": "done"}])
+    assert page.evaluate("() => document.querySelector('#progress-log li .kind').textContent") == "📖"
