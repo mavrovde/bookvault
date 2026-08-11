@@ -335,3 +335,44 @@ def test_typing_a_rejected_folder_shows_the_error_inline(page):
 def test_selecting_books_updates_the_count(page):
     page.evaluate("() => { state.selected = new Set([1, 2]); updateSelectedCount(); }")
     assert "2 of 3 selected" in page.text_content("#selected-count")
+
+
+# -- switching the type filter clears the selection -------------------------
+# Selection is not scoped to the filter, so books hidden by it stayed selected
+# and were still downloaded: pick All, select everything, switch to Books,
+# start -- and every audiobook came too. The screen said one thing and the run
+# did another, with nothing visible to reveal the difference.
+
+
+def _selected_ids(page):
+    return sorted(page.evaluate("() => Array.from(state.selected)"))
+
+
+def test_switching_the_type_filter_clears_the_selection(page):
+    """The reported bug, end to end through the real click handler."""
+    page.click("#select-all")
+    assert _selected_ids(page) == [1, 2, 3]
+
+    page.click("#type-filter .pill[data-type='book']")
+
+    assert _selected_ids(page) == [], "hidden books must not stay selected"
+    assert "0 of 3 selected" in page.text_content("#selected-count")
+
+
+def test_clicking_the_filter_already_active_keeps_the_selection(page):
+    """Only a real change clears. Re-clicking the current pill must not wipe a
+    selection the user just made."""
+    page.click("#select-all")
+    page.click("#type-filter .pill[data-type='all']")
+    assert _selected_ids(page) == [1, 2, 3]
+
+
+def test_the_cleared_selection_reaches_the_server(page):
+    """Selection lives on the server, so clearing it in the page is not enough
+    -- a build started from another tab would still use the stale set."""
+    page.click("#select-all")
+    page.click("#type-filter .pill[data-type='audio']")
+    page.wait_for_function(
+        "() => fetch('/prefs').then(r => r.json()).then(p => p.selected.length === 0)",
+        timeout=10_000,
+    )
