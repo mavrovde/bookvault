@@ -506,8 +506,24 @@ document.getElementById('refresh-library').addEventListener('click', () => {
 document.getElementById('type-filter').addEventListener('click', (e) => {
   const btn = e.target.closest('.pill');
   if (!btn) return;
+  const changed = state.typeFilter !== btn.dataset.type;
   state.typeFilter = btn.dataset.type;
   document.querySelectorAll('#type-filter .pill').forEach(p => p.classList.toggle('active', p === btn));
+  // Switching type clears the selection, deliberately.
+  //
+  // Selection is not scoped to the filter, so books hidden by it stayed
+  // selected and were still downloaded: select All, switch to Books, start --
+  // and every audiobook came too. The screen said one thing and the run did
+  // another, with nothing on screen to reveal the difference, which is the
+  // worst kind of bug in a tool that moves gigabytes.
+  //
+  // Clearing is the honest resolution: after switching, what is selected is
+  // always something you can see. Re-selecting is one click ("All"), whereas
+  // an unnoticed 20 GB of audiobooks is not undoable.
+  if (changed && state.selected.size) {
+    state.selected.clear();
+    pushSelection();
+  }
   renderList();
 });
 
