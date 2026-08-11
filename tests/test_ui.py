@@ -376,3 +376,69 @@ def test_the_cleared_selection_reaches_the_server(page):
         "() => fetch('/prefs').then(r => r.json()).then(p => p.selected.length === 0)",
         timeout=10_000,
     )
+
+# -- the progress log reveals a burst step by step --------------------------
+# A book already on disk needs no transfer, so a run over a mostly-saved
+# library decides hundreds of them within milliseconds and every row arrives in
+# a single poll. Rendered as-is that reads as a block that was already there,
+# not as the run working through them. The rows are therefore queued and
+# revealed one at a time -- in the browser, so the download is never paced.
+
+
+def _push_snapshot(page, *, state, log):
+    """Drive renderActivity exactly as a poll would."""
+    return page.evaluate(
+        """([activityState, log]) => {
+            renderActivity({
+                state: activityState, result: null, message: '', current_title: null,
+                current_downloaded: null, current_total: null,
+                done: log.length, total: log.length,
+                bytes_done: 0, bytes_total: null,
+                log: activityState === 'idle' ? [] : log,
+                results: activityState === 'idle' ? log : [],
+                error: null, sizes: {}, zip_path: null, saved_path: null,
+            });
+            return document.querySelectorAll('#progress-log > *').length;
+        }""",
+        [state, log],
+    )
+
+
+def _rows(page) -> int:
+    return page.evaluate("() => document.querySelectorAll('#progress-log > *').length")
+
+
+def _burst(n):
+    return [{"title": f"Book {i}", "ext": "epub", "size_mb": 1.0, "status": "exists"}
+            for i in range(n)]
+
+
+def test_a_burst_of_rows_is_not_dumped_all_at_once(page):
+    """The reported complaint: the whole list appearing the instant a run
+    starts. One poll delivers 40 rows; the screen must not show 40."""
+    shown = _push_snapshot(page, state="downloading", log=_burst(40))
+    assert shown < 40, f"all {shown} rows appeared immediately"
+
+
+def test_the_rows_then_catch_up_on_their_own(page):
+    """Revealed progressively, not dropped: everything must arrive."""
+    _push_snapshot(page, state="downloading", log=_burst(12))
+    page.wait_for_function(
+        "() => document.querySelectorAll('#progress-log > *').length === 12", timeout=10_000
+    )
+    assert _rows(page) == 12
+
+
+def test_a_finished_run_shows_its_whole_report_immediately(page):
+    """Nothing is still happening, so drip-feeding a complete report would only
+    make the user wait to read what is already available."""
+    shown = _push_snapshot(page, state="idle", log=_burst(25))
+    assert shown == 25
+
+
+def test_a_new_run_rewinds_the_reveal(page):
+    """A shrinking log means `_begin` cleared it for a fresh run -- the previous
+    run's revealed rows must not stay on screen."""
+    _push_snapshot(page, state="idle", log=_burst(15))
+    assert _rows(page) == 15
+    assert _push_snapshot(page, state="downloading", log=[]) == 0
