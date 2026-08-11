@@ -376,3 +376,78 @@ def test_the_cleared_selection_reaches_the_server(page):
         "() => fetch('/prefs').then(r => r.json()).then(p => p.selected.length === 0)",
         timeout=10_000,
     )
+
+
+# -- processed counts by type in the progress panel -------------------------
+# The status buckets say HOW each title was handled but not WHAT it was, so
+# "how much of my audio did this run actually deal with?" had no answer. The
+# type pills sit alongside the status ones and filter the same way.
+
+
+def _render_log(page, rows, *, state="downloading"):
+    return page.evaluate(
+        """([activityState, log]) => {
+            renderActivity({
+                state: activityState, result: null, message: '', current_title: null,
+                current_downloaded: null, current_total: null,
+                done: log.length, total: log.length, bytes_done: 0, bytes_total: null,
+                log: log, results: [], error: null, sizes: {},
+                zip_path: null, saved_path: null,
+            });
+            return Array.from(document.querySelectorAll('#log-summary .pill'))
+                        .map(p => p.textContent.trim());
+        }""",
+        [state, rows],
+    )
+
+
+def _row(title, status, is_audio):
+    return {"title": title, "ext": "epub", "size_mb": 1.0, "status": status, "is_audio": is_audio}
+
+
+def _shown_titles(page):
+    return page.evaluate(
+        "() => Array.from(document.querySelectorAll('#progress-log .title')).map(e => e.textContent)"
+    )
+
+
+def test_the_panel_counts_books_and_audio_separately(page):
+    pills = _render_log(page, [
+        _row("Novel", "done", False),
+        _row("Another novel", "exists", False),
+        _row("Audiobook", "done", True),
+    ])
+    assert any("📖 2 books" in p for p in pills), pills
+    assert any("🎧 1 audio" in p for p in pills), pills
+
+
+def test_a_type_with_nothing_processed_gets_no_pill(page):
+    pills = _render_log(page, [_row("Novel", "done", False)])
+    assert any("📖 1 books" in p for p in pills), pills
+    assert not any("audio" in p for p in pills), pills
+
+
+def test_failed_and_skipped_titles_still_count_toward_their_type(page):
+    """They were processed -- a title that turned out to be undownloadable is
+    still one of your audiobooks."""
+    pills = _render_log(page, [
+        _row("Broken", "error", True),
+        _row("Rights-limited", "skipped", True),
+    ])
+    assert any("🎧 2 audio" in p for p in pills), pills
+
+
+def test_clicking_a_type_pill_filters_the_list(page):
+    """The requirement: they behave like every other pill on the panel."""
+    _render_log(page, [
+        _row("Novel", "done", False),
+        _row("Audiobook", "done", True),
+    ])
+    page.click("#log-summary .pill[data-log-filter='audio']")
+    assert _shown_titles(page) == ["Audiobook"]
+
+    page.click("#log-summary .pill[data-log-filter='book']")
+    assert _shown_titles(page) == ["Novel"]
+
+    page.click("#log-summary .pill[data-log-filter='all']")
+    assert sorted(_shown_titles(page)) == ["Audiobook", "Novel"]

@@ -158,6 +158,13 @@ def _run_download_files(
             if art_ids is not None and art_id not in art_ids:
                 continue
             title = art.get("title") or str(art_id)
+            # Resolved before anything can fail, so *every* log entry carries it
+            # -- the progress panel counts books and audiobooks separately, and
+            # a title that turned out to be undownloadable still belongs to one
+            # of those totals.
+            is_audio = art.get("is_audio")
+            if is_audio is None:  # raw art dict vs cached web-shape book
+                is_audio = art.get("art_type") == 1
             state._update(current_title=title, current_downloaded=None, current_total=None)
 
             try:
@@ -170,15 +177,15 @@ def _run_download_files(
                     reason = "No downloadable file for this title on litres.ru (rights-limited or preview-only)."
                     logger.info("Skipping %r (art %s): %s", title, art_id, reason)
                     with state._lock:
-                        state._state["log"].append({"title": title, "status": "skipped", "reason": reason})
+                        state._state["log"].append(
+                            {"title": title, "status": "skipped", "reason": reason,
+                             "is_audio": is_audio}
+                        )
                     continue
 
                 ext = client.file_extension(best)
                 expected = best.get("size") or None
                 size_mb = round((expected or 0) / 1e6, 1)
-                is_audio = art.get("is_audio")
-                if is_audio is None:  # raw art dict vs cached web-shape book
-                    is_audio = art.get("art_type") == 1
                 safe_title = _safe_book_name(title, art_id, used_names)
 
                 # Where the book could land. Which one it *does* land in is
@@ -210,7 +217,8 @@ def _run_download_files(
                     with state._lock:
                         state._state["done"] += 1
                         state._state["log"].append(
-                            {"title": title, "ext": ext, "size_mb": size_mb, "status": "exists"}
+                            {"title": title, "ext": ext, "size_mb": size_mb, "status": "exists",
+                             "is_audio": is_audio}
                         )
                     state._update(bytes_done=completed_bytes)
                     continue
@@ -310,6 +318,7 @@ def _run_download_files(
                         {
                             "title": title,
                             "status": "error",
+                            "is_audio": is_audio,
                             "error": state._friendly_error(exc),
                             "detail": str(exc)[:300],
                         }
@@ -324,6 +333,7 @@ def _run_download_files(
                         "ext": ext,
                         "size_mb": size_mb,
                         "status": "replaced" if existed_but_wrong else "done",
+                        "is_audio": is_audio,
                     }
                 )
     except Exception as exc:

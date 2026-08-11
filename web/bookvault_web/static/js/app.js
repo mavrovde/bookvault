@@ -347,6 +347,11 @@ function renderActivity(s) {
   const log = (s.log && s.log.length) ? s.log : (s.results || []);
   const counts = { done: 0, skipped: 0, error: 0 };
   for (const item of log) counts[item.status] = (counts[item.status] || 0) + 1;
+  // Books vs audiobooks among the rows processed so far. `is_audio` rides on
+  // every entry, including skipped and failed ones -- a title that turned out
+  // to be undownloadable still belongs to one of these totals.
+  const typeCounts = { book: 0, audio: 0 };
+  for (const item of log) typeCounts[item.is_audio ? 'audio' : 'book'] += 1;
 
   // Summary pills: counts per status, click to filter. Only the buckets that
   // actually occurred are shown (plus "All"); a failed/skipped pill only
@@ -363,8 +368,14 @@ function renderActivity(s) {
     if (counts.reused) pills.push(['reused', `↺ ${counts.reused} from your folder`, true]);
     if (counts.skipped) pills.push(['skipped', `! ${counts.skipped} not available`, true]);
     if (counts.error) pills.push(['error', `✗ ${counts.error} failed`, true]);
+    // Processed counts by type, in the same style as the library's own
+    // Books/Audio pills and filtering the same way as the status pills beside
+    // them. "How much of my audio did this run actually deal with?" is a
+    // question the status buckets alone can't answer.
+    if (typeCounts.book) pills.push(['book', `📖 ${typeCounts.book} books`, true]);
+    if (typeCounts.audio) pills.push(['audio', `🎧 ${typeCounts.audio} audio`, true]);
     // If the active filter's bucket emptied out, fall back to All.
-    if (logFilter !== 'all' && !counts[logFilter]) logFilter = 'all';
+    if (logFilter !== 'all' && !counts[logFilter] && !typeCounts[logFilter]) logFilter = 'all';
     summaryEl.style.display = '';
     summaryEl.innerHTML = pills.map(([key, text]) =>
       `<button type="button" class="pill${key === logFilter ? ' active' : ''}${key === 'error' ? ' pill-error' : ''}" data-log-filter="${key}">${escapeHtml(text)}</button>`
@@ -372,7 +383,13 @@ function renderActivity(s) {
   }
 
   const logEl = document.getElementById('progress-log');
-  const shown = logFilter === 'all' ? log : log.filter(item => item.status === logFilter);
+  // One active filter at a time, exactly like the status pills: a key is
+  // either a status ("done", "exists", …) or a type ("book"/"audio").
+  const shown = logFilter === 'all'
+    ? log
+    : (logFilter === 'book' || logFilter === 'audio')
+      ? log.filter(item => (item.is_audio ? 'audio' : 'book') === logFilter)
+      : log.filter(item => item.status === logFilter);
   logEl.innerHTML = shown.map(item => {
     if (item.status === 'skipped') {
       return `<li class="skipped"><span class="icon">!</span><span class="title">${escapeHtml(item.title)}</span><span class="detail">${escapeHtml(item.reason || 'Not available')}</span></li>`;
