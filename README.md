@@ -438,6 +438,23 @@ A quick tour of the design choices that make this reliable. Skip it if you just 
 **State lives on the server, not the browser.** The current selection and format preferences sit in `prefs.py` (`GET`/`POST /prefs`, and folded into the `/activity` poll), and a finished build's per-book results + zip link are kept on the state machine until the next build. So opening the app in another browser shows the same view, and a page reload never loses your selection, the results, or the download link.
 
 <details>
+<summary>🗂 How "I already have this book" is decided</summary>
+
+<br>
+
+The folder mirror is only useful if running it twice is nearly free, which means answering "do I already have this?" correctly. The obvious approach — compare the file on disk against the size litres.ru's listing advertises — **does not work**: that number is not the byte length the site serves. Measured across a real 239-book library, 10 files matched their listed size and 147 did not, the delivered file usually being smaller by anything from a couple of hundred bytes to several megabytes. Trusting it would re-download almost the entire library on every run — precisely the request pattern that gets an account anti-bot flagged, and far worse than the stale-file problem it was meant to solve.
+
+So the only trustworthy statement is the one BookVault can make about itself: **a finished download records what it actually wrote** into a small `.bookvault-index.json` beside your files (byte length for a single file, track count for an unpacked audiobook). Completeness is checked against that record, which is direct evidence and survives restarts, and it still catches the case that matters — a transfer interrupted part-way leaves something whose length differs from what the completed run recorded.
+
+Two consequences worth knowing:
+
+- **No record means "leave it alone."** Books you copied in yourself have nothing to verify against, and re-fetching a library because BookVault lacks a *history* of it would be destructive. Delete the index and everything present is simply trusted; delete a book and the next run brings it back.
+- **The delivered shape is inspected, not assumed.** Only the `zip_with_mp3` audiobook format is an archive to unpack; the others (`mobile_version_mp4` and friends) are a single file, exactly like an ebook — and ebooks such as epub and fb2.zip are themselves zips that must *never* be unpacked. The rule is "unpack only an audiobook that really is a zip", decided by looking at the bytes.
+
+One definition serves every question about a book's presence — the mirror's own run, the ✓ badge on each cover, the zip build's reuse, and the MCP `download_book` skip — so they cannot disagree.
+</details>
+
+<details>
 <summary>🎭 Why Playwright instead of plain HTTP requests</summary>
 
 <br>
@@ -536,6 +553,45 @@ reach litres.ru.
 
 Contributing? See **[`CONTRIBUTING.md`](CONTRIBUTING.md)** for the setup, the rules that matter (offline tests, the single Playwright worker thread, the deliberate `LITRES_*` naming), and how AI-assisted PRs are reviewed. This repo checks in its [Claude Code configuration](.claude/README.md) — per-area agent roles and skills for the repeatable workflows — so everyone gets the same setup.
 
+### HTTP endpoints
+
+The web app is also a small local API, so you can script it. Everything runs on
+`127.0.0.1:8420` with no authentication — see
+[Localhost-only, on purpose](#-localhost-only-on-purpose).
+
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/` | The page itself (login form when logged out) |
+| `GET` | `/activity` | Current state, progress, per-book log, prefs, and which books are already on disk — poll this |
+| `GET` | `/library` | The cached library listing |
+| `GET` | `/library/{art_id}/size` | Resolve one book's size |
+| `GET` | `/prefs` · `POST` `/prefs` | Read / update selection, formats, save folder |
+| `POST` | `/login` · `/logout` | Session |
+| `POST` | `/activity/refresh-library` | Reload the listing from litres.ru |
+| `POST` | `/activity/check-sizes` | Paced per-book size sweep |
+| `POST` | `/activity/prepare-zip` | Build the archive |
+| `POST` | `/activity/download-files` | Download into the save folder as plain files |
+| `POST` | `/activity/sync-audiobookshelf` | Sync the Audiobookshelf-shaped tree (needs `LITRES_LIBRARY_DIR`) |
+| `POST` | `/activity/stop` | Cancel whatever is running |
+| `GET` | `/download/file` | Stream the finished archive |
+| `POST` | `/download/save-copy` | Put an extra copy of the archive somewhere else |
+| `POST` | `/prefs/browse` | Open the OS folder picker (hidden where no dialog can be drawn) |
+
+Only one activity runs at a time: a `POST` that starts one returns
+`{"started": false}` if another is already in flight, rather than queuing.
+
+> **Writes are same-origin only.** State-changing requests from another *web
+> page* are refused (`Sec-Fetch-Site`, with an `Origin`/`Host` fallback), since
+> the app has no auth and any page you have open could otherwise POST to it.
+> Local scripts and `curl` send neither header and are allowed — the threat
+> model is a web page you visited, not code already running as you.
+
+```bash
+curl -s http://127.0.0.1:8420/activity | python3 -m json.tool
+curl -s -X POST http://127.0.0.1:8420/activity/prepare-zip \
+     -H 'Content-Type: application/json' -d '{}'
+```
+
 ---
 
 ## ⚖️ Legal &amp; fair use
@@ -589,8 +645,9 @@ Found a security issue? See [`SECURITY.md`](SECURITY.md).
 Tracked as [GitHub issues](https://github.com/mavrovde/bookvault/issues):
 
 - **Stop is near-instant** — cancelling interrupts the file currently downloading (polled between streamed chunks; the partial file is discarded). A transfer that stalls without sending any bytes still has to hit its timeout first.
-- **Edge cases** — response-shape assumptions for the library/file endpoints were confirmed against a limited sample of real items; unusual libraries (podcasts, webtoons, DRM-restricted items) may need follow-up fixes.
+- **Edge cases** — the library endpoint's response shape has since been checked against a full JSON Schema generated from a real account ([#32](https://github.com/mavrovde/bookvault/pull/32)), and every field BookVault reads is present in it. What that can't establish is the range of *values* in an unusual library — podcasts, webtoons, or DRM-restricted items may still need follow-up fixes.
 - **Zip filenames on macOS Terminal** — the built-in `unzip` garbles non-Latin (e.g. Cyrillic) names. Extract via Finder or `ditto -x -k litres-library.zip dest/`.
+- **Unsigned builds** — the installers are unsigned, so macOS Gatekeeper and Windows SmartScreen will warn on first launch. Provenance attestations let you verify an artifact came from this repo's CI (see [Verify your download](#verify-your-download)), but that is not the same as code signing.
 
 ---
 

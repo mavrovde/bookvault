@@ -219,7 +219,7 @@ capability check. Before designing anything, search for what already exists —
 by capability, not by the name you would have given it:
 
 ```bash
-grep -rn "def start_\|def prepare\|def sync\|def download" web/bookvault_web/activity.py
+grep -rn "def start_\|def prepare\|def sync\|def download" web/bookvault_web/activity/
 grep -rn "display:none\|{% if " web/bookvault_web/templates/index.html
 ```
 

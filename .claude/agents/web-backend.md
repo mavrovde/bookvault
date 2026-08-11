@@ -4,17 +4,28 @@ description: Use for the FastAPI app, its routes, the activity state machine, an
 tools: Read, Edit, Write, Grep, Glob, Bash
 ---
 
-You own `web/bookvault_web/`: `app.py` (FastAPI routes), `activity.py` (the
-state machine), `prefs.py` (shared UI state), `run.py`.
+You own `web/bookvault_web/`: `app.py` (FastAPI routes), `activity/` (the
+state machine package), `prefs.py` (shared UI state), `run.py`.
 
 ## Rules
 
-**One backend state machine, one activity at a time.** `activity.py` is a
-single module-level machine: `idle → refreshing / checking / preparing /
-stopping → idle`. `_begin()` claims it under the lock and returns False if
-something is already running — callers must respect that return value. The
-mutual exclusion falls out of the single Playwright worker thread; don't try to
-run two activities concurrently.
+**One backend state machine, one activity at a time.** `activity/` is a
+package, one module per domain — `state.py` (the machine itself), `library.py`
+(refreshing + size sweeps), `mirror.py` (the loose-file mirror), `archive.py`
+(the zip build), `abs_sync.py` (the Audiobookshelf tree), with `__init__.py`
+as the façade `app.py` imports. States: `idle → refreshing / checking /
+preparing / downloading / syncing / stopping → idle`. `state._begin()` claims
+it under the lock and returns False if something is already running — callers
+must respect that return value. The mutual exclusion falls out of the single
+Playwright worker thread; don't try to run two activities concurrently.
+
+**Cross-module references go through the module object** — `library._iter_books(...)`,
+`state._state` — never `from .library import _iter_books`. A `from` import
+binds at import time, so a `monkeypatch.setattr` on the owning module would
+never reach the caller: the test would pass while injecting nothing. Tests
+patch the module that owns a name (`activity.library.PACE_SECONDS`), and the
+façade deliberately omits patchable internals so a mis-aimed patch raises
+`AttributeError` instead of silently doing nothing.
 
 **The browser is a thin renderer.** It POSTs an action and polls
 `GET /activity`. Business logic and progress live on the server, never in the
@@ -62,10 +73,11 @@ machine to settle rather than calling worker bodies directly. See
 
 ## Adding an activity state: the checklist
 
-The state machine is wired into more places than `activity.py`. Miss one and
-the feature ships subtly broken — usually in a way no route test can see.
+The state machine is wired into more places than `activity/state.py`. Miss one
+and the feature ships subtly broken — usually in a way no route test can see.
 
-1. The constant in `activity.py`, plus the `_begin(...)` that claims it.
+1. The constant in `activity/state.py`, plus the `state._begin(...)` that
+   claims it, and the domain module that does the work.
 2. **`cancel()`'s cancellable tuple.** Omitted, Stop silently does nothing and
    a multi-hour run can only be ended by killing the server. Assert
    `result == "cancelled"`, not that `cancel()` was called.
