@@ -9,7 +9,7 @@ description = "MCP server exposing your litres.ru library (list + download) as t
 requires-python = ">=3.11"
 dependencies = [
     "bookvault-core",
-    "mcp==1.28.1",
+    "mcp==1.30.0",
     "python-dotenv==1.2.2",
     "anyio==4.14.2",
 ]
